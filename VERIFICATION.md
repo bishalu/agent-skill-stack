@@ -37,23 +37,6 @@ Passives are the awkward class. They must fire *with* the owner, never *as* the 
 
 Both passive failures found here were caught by test 1 while tests 2 and 3 stayed green, which is what made them diagnosable: the skills were not over-firing, they were not firing at all. Both had triggers naming the technology rather than the moment. The fixes were re-run against all three tests before being kept, and the negative cases were re-run specifically to prove the widened triggers had not become noisy.
 
-## What building this table changed
-
-The coverage matrix was generated before it was read, and it immediately contradicted the
-method written above it. Three passive skills had no negative coverage at all, so nothing
-proved they stayed quiet on trivial work. Two skills, `terraform-test` and `unslop`, had
-no coverage in either direction and were installed on the strength of an argument rather
-than a measurement. `sharp-edges` and `fp-check` had forbids but no case that made them
-fire.
-
-All five gaps are now closed. The negative coverage cost nothing: adding the passives to
-the forbid lists of the existing trivial cases let `rescore.py` check them against the 96
-sessions already on disk, and none of them had ever fired there. The four positive cases
-needed real runs and pass 2/2 each.
-
-Worth keeping the order in mind. The table was not written to show the coverage was good.
-It was generated to find out, and what it found was five holes.
-
 ## Coverage by skill
 
 Counted from `eval/corpus.jsonl` and `eval/heldout.jsonl` (52 cases), with fire counts observed across the 104 sessions in the two latest sweeps.
@@ -108,6 +91,7 @@ Not model-selectable, so a zero fire count is the correct result.
 | `codeql` | trailofbits | 0 | 8 | 0 | 0 |
 | `insecure-defaults (commands only)` | trailofbits | 0 | 0 | 0 | 0 |
 | `setup-matt-pocock-skills` | mattpocock | 0 | 0 | 0 | 0 |
+| `technical-writing` | cursor | 0 | 0 | 0 | 0 |
 | `vercel-optimize` | vercel | 0 | 1 | 1 | 0 |
 
 ## Skills with no eval coverage

@@ -22,135 +22,107 @@ time from one file, and every one of them is listed with the upstream text it re
 | Frontend | [Vercel Labs](https://github.com/vercel-labs/agent-skills) | React and Next.js performance, component API shape, accessibility audit |
 | Security | [Trail of Bits](https://github.com/trailofbits/skills) | Security diffs, supply chain, static analysis, variant hunting, Python tooling |
 | Infrastructure | [AWS](https://github.com/aws/agent-toolkit-for-aws), [HashiCorp](https://github.com/hashicorp/agent-skills) | boto3, Bedrock, IAM, CloudWatch, Terraform authoring and tests |
-| Tooling | [Cursor](https://github.com/cursor/plugins) | CLI design, design-rationale archaeology, prose editing |
+| Tooling | [Cursor](https://github.com/cursor/plugins) | CLI design, design-rationale archaeology, prose editing, documentation style |
 
 31 curated skills carry routing metadata from this repo. Compound Engineering's 33
 install unmodified, because it is the default owner and its triggers are meant to be
 broad.
 
-## Curated for this environment
+## What it does for a working day
 
-This is not a general-purpose bundle. Every include and exclude was decided against the
-repos on this machine, and that is the reason it is worth running.
+Install seven skill collections raw and they fight each other. These do not, and the
+difference shows up in ordinary work rather than in a diagram.
 
-I read the code before choosing anything, and the profile decided the stack: Python
-services on FastAPI and SQLAlchemy, boto3 and Bedrock throughout, Terraform for
-infrastructure, a Next.js frontend, and Weights and Biases for model training runs.
+**You stop refereeing your own tools.** Ask for a review and you get a reviewer. Nine
+workflows advertised for "review this PR" before curation: Matt Pocock's two-axis review,
+three from Trail of Bits, two from Vercel, and three from Cursor. Now the bare phrase
+routes to `ce-code-review` alone, three runs out of three. So does "take a look at my
+changes", and so does "find bugs in this repository", which never wakes a scanner.
 
-Run the same exercise against a Django and GCP shop and you should end up with a
-different set. That is the point. The method transfers, the selection does not.
+**The security specialist arrives on evidence, not on the word security.** Say "review
+this authentication PR for security regressions" and you get the review owner plus Trail
+of Bits `differential-review`, three out of three. Say "I changed how we compute refunds
+and charge cards", which contains no security vocabulary at all, and you get the same
+pair, two out of two. Payments sits on the list of surfaces that trigger escalation, so
+the specialist threat-models the change whether or not you thought to ask.
 
-What the profile bought:
+**Small work stays small.** "Change this string typo" fires nothing, nine runs out of
+nine. "What does canEditWorkspace do" fires nothing, seven out of seven. "Rename the
+prefs variable to preferences" fires nothing, six out of six. Twenty-two sessions of
+trivial work, no skill selected and no plan written.
 
-**Fewer competing workflows.** A plain "review this PR" wakes one reviewer, not the
-three that were fighting for it before curation. Across every run in this repo, roughly
-300 headless sessions, no session has ever fired two.
+**The specialist you asked for is the one you get.** "Audit our npm dependencies for
+supply-chain risk" runs `supply-chain-risk-auditor` directly, three out of three, with no
+feature lifecycle wrapped around a dependency audit.
 
-**Security that fires on evidence, not on vocabulary.** "Review this PR" gets Compound
-alone. "Review this authentication PR for security regressions" gets Compound plus the
-Trail of Bits differential review, every run. So does "I changed how we compute refunds
-and charge cards", which never says the word security.
+**Escalation waits for a reason.** "Fix this hydration mismatch" gets `ce-debug` and the
+React overlay, and Matt Pocock's deep diagnosis stays out of it. Add the evidence, as in
+"I have tried three fixes and still cannot explain this race condition", and
+`diagnosing-bugs` joins the same owner. Three out of three both ways.
 
-**Python and AWS advice where I actually write it.** boto3 patterns fire on "upload the
-rendered video to S3 and return a presigned URL". `modern-python` fires when a request
-names Python and a dependency, and correctly stays quiet when the language is ambiguous.
+**Advice shows up where you write code, without taking over.** Ask for an export-to-CSV
+button and you get the implementation owner plus Vercel's React rules, seven out of
+seven. Ask why a page feels slow and you get the debugger plus those rules, six out of
+six. The overlay advises. It never runs the phase.
 
-**Terraform help aimed at authoring, not provider development.** Twelve of HashiCorp's
-sixteen skills are for people writing Terraform providers. Three are for people writing
-Terraform: `terraform-style-guide` for conventions, `refactor-module` for turning flat
-configuration into modules, `terraform-test` for `.tftest.hcl`.
+### What stacking seven collections should have cost
 
-**Nothing installed for a tool that is not running here.** No Supabase, no Prisma, no
-Swift SDK, no Neptune or Keyspaces or DocumentDB, no CloudFormation when the
-infrastructure is Terraform, no MLflow without a tracking server to point it at. The AWS
-plugin went from 21 skills to 9, and from 5,005 always-on tokens to 2,421, on that basis
-alone.
+Three costs are worth expecting. Each one is measured rather than argued.
 
-**Deployment left alone.** The Vercel MCP already owns it here, so the Vercel deploy
-skills stayed out rather than putting a second owner on the phase.
+**Workflows fighting over the same code.** `eval/results/` holds 204 scored sessions.
+None of them fired two lifecycle owners. That is the number this repo
+exists to hold at zero, and it is the only one that was never allowed to move.
 
-Three corrections came out of profiling rather than reasoning from reputation.
-`modern-python` was excluded as out of scope before anyone had counted the Python
-services, which was wrong and is reversed. `aws-core` was recommended partly for
-Terraform coverage it does not have, since its infrastructure skills are CDK and
-CloudFormation. And MLflow was floated as a replacement for Weights and Biases, which it
-is not: W&B is doing model training here, the job it is good at, while MLflow's plugin
-solves agent evaluation.
+**Noise on work too small to need it.** The trivial cases above cover 22 sessions across
+three phrasings, and no skill fired in any of them. Those cases forbid every passive overlay by
+name, so a widened trigger cannot slip past unnoticed.
 
-The exclusion list in [MANIFEST.md](MANIFEST.md) is as much the product as the include
-list. It records what was considered and declined, with the reason, so the next pass
-starts from a decision instead of from scratch.
+**Context you pay for on every prompt.** About 8,800 tokens of always-on skill
+descriptions, roughly 1% of a 1M window. Trimming got it there. The AWS plugin dropped from 21 skills
+to 9, and four skills that only run when you type them carry
+`disable-model-invocation`, which drops them out of the model's listing.
 
-## The rule
+Every count above comes from the stored runs, not from memory. Regenerate them with:
 
-Five lines go into `~/.claude/CLAUDE.md`, where they are always in context. Everything
-else is in the `engineering-router` skill. That split matters: a rule that has to work
-when routing goes wrong cannot live in a skill that routing has to select first.
+```bash
+python3 scripts/render-verification.py    # coverage matrix and fire counts
+python3 eval/rescore.py eval/results/final-corpus.json
+```
+
+[VERIFICATION.md](VERIFICATION.md) has the method behind each claim, and a generated
+coverage matrix naming which cases exercise which skill.
+
+## How the rule works
 
 Compound Engineering owns every phase by default. A non-Compound workflow becomes the
-owner only when the request is a different operation, not a differently worded version
-of the same one. When two candidates fit, Compound wins.
+owner only when the request is a different operation, not a differently worded version of
+the same one. When two candidates fit, Compound wins.
 
-Everything else falls into three classes.
+Five lines go in `~/.claude/CLAUDE.md`, where they are always in context. Everything else
+lives in the `engineering-router` skill. Where the rule lives decides whether it holds. A rule
+that has to work when routing goes wrong cannot live in a skill that routing has to select
+first. The eval measured the gap. The same invariant held 1 time in 2 from the router and
+3 times in 3 from the global file.
+
+Every other skill falls into one of three classes.
 
 **Passive.** Cheap knowledge that advises whoever is running. React performance rules,
 HCL conventions, boto3 patterns.
 
 **Conditional.** Fires on a narrow trigger, or when the owner hands off. Deep bug
-diagnosis after ordinary debugging failed. A security diff review when the change
-touches authentication.
+diagnosis after ordinary debugging failed. A security diff review when the change touches
+authentication.
 
 **Manual.** Expensive or side-effecting, so `disable-model-invocation: true` hides it
-from the model entirely. CodeQL, a whole-codebase audit pass, a second-opinion review.
-The model cannot pick these. You type them.
+from the model. CodeQL, a whole-codebase audit pass, a second-opinion review. The model
+cannot pick these. You type them.
 
 That last class is what makes "do not compete with the default reviewer" enforceable
-rather than aspirational.
+instead of aspirational.
 
-## Does it work
-
-I did not judge this by reading descriptions. The eval runs each prompt through a real
-headless Claude Code session with the whole stack installed, and records which skills
-actually fired.
-
-```bash
-python3 eval/run-eval.py --runs 3              # 26 cases, three runs each
-python3 eval/run-eval.py --tag collision       # only the cases built to force a fight
-python3 eval/rescore.py eval/results/x.json    # rescore stored runs, no new sessions
-```
-
-Latest full run: 26 corpus cases over 52 sessions and 22 held-out cases over 44 sessions,
-both at 100%, with **zero duplicate lifecycle owners**. The held-out set uses
-deliberately different wording for the same routing intents, to catch descriptions tuned
-to the corpus rather than to the task.
-
-The pass rate is the less interesting number. Duplicate owners is the one the stack
-exists to drive to zero, and it has never been anything else.
-
-The runner exits non-zero the moment two lifecycle owners fire in one session. Treat
-that as the gate it is.
-
-Passive overlays get three tests each, not one: does it fire on its domain alongside an
-owner, does it stay silent on a one-line edit, and does it leave the neighbouring
-specialist alone. Fixing the first by widening a trigger is easy and breaks the second
-quietly. [VERIFICATION.md](VERIFICATION.md) has the method and the coverage matrix.
-
-Three real defects came out of running it, none of which reading would have caught.
-
-`react-best-practices` only fired when a prompt said "React" or "Next.js" by name.
-"Add a settings page to this Next.js application" fired it 3/3. "Build me an
-export-to-CSV button on the settings page" fired it 0/2. Same work, same files.
-
-A Claude Code built-in was swallowing the owner. On "our Bedrock summariser returns
-incomplete answers", the `claude-api` skill fired and no lifecycle owner did, 4/4 runs.
-Not the duplicate-owner failure this stack was built to prevent, the mirror image of it.
-The router now carries an invariant saying a knowledge skill firing is not a phase being
-owned.
-
-My own installer was shipping stale plugins. Claude Code caches a plugin by version, and
-an edited fork keeps its upstream version, so neither install nor update re-copied it.
-`build.py` now fingerprints each forked plugin and `install.sh` reinstalls only what
-moved.
+Read [ARCHITECTURE.md](ARCHITECTURE.md) for the conflict matrix and the ownership model,
+and [ROUTING-EVAL.md](ROUTING-EVAL.md) for the eval harness and the three defects it
+found that reading the descriptions never would have.
 
 ## Install
 

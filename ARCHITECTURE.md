@@ -18,7 +18,7 @@ to be called.
 | Frontend | Vercel Labs | Knowledge overlays for React and Next.js, plus an explicit UI and accessibility audit. |
 | Security | Trail of Bits | Specialists that fire on a named security surface, never on "review this". |
 | Infrastructure | AWS, HashiCorp | SDK and service patterns, Terraform conventions, module structure, tests. |
-| Tooling | Cursor | CLI design, design-rationale archaeology, prose editing. |
+| Tooling | Cursor | CLI design, design-rationale archaeology, prose editing, documentation style. |
 
 Compound wins ties. When a non-Compound workflow could plausibly own a phase, it is
 either narrowed until it describes a different operation, or demoted to manual
@@ -66,6 +66,7 @@ Who owns each domain, who was competing for it as shipped, and what was done.
 | Design rationale | `why` | nothing | New domain. `ce-explain` teaches how something works, `why` reconstructs why it was decided |
 | CLI design | `cli-for-agents` | nothing | New domain |
 | Prose editing | `unslop` | nothing | Trigger narrowed from "must always apply" to human-facing prose |
+| Documentation style | `technical-writing` | nothing | Manual by design. Decides the document mode and how its sentences address the reader, where `unslop` removes the tells. This README was written against both |
 
 ## Installation strategy
 

@@ -296,6 +296,13 @@
           "description": "Reconstruct why a decision was made, from the evidence rather than from the code as it stands: source control, issue tracker, long-form docs, chat, incident history. Use for \"why does X work this way\", \"why did we pick Y\", design rationale, a regression whose origin matters, a postmortem, or a threshold nobody can justify. Not for how something works today, and not a planning or review step."
         },
         "reason": "Upstream trigger listed the phrasings but not the boundary, leaving it adjacent to ce-explain (which teaches how something works) and ce-pov (which gives a verdict). Added the explicit contrast so it takes only the archaeology question."
+      },
+      "technical-writing": {
+        "path": "pstack/skills/technical-writing",
+        "class": "MANUAL",
+        "domain": "documentation style",
+        "frontmatter": {},
+        "reason": "Unmodified, including its upstream disable-model-invocation. A documentation standard rather than an engineering skill: Diataxis structure, Google developer style, STE instruction rules, Global English syntax. Manual by design, so it costs nothing in the skill listing and runs only when typed. Paired with unslop, which removes AI tells, while this one decides what kind of document is being written and how its sentences address the reader."
       }
     },
     "excluded": {
@@ -306,7 +313,6 @@
       "arena, swarm, orchestrate, ralph-loop, ralph-loop-help, cancel-ralph": "Multi-agent orchestration, which this host provides natively through Workflow and Agent.",
       "cursor-sdk, create-plugin-scaffold, review-plugin-submission, docs-canvas, agent-compatibility, cursor-team-kit misc, third_party/x": "Cursor-product-specific; inert in Claude Code.",
       "typescript-best-practices": "A real gap, but its trigger is 'any .ts or .tsx file' \u2014 it would fire on every TypeScript touch. Worth revisiting with a narrowed description.",
-      "technical-writing": "MANUAL doc-structure standard that pairs well with unslop. Declined to keep the fifth source to two model-invocable skills plus unslop.",
       "control-ui, control-cli, create-verification-skill, maintain-verification-skill, verify-this": "Overlap the project's own verify-site skill and ToB fp-check.",
       "benny automations, setup-pstack, poteto-mode, bro, no-comments, show-me-your-work, automate-me": "Personal-workflow and automation scaffolding for another person's setup."
     }
