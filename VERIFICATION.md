@@ -79,6 +79,7 @@ Wants a require on its precondition and a forbid on the near miss.
 | `variant-analysis` | trailofbits | 1 | 2 | 3 | 2 |
 | `web-design-guidelines` | vercel | 2 | 8 | 2 | 4 |
 | `why` | cursor | 1 | 0 | 0 | 2 |
+| `writing-for-agents` | mattpocock | 0 | 0 | 0 | 0 |
 
 ### Manual
 
@@ -96,7 +97,9 @@ Not model-selectable, so a zero fire count is the correct result.
 
 ## Skills with no eval coverage
 
-None. Every model-selectable skill is named by at least one case.
+These are installed and model-selectable but no case names them either way. They are not known to be wrong; they are untested, which is a different thing and worth saying out loud.
+
+- `writing-for-agents` (mattpocock, CONDITIONAL)
 
 ## Re-verifying
 

@@ -61,10 +61,19 @@
         "domain": "setup/maintenance",
         "frontmatter": {},
         "reason": "Unmodified \u2014 already disable-model-invocation upstream. Included because code-review's Spec axis reads docs/agents/issue-tracker.md, which only this skill writes."
+      },
+      "writing-for-agents": {
+        "path": "skills/productivity/writing-for-agents",
+        "class": "CONDITIONAL",
+        "domain": "agent-facing documentation",
+        "frontmatter": {
+          "description": "Write documents an agent consumes: a SKILL.md, an AGENTS.md or CLAUDE.md, a doc reached by a pointer. Covers context pointers and how their wording decides what fires, the split between context load and cognitive load, progressive disclosure, and completion criteria that stop a step ending early. Use when creating or editing a skill, when editing AGENTS.md or CLAUDE.md, or when an agent-facing doc has sprawled. Not for prose written for people."
+        },
+        "reason": "Upstream description is one line, 'Writing documents for agents. Use when creating or editing skills, or modifying AGENTS.md or CLAUDE.md.' Accurate but thin, and it names no branch beyond the file types, so it competes weakly against unslop and technical-writing on any doc task. Expanded to name what the skill actually decides, and given a negative boundary against human-facing prose. Added after the coverage matrix showed no installed skill owned agent-facing documents, which is most of the work in the four-repo documentation pass."
       }
     },
     "excluded": {
-      "implement, to-spec, to-tickets, wayfinder, triage, grill-with-docs, improve-codebase-architecture, prototype, research, ask-matt, grilling, grill-me, handoff, teach, retro, writing-*": "Owner-level or near-owner-level competitors to the Compound lifecycle (planning, requirements, implementation, handoff, learning), or duplicates of a Compound skill (ce-prototype, ce-handoff, ce-explain, ce-pov). Excluded rather than demoted, to keep the skill listing small.",
+      "implement, to-spec, to-tickets, wayfinder, triage, grill-with-docs, improve-codebase-architecture, prototype, research, ask-matt, grilling, grill-me, handoff, teach, retro, writing-*": "Owner-level or near-owner-level competitors to the Compound lifecycle (planning, requirements, implementation, handoff, learning), or duplicates of a Compound skill (ce-prototype, ce-handoff, ce-explain, ce-pov). Excluded rather than demoted, to keep the skill listing small. (writing-for-agents has since been installed: it owns agent-facing documents, a domain nothing else covered.)",
       "resolving-merge-conflicts, wizard, git-guardrails-claude-code, setup-pre-commit, migrate-to-shoehorn, scaffold-exercises, setup-ts-deep-modules": "Useful but outside the four lifecycle domains this stack curates; omitted to protect the context budget. Add with scripts/build.sh if wanted."
     }
   },

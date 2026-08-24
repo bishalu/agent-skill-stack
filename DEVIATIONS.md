@@ -168,6 +168,20 @@ _This stack_
 
 > Test-first methodology: drive a change through red-green-refactor, one failing test at a time. Use when the user asks to work test-first, says TDD or red-green-refactor, or wants the change proven by integration tests before the code lands. Also use when the active implementation workflow is told to build the change from tests. A methodology applied inside implementation; it does not own the implementation workflow.
 
+## `writing-for-agents`  ·  mattpocock  ·  CONDITIONAL
+
+**Why.** Upstream description is one line, 'Writing documents for agents. Use when creating or editing skills, or modifying AGENTS.md or CLAUDE.md.' Accurate but thin, and it names no branch beyond the file types, so it competes weakly against unslop and technical-writing on any doc task. Expanded to name what the skill actually decides, and given a negative boundary against human-facing prose. Added after the coverage matrix showed no installed skill owned agent-facing documents, which is most of the work in the four-repo documentation pass.
+
+**`description`**
+
+_Upstream_
+
+> description: Writing documents for agents. Use when creating or editing skills, or modifying AGENTS.md or CLAUDE.md.
+
+_This stack_
+
+> Write documents an agent consumes: a SKILL.md, an AGENTS.md or CLAUDE.md, a doc reached by a pointer. Covers context pointers and how their wording decides what fires, the split between context load and cognitive load, progressive disclosure, and completion criteria that stop a step ending early. Use when creating or editing a skill, when editing AGENTS.md or CLAUDE.md, or when an agent-facing doc has sprawled. Not for prose written for people.
+
 ## `audit-context-building`  ·  trailofbits  ·  MANUAL
 
 **Why.** A whole-codebase pass that is expensive by design, and 'before any vulnerability-hunting pass' would let it front-run every security escalation. MANUAL, so it starts a deliberate audit rather than joining an ordinary one.
