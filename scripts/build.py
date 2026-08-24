@@ -121,6 +121,12 @@ def build_vendored(vendor):
                          authors=src_meta["authors"], invocation_class=s["class"],
                          modified_keys=sorted(s.get("frontmatter", {}).keys()),
                          reason=s["reason"])
+        # Copyleft sources want their licence text to travel with the file, not just a
+        # provenance record. MPL is file-level, so each vendored skill carries its own.
+        if src_meta["license"] not in ("MIT", "Apache-2.0"):
+            up_lic = os.path.join(UP, clone, "LICENSE")
+            if os.path.exists(up_lic):
+                shutil.copy(up_lic, os.path.join(dest, "LICENSE"))
         inventory.append(dict(name=name, vendor=vendor, cls=s["class"], domain=s["domain"],
                               install="vendored skill → ~/.claude/skills",
                               modified=bool(s.get("frontmatter"))))

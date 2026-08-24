@@ -1,0 +1,79 @@
+{
+  "ranAt": "2026-08-24T11:09:40",
+  "model": "session default",
+  "runs": 3,
+  "cases": 1,
+  "sessions": 3,
+  "passRate": 0.333,
+  "duplicateOwnerRuns": 0,
+  "costUsd": 0.95,
+  "results": [
+    {
+      "id": "ho-boto3-presign",
+      "tags": [
+        "heldout",
+        "aws",
+        "python"
+      ],
+      "prompt": "Add a function that uploads the rendered video to S3 and returns a presigned URL",
+      "passed": 1,
+      "runs": 3,
+      "duplicate_owner_runs": 0,
+      "runs_detail": [
+        {
+          "fired": [
+            "ce-work",
+            "engineering-router"
+          ],
+          "owners_fired": [
+            "ce-work"
+          ],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [
+            "aws-sdk-python-usage"
+          ],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": false,
+          "error": null
+        },
+        {
+          "fired": [
+            "aws-sdk-python-usage",
+            "ce-work",
+            "engineering-router"
+          ],
+          "owners_fired": [
+            "ce-work"
+          ],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        },
+        {
+          "fired": [
+            "ce-work",
+            "engineering-router"
+          ],
+          "owners_fired": [
+            "ce-work"
+          ],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [
+            "aws-sdk-python-usage"
+          ],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": false,
+          "error": null
+        }
+      ]
+    }
+  ]
+}

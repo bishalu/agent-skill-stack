@@ -97,9 +97,14 @@ failure and it is just as bad.
 
 On "our Bedrock summariser returns incomplete answers", the Claude Code built-in
 `claude-api` skill fired and no lifecycle owner did, four runs out of four. A knowledge
-skill had claimed the prompt and the phase went unowned. The router now carries an
-invariant for it: a knowledge skill firing is not a phase being owned, and when a
-reference skill is the only thing that fired on non-trivial work, an owner is still
-missing.
+skill had claimed the prompt and the phase went unowned.
 
-That case went from 0/2 to 2/2 after the change.
+Putting the rule in the router was not enough. The router is itself a skill, so on the
+runs where a reference skill won the selection the router lost it too, and the invariant
+never loaded. The rule had to live in `~/.claude/CLAUDE.md`, which is always in context,
+before it held: 0/4 to 3/3 on that case, and 1/2 to 3/3 on "the settings page feels slow,
+why", with the trivial-edit negatives still firing nothing.
+
+So the global rule carries five lines and the router carries the rest. The split is not
+stylistic. Anything that has to work when routing goes wrong cannot live in a skill that
+routing has to select.

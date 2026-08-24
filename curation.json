@@ -77,9 +77,9 @@
         "class": "PASSIVE",
         "domain": "frontend implementation",
         "frontmatter": {
-          "description": "React and Next.js performance rules from Vercel Engineering \u2014 request waterfalls, bundle size, server rendering, data fetching, and re-render cost. Use whenever a component, page, route, hook, or data fetch is added or changed in a React or Next.js codebase, including requests that describe the UI feature without naming the framework, and when explaining why React or Next code is slow. A knowledge overlay that advises the workflow already in progress; it does not own implementation and is not a code-review or PR-review workflow."
+          "description": "Vercel Engineering's rules for writing React and Next.js: request waterfalls, bundle size, server rendering, data fetching, and re-render cost. Consult by default on any React or Next.js work, whether that is adding or changing a component, page, route, hook, form, or data fetch, and including feature requests that describe the interface without naming the framework. Also use when explaining why React or Next code is slow. An advisory overlay for the workflow already running; it does not own implementation and is not a code-review or PR-review workflow."
         },
-        "reason": "Upstream said 'used when writing, reviewing, or refactoring React/Next.js code'. The 'reviewing' verb made it a candidate owner for code review, so it was removed. A first eval run then showed the narrowed trigger only fired when the prompt named React or Next by name \u2014 'add a settings page to this Next.js application' fired it 3/3, 'build me an export-to-CSV button on the settings page' 0/2. The trigger now covers UI work described without the framework name, which restored it to 2/2 without firing on the trivial-edit negatives."
+        "reason": "Upstream said 'used when writing, reviewing, or refactoring React/Next.js code'. The 'reviewing' verb made it a candidate owner for code review, so it was removed. Two eval rounds then chased a reliability problem. The first narrowing only fired when a prompt named React or Next: 'add a settings page to this Next.js application' fired 3/3, 'build me an export-to-CSV button on the settings page' 0/2. Widening to cover unnamed-framework UI work lifted that to 1/2, still unreliable. The fix was the opening clause: leading with 'performance rules' let the model judge the skill irrelevant to a plain feature build, so it now leads with 'rules for writing React and Next.js' and says consult by default."
       },
       "composition-patterns": {
         "path": "skills/composition-patterns",
@@ -370,7 +370,14 @@
           "aws-messaging-and-streaming",
           "aws-billing-and-cost-management"
         ],
-        "skills": {},
+        "skills": {
+          "aws-sdk-python-usage": {
+            "frontmatter": {
+              "description": "AWS operations from Python: service clients and resources, sessions and credentials, ClientError handling, paginators and waiters, S3 uploads, downloads and presigned URLs, DynamoDB table operations, and boto3 or botocore client configuration. Use for any AWS service call written in a Python codebase, including requests that name the service and the operation without naming Python, boto3, or botocore. Use whenever code imports boto3 or botocore, or the user asks about AWS from Python."
+            },
+            "reason": "Every clause of the upstream trigger was conditioned on the prompt naming Python, boto3, or botocore: 'when writing Python code that uses AWS services via boto3', 'whenever Python code imports boto3', 'when the user asks about AWS operations in Python'. In a mixed repo the model cannot confirm that without opening files, so 'add a function that uploads the rendered video to S3 and returns a presigned URL' fired it 1/3 even though the upstream text lists presigned URLs by name. The trigger now keys on the AWS operation in a Python codebase, the same fix react-best-practices needed."
+          }
+        },
         "pluginDescription": "AWS services used in this environment: boto3 and JS v3 SDK usage, Amazon Bedrock, Secrets Manager, S3 storage, IAM, SQS and EventBridge messaging, CloudWatch and X-Ray observability, and cost management.",
         "pluginDescriptionReason": "The upstream blurb advertises CDK, CloudFormation, Aurora, DynamoDB, DocumentDB, Keyspaces, Neptune, Timestream and the Swift SDK. None of those skills survive the trim, so the manifest would have described capabilities the fork does not ship."
       }

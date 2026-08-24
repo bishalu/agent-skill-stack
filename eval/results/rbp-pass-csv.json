@@ -1,0 +1,76 @@
+{
+  "ranAt": "2026-08-24T10:57:05",
+  "model": "session default",
+  "runs": 3,
+  "cases": 1,
+  "sessions": 3,
+  "passRate": 1.0,
+  "duplicateOwnerRuns": 0,
+  "costUsd": 0.93,
+  "results": [
+    {
+      "id": "ho-csv-button",
+      "tags": [
+        "heldout",
+        "frontend"
+      ],
+      "prompt": "Build me an export-to-CSV button on the settings page",
+      "passed": 3,
+      "runs": 3,
+      "duplicate_owner_runs": 0,
+      "runs_detail": [
+        {
+          "fired": [
+            "ce-work",
+            "engineering-router",
+            "react-best-practices"
+          ],
+          "owners_fired": [
+            "ce-work"
+          ],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        },
+        {
+          "fired": [
+            "ce-work",
+            "engineering-router",
+            "react-best-practices"
+          ],
+          "owners_fired": [
+            "ce-work"
+          ],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        },
+        {
+          "fired": [
+            "ce-work",
+            "engineering-router",
+            "react-best-practices"
+          ],
+          "owners_fired": [
+            "ce-work"
+          ],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        }
+      ]
+    }
+  ]
+}

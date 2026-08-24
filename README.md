@@ -33,17 +33,18 @@ broad.
 This is not a general-purpose bundle. Every include and exclude was decided against the
 repos on this machine, and that is the reason it is worth running.
 
-I profiled the code before choosing anything. Four Python services on FastAPI,
-SQLAlchemy and psycopg2. boto3 in every repo, with Bedrock, Secrets Manager, S3 and
-CloudFront. Nineteen flat Terraform files under `vibeset-video/infra/` with no modules
-and no tests. A Next.js portfolio. Weights and Biases wired into audio watermark
-training in `fingerprinting/`. OpenAI and Bedrock in production with no evaluation
-harness anywhere.
+I read the code before choosing anything, and the profile decided the stack: Python
+services on FastAPI and SQLAlchemy, boto3 and Bedrock throughout, Terraform for
+infrastructure, a Next.js frontend, and Weights and Biases for model training runs.
 
-What that profile bought me:
+Run the same exercise against a Django and GCP shop and you should end up with a
+different set. That is the point. The method transfers, the selection does not.
+
+What the profile bought:
 
 **Fewer competing workflows.** A plain "review this PR" wakes one reviewer, not the
-three that were fighting for it before curation. 78 sessions, zero duplicate owners.
+three that were fighting for it before curation. Across every run in this repo, roughly
+300 headless sessions, no session has ever fired two.
 
 **Security that fires on evidence, not on vocabulary.** "Review this PR" gets Compound
 alone. "Review this authentication PR for security regressions" gets Compound plus the
@@ -54,32 +55,37 @@ and charge cards", which never says the word security.
 rendered video to S3 and return a presigned URL". `modern-python` fires when a request
 names Python and a dependency, and correctly stays quiet when the language is ambiguous.
 
-**Terraform help aimed at my real problem.** Not provider development, which is what
-twelve of HashiCorp's sixteen skills cover. `refactor-module` for a flat pile of `.tf`
-files, `terraform-test` for the zero `.tftest.hcl` I have, `terraform-style-guide` for
-authoring.
+**Terraform help aimed at authoring, not provider development.** Twelve of HashiCorp's
+sixteen skills are for people writing Terraform providers. Three are for people writing
+Terraform: `terraform-style-guide` for conventions, `refactor-module` for turning flat
+configuration into modules, `terraform-test` for `.tftest.hcl`.
 
-**Nothing installed for a tool I do not run.** No Supabase, no Prisma, no MLflow until I
-stand up a tracking server, no Swift SDK, no Neptune or Keyspaces or DocumentDB, no
-CloudFormation when the infrastructure is Terraform. The AWS plugin went from 21 skills
-to 9 and from 5,005 always-on tokens to 2,421 on that basis alone.
+**Nothing installed for a tool that is not running here.** No Supabase, no Prisma, no
+Swift SDK, no Neptune or Keyspaces or DocumentDB, no CloudFormation when the
+infrastructure is Terraform, no MLflow without a tracking server to point it at. The AWS
+plugin went from 21 skills to 9, and from 5,005 always-on tokens to 2,421, on that basis
+alone.
 
 **Deployment left alone.** The Vercel MCP already owns it here, so the Vercel deploy
 skills stayed out rather than putting a second owner on the phase.
 
-Three corrections came out of doing it this way rather than reasoning from reputation. I
-excluded `modern-python` as out of scope before I had counted the Python repos, which
-was wrong and is reversed. I recommended `aws-core` partly for the Terraform files, and
-its infrastructure coverage turns out to be CDK and CloudFormation with no Terraform at
-all. I suggested MLflow could replace Weights and Biases, and it cannot: the W&B usage
-here is model training, which is the job W&B is good at, and MLflow's plugin solves
-agent evaluation instead.
+Three corrections came out of profiling rather than reasoning from reputation.
+`modern-python` was excluded as out of scope before anyone had counted the Python
+services, which was wrong and is reversed. `aws-core` was recommended partly for
+Terraform coverage it does not have, since its infrastructure skills are CDK and
+CloudFormation. And MLflow was floated as a replacement for Weights and Biases, which it
+is not: W&B is doing model training here, the job it is good at, while MLflow's plugin
+solves agent evaluation.
 
 The exclusion list in [MANIFEST.md](MANIFEST.md) is as much the product as the include
 list. It records what was considered and declined, with the reason, so the next pass
 starts from a decision instead of from scratch.
 
 ## The rule
+
+Five lines go into `~/.claude/CLAUDE.md`, where they are always in context. Everything
+else is in the `engineering-router` skill. That split matters: a rule that has to work
+when routing goes wrong cannot live in a skill that routing has to select first.
 
 Compound Engineering owns every phase by default. A non-Compound workflow becomes the
 owner only when the request is a different operation, not a differently worded version
@@ -113,9 +119,13 @@ python3 eval/run-eval.py --tag collision       # only the cases built to force a
 python3 eval/rescore.py eval/results/x.json    # rescore stored runs, no new sessions
 ```
 
-Latest full run: 78 sessions, 78 passes, **zero duplicate lifecycle owners**. A held-out
-set of 21 cases uses deliberately different wording, to catch descriptions tuned to the
-corpus rather than to the task.
+Latest full run: 26 corpus cases over 52 sessions and 22 held-out cases over 44 sessions,
+both at 100%, with **zero duplicate lifecycle owners**. The held-out set uses
+deliberately different wording for the same routing intents, to catch descriptions tuned
+to the corpus rather than to the task.
+
+The pass rate is the less interesting number. Duplicate owners is the one the stack
+exists to drive to zero, and it has never been anything else.
 
 The runner exits non-zero the moment two lifecycle owners fire in one session. Treat
 that as the gate it is.

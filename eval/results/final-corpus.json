@@ -1,12 +1,12 @@
 {
-  "ranAt": "2026-08-24T10:39:42",
+  "ranAt": "2026-08-24T11:14:51",
   "model": "session default",
   "runs": 2,
   "cases": 26,
   "sessions": 52,
   "passRate": 1.0,
   "duplicateOwnerRuns": 0,
-  "costUsd": 11.71,
+  "costUsd": 11.46,
   "results": [
     {
       "id": "next-settings-page",
@@ -44,6 +44,7 @@
           "fired": [
             "ce-work",
             "engineering-router",
+            "frontend-design",
             "react-best-practices"
           ],
           "owners_fired": [
@@ -53,7 +54,9 @@
           "owner_ok": true,
           "missing_support": [],
           "forbidden_fired": [],
-          "unexpected": [],
+          "unexpected": [
+            "frontend-design"
+          ],
           "pass": true,
           "error": null
         }
@@ -510,9 +513,13 @@
       "runs_detail": [
         {
           "fired": [
+            "ce-code-review",
+            "engineering-router",
             "web-design-guidelines"
           ],
-          "owners_fired": [],
+          "owners_fired": [
+            "ce-code-review"
+          ],
           "duplicate_owner": false,
           "owner_ok": true,
           "missing_support": [],
@@ -523,7 +530,6 @@
         },
         {
           "fired": [
-            "engineering-router",
             "web-design-guidelines"
           ],
           "owners_fired": [],
@@ -761,9 +767,12 @@
         {
           "fired": [
             "agentic-actions-auditor",
+            "ce-code-review",
             "engineering-router"
           ],
-          "owners_fired": [],
+          "owners_fired": [
+            "ce-code-review"
+          ],
           "duplicate_owner": false,
           "owner_ok": true,
           "missing_support": [],
@@ -820,7 +829,8 @@
         {
           "fired": [
             "ce-debug",
-            "engineering-router"
+            "engineering-router",
+            "react-best-practices"
           ],
           "owners_fired": [
             "ce-debug"

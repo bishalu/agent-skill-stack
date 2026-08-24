@@ -1,12 +1,12 @@
 {
-  "ranAt": "2026-08-24T10:42:31",
+  "ranAt": "2026-08-24T11:18:14",
   "model": "session default",
   "runs": 2,
   "cases": 22,
   "sessions": 44,
-  "passRate": 0.955,
+  "passRate": 1.0,
   "duplicateOwnerRuns": 0,
-  "costUsd": 10.7,
+  "costUsd": 11.03,
   "results": [
     {
       "id": "ho-build-broke",
@@ -66,10 +66,13 @@
       "runs_detail": [
         {
           "fired": [
+            "ce-debug",
             "diagnosing-bugs",
             "engineering-router"
           ],
-          "owners_fired": [],
+          "owners_fired": [
+            "ce-debug"
+          ],
           "duplicate_owner": false,
           "owner_ok": true,
           "missing_support": [],
@@ -196,26 +199,25 @@
         "frontend"
       ],
       "prompt": "Build me an export-to-CSV button on the settings page",
-      "passed": 1,
+      "passed": 2,
       "runs": 2,
       "duplicate_owner_runs": 0,
       "runs_detail": [
         {
           "fired": [
             "ce-work",
-            "engineering-router"
+            "engineering-router",
+            "react-best-practices"
           ],
           "owners_fired": [
             "ce-work"
           ],
           "duplicate_owner": false,
           "owner_ok": true,
-          "missing_support": [
-            "react-best-practices"
-          ],
+          "missing_support": [],
           "forbidden_fired": [],
           "unexpected": [],
-          "pass": false,
+          "pass": true,
           "error": null
         },
         {
@@ -263,7 +265,8 @@
         },
         {
           "fired": [
-            "domain-modeling"
+            "domain-modeling",
+            "engineering-router"
           ],
           "owners_fired": [],
           "duplicate_owner": false,
@@ -289,7 +292,6 @@
       "runs_detail": [
         {
           "fired": [
-            "engineering-router",
             "supply-chain-risk-auditor"
           ],
           "owners_fired": [],
@@ -303,7 +305,6 @@
         },
         {
           "fired": [
-            "engineering-router",
             "supply-chain-risk-auditor"
           ],
           "owners_fired": [],
@@ -607,10 +608,13 @@
         },
         {
           "fired": [
+            "ce-work",
             "engineering-router",
             "terraform-style-guide"
           ],
-          "owners_fired": [],
+          "owners_fired": [
+            "ce-work"
+          ],
           "duplicate_owner": false,
           "owner_ok": true,
           "missing_support": [],
@@ -647,7 +651,9 @@
           "error": null
         },
         {
-          "fired": [],
+          "fired": [
+            "engineering-router"
+          ],
           "owners_fired": [],
           "duplicate_owner": false,
           "owner_ok": true,
@@ -672,8 +678,13 @@
       "duplicate_owner_runs": 0,
       "runs_detail": [
         {
-          "fired": [],
-          "owners_fired": [],
+          "fired": [
+            "ce-work",
+            "engineering-router"
+          ],
+          "owners_fired": [
+            "ce-work"
+          ],
           "duplicate_owner": false,
           "owner_ok": true,
           "missing_support": [],
@@ -705,25 +716,26 @@
         "llm"
       ],
       "prompt": "Our Bedrock summariser in service/summarise.py returns incomplete answers. Improve the output quality.",
-      "passed": 1,
+      "passed": 2,
       "runs": 2,
       "duplicate_owner_runs": 0,
       "runs_detail": [
         {
           "fired": [
             "amazon-bedrock",
-            "claude-api",
+            "aws-sdk-python-usage",
+            "ce-debug",
             "engineering-router"
           ],
-          "owners_fired": [],
+          "owners_fired": [
+            "ce-debug"
+          ],
           "duplicate_owner": false,
-          "owner_ok": false,
+          "owner_ok": true,
           "missing_support": [],
           "forbidden_fired": [],
-          "unexpected": [
-            "claude-api"
-          ],
-          "pass": false,
+          "unexpected": [],
+          "pass": true,
           "error": null
         },
         {
@@ -763,26 +775,29 @@
       "runs_detail": [
         {
           "fired": [
-            "ce-work",
+            "claude-api",
             "engineering-router"
           ],
-          "owners_fired": [
-            "ce-work"
-          ],
+          "owners_fired": [],
           "duplicate_owner": false,
           "owner_ok": true,
           "missing_support": [],
           "forbidden_fired": [],
-          "unexpected": [],
+          "unexpected": [
+            "claude-api"
+          ],
           "pass": true,
           "error": null
         },
         {
           "fired": [
+            "ce-work",
             "claude-api",
             "engineering-router"
           ],
-          "owners_fired": [],
+          "owners_fired": [
+            "ce-work"
+          ],
           "duplicate_owner": false,
           "owner_ok": true,
           "missing_support": [],
@@ -943,9 +958,13 @@
       "runs_detail": [
         {
           "fired": [
+            "ce-work",
+            "engineering-router",
             "modern-python"
           ],
-          "owners_fired": [],
+          "owners_fired": [
+            "ce-work"
+          ],
           "duplicate_owner": false,
           "owner_ok": true,
           "missing_support": [],
@@ -956,9 +975,13 @@
         },
         {
           "fired": [
+            "ce-work",
+            "engineering-router",
             "modern-python"
           ],
-          "owners_fired": [],
+          "owners_fired": [
+            "ce-work"
+          ],
           "duplicate_owner": false,
           "owner_ok": true,
           "missing_support": [],

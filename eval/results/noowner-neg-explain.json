@@ -1,0 +1,47 @@
+{
+  "ranAt": "2026-08-24T11:10:07",
+  "model": "session default",
+  "runs": 2,
+  "cases": 1,
+  "sessions": 2,
+  "passRate": 1.0,
+  "duplicateOwnerRuns": 0,
+  "costUsd": 0.36,
+  "results": [
+    {
+      "id": "explain-function",
+      "tags": [
+        "negative",
+        "trivial"
+      ],
+      "prompt": "What does canEditWorkspace in lib/auth.ts do?",
+      "passed": 2,
+      "runs": 2,
+      "duplicate_owner_runs": 0,
+      "runs_detail": [
+        {
+          "fired": [],
+          "owners_fired": [],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        },
+        {
+          "fired": [],
+          "owners_fired": [],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        }
+      ]
+    }
+  ]
+}

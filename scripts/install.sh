@@ -59,12 +59,41 @@ a.update(json.load(open('$R/build/marketplace-aws/fingerprints.json')))
 json.dump(a, open('$STATE','w'), indent=2)"
 
 echo "== global routing invariant"
-MD="$G/CLAUDE.md"
-if ! grep -q "^## Engineering routing" "$MD" 2>/dev/null; then
-  { [ -s "$MD" ] && echo; cat "$R/src/claude-md-snippet.md"; } >> "$MD"
-  echo "   appended to $MD"
-else
-  echo "   already present in $MD"
-fi
+# The block is delimited, so a changed rule replaces the old one instead of stacking
+# a second copy underneath it.
+python3 - "$G/CLAUDE.md" "$R/src/claude-md-snippet.md" <<'PY'
+import pathlib, sys
+
+target, source = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
+block = source.read_text().strip()
+START, END = "<!-- agent-skill-stack:start -->", "<!-- agent-skill-stack:end -->"
+lines = target.read_text().splitlines() if target.exists() else []
+
+# Drop any previous copy: the delimited block, or an undelimited legacy section left
+# by an older installer. Line processing rather than a regex, so no escaping traps.
+out, skipping, what = [], None, "appended"
+for line in lines:
+    if skipping == "delimited":
+        if line.strip() == END:
+            skipping = None
+        continue
+    if skipping == "legacy":
+        if line.startswith("- ") or not line.strip():
+            continue
+        skipping = None
+    if line.strip() == START:
+        skipping, what = "delimited", "updated"
+        continue
+    if line.strip() == "## Engineering routing":
+        skipping, what = "legacy", "migrated"
+        continue
+    out.append(line)
+
+text = "\n".join(out).rstrip("\n")
+text = (text + "\n\n" if text.strip() else "") + block + "\n"
+target.parent.mkdir(parents=True, exist_ok=True)
+target.write_text(text)
+print("   " + what + " " + str(target))
+PY
 echo
 echo "Done. Restart Claude Code to pick up the new plugins."

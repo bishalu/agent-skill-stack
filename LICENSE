@@ -26,5 +26,14 @@ This licence covers only the original content of this repository: the curation
 manifest, the build and install scripts, the engineering-router skill, the eval
 harness and corpus, and the documentation.
 
-Skills and plugins from upstream sources keep their own licences. The forked
-Trail of Bits plugins under build/marketplace/ are CC BY-SA 4.0. See CREDITS.md.
+No upstream skill or plugin code is distributed with this repository. upstream/
+and build/ are gitignored; scripts/sync.sh fetches the upstream sources onto your
+machine at build time, and each source keeps its own licence there.
+
+Build output is a different matter. The forked Trail of Bits plugins under
+build/marketplace/ are CC BY-SA 4.0 and the vendored HashiCorp skills under
+build/skills/ are MPL 2.0, both copyleft. scripts/build.py writes attribution and
+a statement of changes into build/marketplace/NOTICE.md and into a .provenance.json
+beside every vendored skill. If you redistribute your build output, honour them.
+
+See CREDITS.md for the full attribution.

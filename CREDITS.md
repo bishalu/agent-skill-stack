@@ -84,6 +84,26 @@ The curation manifest, the build and install scripts, the `engineering-router` s
 the routing eval harness and corpus, the fixture repo, and the documentation. MIT, see
 [LICENSE](LICENSE). That is the only original content here.
 
+## What this repository distributes
+
+Nothing upstream. `upstream/` and `build/` are both gitignored, so no skill body,
+reference file, script, agent, or hook from any upstream source is published here. What
+you clone is the curation manifest, the build and install scripts, the router, the eval
+harness and corpus, and the documentation. `scripts/sync.sh` fetches the upstream
+sources onto your own machine at build time.
+
+That matters for the two non-permissive licences in the table below. The Trail of Bits
+plugins are CC BY-SA 4.0 and the HashiCorp skills are MPL 2.0, and both are copyleft, but
+neither attaches to this repository because this repository does not carry their code.
+They attach to your `build/` directory once you run the build, which is why
+`scripts/build.py` writes a `NOTICE.md` with attribution and a statement of changes into
+every forked marketplace it produces. If you redistribute your build output, those terms
+travel with it.
+
+`DEVIATIONS.md` quotes upstream `description` strings next to the replacements. That is
+the statement of changes those licences ask for, and it is the only upstream text in the
+repo.
+
 ## Licence summary
 
 | Component | Licence | Holder |

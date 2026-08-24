@@ -1,0 +1,61 @@
+{
+  "ranAt": "2026-08-24T10:58:26",
+  "model": "session default",
+  "runs": 2,
+  "cases": 1,
+  "sessions": 2,
+  "passRate": 1.0,
+  "duplicateOwnerRuns": 0,
+  "costUsd": 0.65,
+  "results": [
+    {
+      "id": "ho-eight-booleans",
+      "tags": [
+        "heldout",
+        "frontend"
+      ],
+      "prompt": "Button.tsx has eight boolean props and I keep adding more. Fix the API.",
+      "passed": 2,
+      "runs": 2,
+      "duplicate_owner_runs": 0,
+      "runs_detail": [
+        {
+          "fired": [
+            "ce-work",
+            "composition-patterns",
+            "engineering-router",
+            "react-best-practices"
+          ],
+          "owners_fired": [
+            "ce-work"
+          ],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        },
+        {
+          "fired": [
+            "ce-work",
+            "composition-patterns",
+            "engineering-router",
+            "react-best-practices"
+          ],
+          "owners_fired": [
+            "ce-work"
+          ],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        }
+      ]
+    }
+  ]
+}
