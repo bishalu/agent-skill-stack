@@ -1,6 +1,6 @@
-# Claude engineering stack
+# agent-skill-stack
 
-Six upstream skill collections, curated into one Claude Code environment where exactly
+Seven upstream skill collections, curated into one Claude Code environment where exactly
 one workflow owns each phase of engineering work.
 
 The problem this repo solves is not "which skills are good". It is that four
@@ -22,9 +22,9 @@ time from one file, and every one of them is listed with the upstream text it re
 | Frontend | [Vercel Labs](https://github.com/vercel-labs/agent-skills) | React and Next.js performance, component API shape, accessibility audit |
 | Security | [Trail of Bits](https://github.com/trailofbits/skills) | Security diffs, supply chain, static analysis, variant hunting, Python tooling |
 | Infrastructure | [AWS](https://github.com/aws/agent-toolkit-for-aws), [HashiCorp](https://github.com/hashicorp/agent-skills) | boto3, Bedrock, IAM, CloudWatch, Terraform authoring and tests |
-| Tooling | [Cursor](https://github.com/cursor/plugins), [MLflow](https://github.com/mlflow/skills) | CLI design, design-rationale archaeology, prose editing, agent evals |
+| Tooling | [Cursor](https://github.com/cursor/plugins) | CLI design, design-rationale archaeology, prose editing |
 
-30 curated skills carry routing metadata from this repo. Compound Engineering's 33
+31 curated skills carry routing metadata from this repo. Compound Engineering's 33
 install unmodified, because it is the default owner and its triggers are meant to be
 broad.
 
