@@ -1,0 +1,101 @@
+{
+  "ranAt": "2026-08-24T10:14:37",
+  "model": "session default",
+  "runs": 2,
+  "cases": 2,
+  "sessions": 4,
+  "passRate": 0.75,
+  "duplicateOwnerRuns": 0,
+  "costUsd": 1.07,
+  "results": [
+    {
+      "id": "ho-boto3-presign",
+      "tags": [
+        "heldout",
+        "aws",
+        "python"
+      ],
+      "prompt": "Add a function that uploads the rendered video to S3 and returns a presigned URL",
+      "passed": 1,
+      "runs": 2,
+      "duplicate_owner_runs": 0,
+      "runs_detail": [
+        {
+          "fired": [
+            "ce-work",
+            "engineering-router"
+          ],
+          "owners_fired": [
+            "ce-work"
+          ],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [
+            "aws-sdk-python-usage"
+          ],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": false,
+          "error": null
+        },
+        {
+          "fired": [
+            "aws-sdk-python-usage",
+            "ce-work",
+            "engineering-router"
+          ],
+          "owners_fired": [
+            "ce-work"
+          ],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        }
+      ]
+    },
+    {
+      "id": "ho-terraform-cache",
+      "tags": [
+        "heldout",
+        "aws",
+        "iac"
+      ],
+      "prompt": "Add a CloudFront cache behaviour for /assets in infra/cloudfront.tf",
+      "passed": 2,
+      "runs": 2,
+      "duplicate_owner_runs": 0,
+      "runs_detail": [
+        {
+          "fired": [
+            "engineering-router"
+          ],
+          "owners_fired": [],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        },
+        {
+          "fired": [
+            "engineering-router"
+          ],
+          "owners_fired": [],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,757 @@
+{
+  "ranAt": "2026-08-24T09:43:22",
+  "model": "session default",
+  "runs": 1,
+  "cases": 26,
+  "sessions": 26,
+  "passRate": 1.0,
+  "duplicateOwnerRuns": 0,
+  "costUsd": 5.58,
+  "results": [
+    {
+      "id": "next-settings-page",
+      "tags": [
+        "positive",
+        "cross-domain",
+        "frontend"
+      ],
+      "prompt": "Add a settings page to this Next.js application",
+      "passed": 1,
+      "runs": 1,
+      "duplicate_owner_runs": 0,
+      "runs_detail": [
+        {
+          "fired": [
+            "ce-work",
+            "engineering-router",
+            "react-best-practices"
+          ],
+          "owners_fired": [
+            "ce-work"
+          ],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        }
+      ]
+    },
+    {
+      "id": "hydration-mismatch",
+      "tags": [
+        "positive",
+        "collision",
+        "debugging"
+      ],
+      "prompt": "Fix this hydration mismatch in app/settings-page.tsx",
+      "passed": 1,
+      "runs": 1,
+      "duplicate_owner_runs": 0,
+      "runs_detail": [
+        {
+          "fired": [
+            "ce-debug",
+            "engineering-router",
+            "react-best-practices"
+          ],
+          "owners_fired": [
+            "ce-debug"
+          ],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        }
+      ]
+    },
+    {
+      "id": "race-after-three-fixes",
+      "tags": [
+        "positive",
+        "escalation",
+        "debugging"
+      ],
+      "prompt": "I have tried three fixes and I still cannot explain this race condition in lib/queue.ts",
+      "passed": 1,
+      "runs": 1,
+      "duplicate_owner_runs": 0,
+      "runs_detail": [
+        {
+          "fired": [
+            "ce-debug",
+            "diagnosing-bugs",
+            "engineering-router"
+          ],
+          "owners_fired": [
+            "ce-debug"
+          ],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        }
+      ]
+    },
+    {
+      "id": "review-pr-bare",
+      "tags": [
+        "negative",
+        "collision",
+        "review"
+      ],
+      "prompt": "Review this PR",
+      "passed": 1,
+      "runs": 1,
+      "duplicate_owner_runs": 0,
+      "runs_detail": [
+        {
+          "fired": [
+            "ce-code-review",
+            "engineering-router"
+          ],
+          "owners_fired": [
+            "ce-code-review"
+          ],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        }
+      ]
+    },
+    {
+      "id": "review-auth-pr-security",
+      "tags": [
+        "positive",
+        "security",
+        "review"
+      ],
+      "prompt": "Review this authentication PR for security regressions",
+      "passed": 1,
+      "runs": 1,
+      "duplicate_owner_runs": 0,
+      "runs_detail": [
+        {
+          "fired": [
+            "ce-code-review",
+            "differential-review",
+            "engineering-router"
+          ],
+          "owners_fired": [
+            "ce-code-review"
+          ],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        }
+      ]
+    },
+    {
+      "id": "boolean-prop-explosion",
+      "tags": [
+        "positive",
+        "frontend",
+        "support-only"
+      ],
+      "prompt": "Refactor these React components to avoid boolean prop explosion",
+      "passed": 1,
+      "runs": 1,
+      "duplicate_owner_runs": 0,
+      "runs_detail": [
+        {
+          "fired": [
+            "ce-work",
+            "composition-patterns",
+            "engineering-router",
+            "react-best-practices"
+          ],
+          "owners_fired": [
+            "ce-work"
+          ],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        }
+      ]
+    },
+    {
+      "id": "domain-concept-terms",
+      "tags": [
+        "positive",
+        "domain"
+      ],
+      "prompt": "Clarify whether Organization, Workspace, Tenant and Account represent different domain concepts in this codebase",
+      "passed": 1,
+      "runs": 1,
+      "duplicate_owner_runs": 0,
+      "runs_detail": [
+        {
+          "fired": [
+            "domain-modeling"
+          ],
+          "owners_fired": [],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        }
+      ]
+    },
+    {
+      "id": "rate-limit-test-first",
+      "tags": [
+        "positive",
+        "testing"
+      ],
+      "prompt": "Add rate limiting to verifySession in lib/auth.ts. Do this test-first.",
+      "passed": 1,
+      "runs": 1,
+      "duplicate_owner_runs": 0,
+      "runs_detail": [
+        {
+          "fired": [
+            "ce-work",
+            "engineering-router",
+            "tdd"
+          ],
+          "owners_fired": [
+            "ce-work"
+          ],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        }
+      ]
+    },
+    {
+      "id": "npm-supply-chain-audit",
+      "tags": [
+        "positive",
+        "security",
+        "direct-specialist"
+      ],
+      "prompt": "Audit our npm dependencies for supply-chain risk",
+      "passed": 1,
+      "runs": 1,
+      "duplicate_owner_runs": 0,
+      "runs_detail": [
+        {
+          "fired": [
+            "engineering-router",
+            "supply-chain-risk-auditor"
+          ],
+          "owners_fired": [],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        }
+      ]
+    },
+    {
+      "id": "string-typo",
+      "tags": [
+        "negative",
+        "trivial"
+      ],
+      "prompt": "Change this string typo in app/settings-page.tsx: \"Loading\" should be \"Loading\u2026\"",
+      "passed": 1,
+      "runs": 1,
+      "duplicate_owner_runs": 0,
+      "runs_detail": [
+        {
+          "fired": [],
+          "owners_fired": [],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        }
+      ]
+    },
+    {
+      "id": "explain-function",
+      "tags": [
+        "negative",
+        "trivial"
+      ],
+      "prompt": "What does canEditWorkspace in lib/auth.ts do?",
+      "passed": 1,
+      "runs": 1,
+      "duplicate_owner_runs": 0,
+      "runs_detail": [
+        {
+          "fired": [],
+          "owners_fired": [],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        }
+      ]
+    },
+    {
+      "id": "accessibility-review",
+      "tags": [
+        "positive",
+        "ui"
+      ],
+      "prompt": "Check components/Button.tsx for accessibility problems",
+      "passed": 1,
+      "runs": 1,
+      "duplicate_owner_runs": 0,
+      "runs_detail": [
+        {
+          "fired": [
+            "web-design-guidelines"
+          ],
+          "owners_fired": [],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        }
+      ]
+    },
+    {
+      "id": "module-boundary",
+      "tags": [
+        "positive",
+        "architecture"
+      ],
+      "prompt": "Where should the boundary go between lib/auth.ts and the API routes? Should token verification and authorization live in the same module?",
+      "passed": 1,
+      "runs": 1,
+      "duplicate_owner_runs": 0,
+      "runs_detail": [
+        {
+          "fired": [
+            "codebase-design"
+          ],
+          "owners_fired": [],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        }
+      ]
+    },
+    {
+      "id": "vague-dashboard-idea",
+      "tags": [
+        "ambiguous",
+        "planning"
+      ],
+      "prompt": "I want to build some kind of usage dashboard for this app but I am not sure what it should show yet",
+      "passed": 1,
+      "runs": 1,
+      "duplicate_owner_runs": 0,
+      "runs_detail": [
+        {
+          "fired": [
+            "ce-brainstorm",
+            "engineering-router"
+          ],
+          "owners_fired": [
+            "ce-brainstorm"
+          ],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        }
+      ]
+    },
+    {
+      "id": "commit-and-pr",
+      "tags": [
+        "positive",
+        "git"
+      ],
+      "prompt": "Commit this and open a PR",
+      "passed": 1,
+      "runs": 1,
+      "duplicate_owner_runs": 0,
+      "runs_detail": [
+        {
+          "fired": [
+            "ce-commit-push-pr"
+          ],
+          "owners_fired": [
+            "ce-commit-push-pr"
+          ],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        }
+      ]
+    },
+    {
+      "id": "found-authz-bug-variants",
+      "tags": [
+        "positive",
+        "security",
+        "escalation"
+      ],
+      "prompt": "I just found a missing authorization check in canEditWorkspace. Are there others like this in the codebase?",
+      "passed": 1,
+      "runs": 1,
+      "duplicate_owner_runs": 0,
+      "runs_detail": [
+        {
+          "fired": [
+            "engineering-router",
+            "variant-analysis"
+          ],
+          "owners_fired": [],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        }
+      ]
+    },
+    {
+      "id": "fallback-secret",
+      "tags": [
+        "cross-domain",
+        "security",
+        "ambiguous"
+      ],
+      "prompt": "lib/auth.ts falls back to a hardcoded JWT secret when the env var is missing. Is that a problem here?",
+      "passed": 1,
+      "runs": 1,
+      "duplicate_owner_runs": 0,
+      "runs_detail": [
+        {
+          "fired": [
+            "fp-check"
+          ],
+          "owners_fired": [],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        }
+      ]
+    },
+    {
+      "id": "ai-github-action",
+      "tags": [
+        "positive",
+        "security",
+        "ci"
+      ],
+      "prompt": "Is .github/workflows/triage.yml safe to run on issue comments?",
+      "passed": 1,
+      "runs": 1,
+      "duplicate_owner_runs": 0,
+      "runs_detail": [
+        {
+          "fired": [
+            "agentic-actions-auditor",
+            "engineering-router"
+          ],
+          "owners_fired": [],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        }
+      ]
+    },
+    {
+      "id": "slow-settings-page",
+      "tags": [
+        "ambiguous",
+        "collision",
+        "frontend"
+      ],
+      "prompt": "The settings page feels slow to load. Why?",
+      "passed": 1,
+      "runs": 1,
+      "duplicate_owner_runs": 0,
+      "runs_detail": [
+        {
+          "fired": [
+            "ce-debug",
+            "engineering-router",
+            "react-best-practices"
+          ],
+          "owners_fired": [
+            "ce-debug"
+          ],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        }
+      ]
+    },
+    {
+      "id": "route-transitions",
+      "tags": [
+        "positive",
+        "frontend",
+        "narrow"
+      ],
+      "prompt": "Animate the route change between the dashboard and the settings page",
+      "passed": 1,
+      "runs": 1,
+      "duplicate_owner_runs": 0,
+      "runs_detail": [
+        {
+          "fired": [
+            "ce-work",
+            "engineering-router",
+            "react-view-transitions"
+          ],
+          "owners_fired": [
+            "ce-work"
+          ],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        }
+      ]
+    },
+    {
+      "id": "plan-jwt-migration",
+      "tags": [
+        "positive",
+        "planning",
+        "cross-domain"
+      ],
+      "prompt": "Plan the migration from the jsonwebtoken package to jose",
+      "passed": 1,
+      "runs": 1,
+      "duplicate_owner_runs": 0,
+      "runs_detail": [
+        {
+          "fired": [
+            "ce-plan",
+            "engineering-router"
+          ],
+          "owners_fired": [
+            "ce-plan"
+          ],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        }
+      ]
+    },
+    {
+      "id": "take-a-look-at-changes",
+      "tags": [
+        "ambiguous",
+        "collision",
+        "review"
+      ],
+      "prompt": "Take a look at my changes",
+      "passed": 1,
+      "runs": 1,
+      "duplicate_owner_runs": 0,
+      "runs_detail": [
+        {
+          "fired": [
+            "ce-code-review",
+            "engineering-router"
+          ],
+          "owners_fired": [
+            "ce-code-review"
+          ],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        }
+      ]
+    },
+    {
+      "id": "pr-hides-a-bug",
+      "tags": [
+        "collision",
+        "ambiguous"
+      ],
+      "prompt": "This branch introduces a bug somewhere. Review it and find it.",
+      "passed": 1,
+      "runs": 1,
+      "duplicate_owner_runs": 0,
+      "runs_detail": [
+        {
+          "fired": [
+            "ce-code-review",
+            "engineering-router"
+          ],
+          "owners_fired": [
+            "ce-code-review"
+          ],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        }
+      ]
+    },
+    {
+      "id": "run-semgrep",
+      "tags": [
+        "positive",
+        "static-analysis"
+      ],
+      "prompt": "Run a semgrep scan over this repo",
+      "passed": 1,
+      "runs": 1,
+      "duplicate_owner_runs": 0,
+      "runs_detail": [
+        {
+          "fired": [
+            "semgrep"
+          ],
+          "owners_fired": [],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        }
+      ]
+    },
+    {
+      "id": "find-bugs-in-repo",
+      "tags": [
+        "negative",
+        "collision",
+        "static-analysis"
+      ],
+      "prompt": "Find bugs in this repository",
+      "passed": 1,
+      "runs": 1,
+      "duplicate_owner_runs": 0,
+      "runs_detail": [
+        {
+          "fired": [
+            "ce-code-review",
+            "engineering-router"
+          ],
+          "owners_fired": [
+            "ce-code-review"
+          ],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        }
+      ]
+    },
+    {
+      "id": "capture-learning",
+      "tags": [
+        "positive",
+        "learning"
+      ],
+      "prompt": "Write down what we learned fixing that queue concurrency bug so the next change starts smarter",
+      "passed": 1,
+      "runs": 1,
+      "duplicate_owner_runs": 0,
+      "runs_detail": [
+        {
+          "fired": [
+            "ce-compound"
+          ],
+          "owners_fired": [
+            "ce-compound"
+          ],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        }
+      ]
+    }
+  ]
+}

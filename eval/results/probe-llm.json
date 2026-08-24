@@ -1,0 +1,106 @@
+{
+  "ranAt": "2026-08-24T10:15:07",
+  "model": "session default",
+  "runs": 2,
+  "cases": 2,
+  "sessions": 4,
+  "passRate": 0.0,
+  "duplicateOwnerRuns": 0,
+  "costUsd": 2.73,
+  "results": [
+    {
+      "id": "ho-agent-bad-answers",
+      "tags": [
+        "heldout",
+        "collision",
+        "llm"
+      ],
+      "prompt": "Our Bedrock summariser in service/summarise.py returns incomplete answers. Improve the output quality.",
+      "passed": 0,
+      "runs": 2,
+      "duplicate_owner_runs": 0,
+      "runs_detail": [
+        {
+          "fired": [
+            "amazon-bedrock",
+            "claude-api",
+            "engineering-router"
+          ],
+          "owners_fired": [],
+          "duplicate_owner": false,
+          "owner_ok": false,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [
+            "claude-api"
+          ],
+          "pass": false,
+          "error": null
+        },
+        {
+          "fired": [
+            "amazon-bedrock",
+            "claude-api",
+            "engineering-router"
+          ],
+          "owners_fired": [],
+          "duplicate_owner": false,
+          "owner_ok": false,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [
+            "claude-api"
+          ],
+          "pass": false,
+          "error": null
+        }
+      ]
+    },
+    {
+      "id": "ho-agent-new-rule",
+      "tags": [
+        "heldout",
+        "collision",
+        "llm"
+      ],
+      "prompt": "Add a rule to the summariser so it never mentions competitor names",
+      "passed": 0,
+      "runs": 2,
+      "duplicate_owner_runs": 0,
+      "runs_detail": [
+        {
+          "fired": [
+            "claude-api",
+            "engineering-router"
+          ],
+          "owners_fired": [],
+          "duplicate_owner": false,
+          "owner_ok": false,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [
+            "claude-api"
+          ],
+          "pass": false,
+          "error": null
+        },
+        {
+          "fired": [
+            "claude-api",
+            "engineering-router"
+          ],
+          "owners_fired": [],
+          "duplicate_owner": false,
+          "owner_ok": false,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [
+            "claude-api"
+          ],
+          "pass": false,
+          "error": null
+        }
+      ]
+    }
+  ]
+}

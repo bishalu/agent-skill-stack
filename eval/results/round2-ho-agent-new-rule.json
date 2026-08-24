@@ -1,0 +1,58 @@
+{
+  "ranAt": "2026-08-24T10:28:00",
+  "model": "session default",
+  "runs": 2,
+  "cases": 1,
+  "sessions": 2,
+  "passRate": 1.0,
+  "duplicateOwnerRuns": 0,
+  "costUsd": 1.21,
+  "results": [
+    {
+      "id": "ho-agent-new-rule",
+      "tags": [
+        "heldout",
+        "collision",
+        "llm"
+      ],
+      "prompt": "Add a rule to the summariser so it never mentions competitor names",
+      "passed": 2,
+      "runs": 2,
+      "duplicate_owner_runs": 0,
+      "runs_detail": [
+        {
+          "fired": [
+            "claude-api",
+            "engineering-router"
+          ],
+          "owners_fired": [],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [
+            "claude-api"
+          ],
+          "pass": true,
+          "error": null
+        },
+        {
+          "fired": [
+            "claude-api",
+            "engineering-router"
+          ],
+          "owners_fired": [],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [
+            "claude-api"
+          ],
+          "pass": true,
+          "error": null
+        }
+      ]
+    }
+  ]
+}

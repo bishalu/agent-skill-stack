@@ -1,0 +1,51 @@
+{
+  "ranAt": "2026-08-24T10:27:03",
+  "model": "session default",
+  "runs": 2,
+  "cases": 1,
+  "sessions": 2,
+  "passRate": 0.0,
+  "duplicateOwnerRuns": 0,
+  "costUsd": 0.33,
+  "results": [
+    {
+      "id": "ho-standalone-script",
+      "tags": [
+        "heldout",
+        "python"
+      ],
+      "prompt": "Write a standalone script to re-encode the audio fixtures at 48kHz",
+      "passed": 0,
+      "runs": 2,
+      "duplicate_owner_runs": 0,
+      "runs_detail": [
+        {
+          "fired": [],
+          "owners_fired": [],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [
+            "modern-python"
+          ],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": false,
+          "error": null
+        },
+        {
+          "fired": [],
+          "owners_fired": [],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [
+            "modern-python"
+          ],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": false,
+          "error": null
+        }
+      ]
+    }
+  ]
+}

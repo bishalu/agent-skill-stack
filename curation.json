@@ -1,0 +1,385 @@
+{
+  "$comment": "Single source of truth. scripts/build.sh reads this to materialize build/ from upstream/. 'frontmatter' entries are the ONLY deviations from upstream; every one carries a 'reason'.",
+  "compound-engineering": {
+    "install": "native-plugin",
+    "note": "Installed unmodified from the upstream marketplace at user scope. CE is the default lifecycle owner; its own descriptions are already mutually disambiguated, and its skills depend on plugin-level assets under src/. No deviations.",
+    "deviations": []
+  },
+  "mattpocock": {
+    "install": "vendored-skill",
+    "cloneDir": "mattpocock_skills",
+    "skills": {
+      "diagnosing-bugs": {
+        "path": "skills/engineering/diagnosing-bugs",
+        "class": "CONDITIONAL",
+        "domain": "debugging (escalation)",
+        "frontmatter": {
+          "description": "Deep root-cause diagnosis for a bug that ordinary debugging has already failed to explain. Use when the user asks for the root cause of a hard or recurring bug, says earlier fixes or hypotheses did not hold, or reports an unexplained race, flake, or performance regression that needs a measured bisect. Also use when the active debugging workflow escalates an inconclusive hypothesis loop. Not the first responder for an ordinary failing test, stack trace, or broken behaviour."
+        },
+        "reason": "Upstream trigger ('Use when the user says \"diagnose\"/\"debug this\", or reports something broken/throwing/failing/slow') is a direct owner-level collision with ce-debug. Rewritten as an escalation trigger: prior-attempt evidence or explicit root-cause request, plus delegation from the active debugger."
+      },
+      "code-review": {
+        "path": "skills/engineering/code-review",
+        "class": "MANUAL",
+        "domain": "code review (second opinion)",
+        "frontmatter": {
+          "description": "Second-opinion review of changes since a fixed point, split across a Standards axis and a Spec axis run as parallel sub-agents. Manual invocation only.",
+          "disable-model-invocation": true
+        },
+        "reason": "Upstream trigger ('when the user wants to review a branch, a PR, work-in-progress changes') is an owner-level collision with ce-code-review. Demoted to MANUAL so a generic review request can never reach two reviewers; still available as /code-review for an explicit second opinion."
+      },
+      "tdd": {
+        "path": "skills/engineering/tdd",
+        "class": "CONDITIONAL",
+        "domain": "TDD/testing methodology",
+        "frontmatter": {
+          "description": "Test-first methodology: drive a change through red-green-refactor, one failing test at a time. Use when the user asks to work test-first, says TDD or red-green-refactor, or wants the change proven by integration tests before the code lands. Also use when the active implementation workflow is told to build the change from tests. A methodology applied inside implementation; it does not own the implementation workflow."
+        },
+        "reason": "Added the delegation trigger and an explicit non-ownership boundary so tdd augments ce-work rather than competing with it for the implementation phase."
+      },
+      "domain-modeling": {
+        "path": "skills/engineering/domain-modeling",
+        "class": "CONDITIONAL",
+        "domain": "domain modeling",
+        "frontmatter": {
+          "description": "Settle what the project's nouns mean and write the decision down. Use when the user asks whether two or more terms name the same concept, wants the ubiquitous language or glossary sharpened, questions a name that has drifted, or is writing or editing a CONTEXT.md or an ADR. Not for module boundaries or interface shape, and not a general planning step."
+        },
+        "reason": "Upstream description is short and its 'discussing codebase terminology' clause is vague enough to catch general planning. Sharpened to the concrete trigger (are these the same concept? / CONTEXT.md / ADR) and given a negative boundary against codebase-design."
+      },
+      "codebase-design": {
+        "path": "skills/engineering/codebase-design",
+        "class": "CONDITIONAL",
+        "domain": "architecture / module boundaries",
+        "frontmatter": {
+          "description": "Deep-module vocabulary for interface design: module depth, seams, information hiding, and where a boundary belongs. Use when the user asks where to split a module, how deep an interface should be, how to make code more testable or navigable, or when the active planning or implementation workflow needs that vocabulary to justify a boundary. Not for naming or domain concepts, and not a substitute for the plan itself."
+        },
+        "reason": "Added the delegation trigger and negative boundaries against domain-modeling and ce-plan so it augments rather than owns the planning phase."
+      },
+      "setup-matt-pocock-skills": {
+        "path": "skills/engineering/setup-matt-pocock-skills",
+        "class": "MANUAL",
+        "domain": "setup/maintenance",
+        "frontmatter": {},
+        "reason": "Unmodified \u2014 already disable-model-invocation upstream. Included because code-review's Spec axis reads docs/agents/issue-tracker.md, which only this skill writes."
+      }
+    },
+    "excluded": {
+      "implement, to-spec, to-tickets, wayfinder, triage, grill-with-docs, improve-codebase-architecture, prototype, research, ask-matt, grilling, grill-me, handoff, teach, retro, writing-*": "Owner-level or near-owner-level competitors to the Compound lifecycle (planning, requirements, implementation, handoff, learning), or duplicates of a Compound skill (ce-prototype, ce-handoff, ce-explain, ce-pov). Excluded rather than demoted, to keep the skill listing small.",
+      "resolving-merge-conflicts, wizard, git-guardrails-claude-code, setup-pre-commit, migrate-to-shoehorn, scaffold-exercises, setup-ts-deep-modules": "Useful but outside the four lifecycle domains this stack curates; omitted to protect the context budget. Add with scripts/build.sh if wanted."
+    }
+  },
+  "vercel": {
+    "install": "vendored-skill",
+    "cloneDir": "vercel-labs_agent-skills",
+    "skills": {
+      "react-best-practices": {
+        "path": "skills/react-best-practices",
+        "class": "PASSIVE",
+        "domain": "frontend implementation",
+        "frontmatter": {
+          "description": "React and Next.js performance rules from Vercel Engineering \u2014 request waterfalls, bundle size, server rendering, data fetching, and re-render cost. Use whenever a component, page, route, hook, or data fetch is added or changed in a React or Next.js codebase, including requests that describe the UI feature without naming the framework, and when explaining why React or Next code is slow. A knowledge overlay that advises the workflow already in progress; it does not own implementation and is not a code-review or PR-review workflow."
+        },
+        "reason": "Upstream said 'used when writing, reviewing, or refactoring React/Next.js code'. The 'reviewing' verb made it a candidate owner for code review, so it was removed. A first eval run then showed the narrowed trigger only fired when the prompt named React or Next by name \u2014 'add a settings page to this Next.js application' fired it 3/3, 'build me an export-to-CSV button on the settings page' 0/2. The trigger now covers UI work described without the framework name, which restored it to 2/2 without firing on the trivial-edit negatives."
+      },
+      "composition-patterns": {
+        "path": "skills/composition-patterns",
+        "class": "CONDITIONAL",
+        "domain": "frontend component API design",
+        "frontmatter": {
+          "description": "React component API design: compound components, children over render props, explicit variants instead of boolean prop proliferation, context boundaries, and the React 19 ref change. Use when designing or refactoring the public shape of a reusable component \u2014 too many boolean props, a component library API, or a prop interface that has stopped scaling. A design overlay for component interfaces, not a general React performance or implementation workflow."
+        },
+        "reason": "Upstream 'component architecture' clause overlapped both react-best-practices and codebase-design. Narrowed to the public shape of a component's props, with a negative boundary against the performance overlay."
+      },
+      "web-design-guidelines": {
+        "path": "skills/web-design-guidelines",
+        "class": "CONDITIONAL",
+        "domain": "UI/UX & accessibility review",
+        "frontmatter": {
+          "description": "Audit UI code against the Web Interface Guidelines \u2014 accessibility, focus states, forms, motion, typography, images, touch targets, theming, and i18n. Use when the user explicitly asks for a UI, UX, design, or accessibility review, or when the active review workflow flags an interface surface that needs one. Not the default reviewer for a general code or PR review, and not a React performance pass."
+        },
+        "reason": "Upstream 'check my site against best practices' is broad enough to catch a generic review request. Replaced with an explicit-request-or-delegation trigger and a negative boundary against general review."
+      },
+      "react-view-transitions": {
+        "path": "skills/react-view-transitions",
+        "class": "CONDITIONAL",
+        "domain": "frontend implementation (narrow)",
+        "frontmatter": {
+          "description": "Implement animations with React's View Transition API \u2014 <ViewTransition>, addTransitionType, and CSS view-transition pseudo-elements. Use for page or route transition animations, shared-element transitions, enter/exit or list-reorder animation, or directional back/forward navigation animation in React and Next.js, and whenever startViewTransition or ViewTransition is mentioned."
+        },
+        "reason": "Trigger unchanged in substance; compressed from 92 to 58 words for the context budget."
+      },
+      "vercel-optimize": {
+        "path": "skills/vercel-optimize",
+        "class": "MANUAL",
+        "domain": "deployment / cost & performance",
+        "frontmatter": {
+          "description": "Audit a deployed Vercel project for cost and performance: collect account metrics first, investigate only metric-backed candidates, produce ranked recommendations. Manual invocation only.",
+          "disable-model-invocation": true
+        },
+        "reason": "Expensive and side-reaching \u2014 it pulls billing and analytics data from the connected Vercel account. Phase 3 puts that in MANUAL. Description trimmed accordingly since it is now slash-only."
+      }
+    },
+    "excluded": {
+      "deploy-to-vercel, vercel-cli-with-tokens": "Deployment is already owned in this environment by the Vercel MCP server (mcp__vercel__deploy_to_vercel and friends), which is authenticated and account-aware. Installing these skills would put two owners on the deployment phase.",
+      "react-native-skills": "No React Native or Expo work in this environment.",
+      "writing-guidelines": "Vercel-house-voice prose review; no owner conflict, but nothing in this stack routes to it."
+    }
+  },
+  "trailofbits": {
+    "install": "forked-local-marketplace",
+    "cloneDir": "trailofbits_skills",
+    "marketplaceName": "trailofbits-curated",
+    "note": "Forked into a local marketplace rather than installed from trailofbits/skills, because several of these plugins carry plugin-level agents, hooks, commands, and CLAUDE_PLUGIN_ROOT-relative workflows that only survive a plugin install \u2014 and their routing metadata cannot be changed from outside the plugin. The fork is regenerated from upstream/ by scripts/build.sh; Claude's plugin cache is never edited.",
+    "plugins": {
+      "differential-review": {
+        "class": "CONDITIONAL",
+        "domain": "security review",
+        "skills": {
+          "differential-review": {
+            "frontmatter": {
+              "description": "Security-focused differential review of a diff, commit range, or pull request: threat-model the change, compute blast radius, and hunt for security regressions the change introduces. Use when the user explicitly asks for a security review of changes, or when the active review workflow finds the diff touches a security-sensitive surface \u2014 authentication, authorization, permissions, secrets, cryptography, payments or value transfer, untrusted input, deserialization, file upload, external calls, unsafe or native boundaries, dependency changes, or security configuration. Not for a general request to review a PR with no security signal."
+            },
+            "reason": "Upstream ('Performs security-focused differential review of code changes (PRs, commits, diffs)') had no activation condition and no negative boundary, so a bare 'review this PR' could pull it in alongside ce-code-review. Rewritten with an explicit-request-or-delegation trigger, the enumerated security surfaces, and a negative boundary."
+          }
+        }
+      },
+      "static-analysis": {
+        "class": "CONDITIONAL",
+        "domain": "static analysis",
+        "skills": {
+          "semgrep": {
+            "frontmatter": {
+              "description": "Run a Semgrep static-analysis scan over a codebase and merge the results to SARIF, with an explicit approval gate on the ruleset plan. Use when the user asks to run Semgrep, run a SAST or static-analysis scan, or scan the codebase for known vulnerability patterns. Not a general code review, not a debugging step, and not for reading a scan that already exists."
+            },
+            "reason": "Upstream trigger included 'find bugs' and 'run a security audit', which collide with ce-debug and ce-code-review. Removed both phrases and added negative boundaries.",
+            "class": "CONDITIONAL"
+          },
+          "codeql": {
+            "frontmatter": {
+              "description": "Scan a codebase with CodeQL interprocedural data-flow and taint tracking, building the database first. Manual invocation only.",
+              "disable-model-invocation": true
+            },
+            "reason": "Expensive (builds a CodeQL database, minutes to hours) and its upstream trigger 'find vulnerabilities in this repo' is broad. Phase 3 puts expensive workflows in MANUAL. Semgrep remains the model-invocable static-analysis path.",
+            "class": "MANUAL"
+          },
+          "sarif-parsing": {
+            "frontmatter": {},
+            "reason": "Unmodified \u2014 already narrow, with a negative boundary against the scanners.",
+            "class": "CONDITIONAL"
+          }
+        }
+      },
+      "supply-chain-risk-auditor": {
+        "class": "CONDITIONAL",
+        "domain": "dependency / supply-chain analysis",
+        "skills": {
+          "supply-chain-risk-auditor": {
+            "frontmatter": {},
+            "reason": "Unmodified \u2014 sole owner of the supply-chain domain, trigger already specific. The router carries the rule that it runs directly rather than wrapped in the Compound feature lifecycle."
+          }
+        }
+      },
+      "variant-analysis": {
+        "class": "CONDITIONAL",
+        "domain": "security review (spread of a known bug)",
+        "skills": {
+          "variant-analysis": {
+            "frontmatter": {},
+            "reason": "Unmodified \u2014 upstream already states the precondition (a bug in hand) and the negative boundary (not initial discovery)."
+          }
+        }
+      },
+      "fp-check": {
+        "class": "CONDITIONAL",
+        "domain": "security finding triage",
+        "skills": {
+          "fp-check": {
+            "frontmatter": {},
+            "reason": "Unmodified \u2014 upstream already bounds it to verifying a specific suspected finding, explicitly not hunting."
+          }
+        }
+      },
+      "sharp-edges": {
+        "class": "CONDITIONAL",
+        "domain": "security-sensitive API/config design",
+        "skills": {
+          "sharp-edges": {
+            "frontmatter": {
+              "description": "Find footguns in an API or configuration surface: error-prone signatures, unsafe defaults, and shapes that make misuse easy. Use when the user asks whether an API, config schema, or crypto wrapper is misuse-resistant or secure by default, or when a security review flags a dangerous default. Triggers: footgun, misuse-resistant, secure by default, pit of success. Not a general code review and not a vulnerability scan."
+            },
+            "reason": "Upstream 'Use when reviewing API designs, configuration schemas' reads as a review trigger. Reframed as a question about misuse-resistance, with a negative boundary against general review."
+          }
+        }
+      },
+      "agentic-actions-auditor": {
+        "class": "CONDITIONAL",
+        "domain": "CI security",
+        "skills": {
+          "agentic-actions-auditor": {
+            "frontmatter": {},
+            "reason": "Unmodified \u2014 trigger is already confined to workflow files that invoke AI agents."
+          }
+        }
+      },
+      "audit-context-building": {
+        "class": "MANUAL",
+        "domain": "security audit preparation",
+        "skills": {
+          "audit-context-building": {
+            "frontmatter": {
+              "description": "Read an unfamiliar codebase function by function before hunting for bugs in it, recording what each one assumes, guarantees, and depends on. Manual invocation only.",
+              "disable-model-invocation": true
+            },
+            "reason": "A whole-codebase pass that is expensive by design, and 'before any vulnerability-hunting pass' would let it front-run every security escalation. MANUAL, so it starts a deliberate audit rather than joining an ordinary one."
+          }
+        }
+      },
+      "insecure-defaults": {
+        "class": "MANUAL",
+        "domain": "secrets / security configuration",
+        "skills": {},
+        "note": "Command-only plugin \u2014 ships /insecure-defaults:audit with no SKILL.md, so it has no model-invocable surface and needs no deviation."
+      },
+      "modern-python": {
+        "class": "PASSIVE",
+        "domain": "Python tooling",
+        "excludePaths": [
+          "hooks"
+        ],
+        "skills": {
+          "modern-python": {
+            "frontmatter": {
+              "description": "Modern Python project tooling \u2014 uv for environments and dependencies, ruff for lint and format, ty for type checking. Use whenever Python is being set up or run: a new project, a one-off or standalone script, adding or pinning a dependency, a requirements.txt or pyproject.toml edit, or a migration off pip, Poetry, mypy, or black. A tooling overlay; it does not own implementation or planning."
+            },
+            "reason": "Added after profiling the environment: four Python repos, all on requirements.txt. The trigger gained an explicit non-ownership clause so it advises ce-work rather than competing with it. Originally excluded from this stack as out of scope \u2014 that call was made before the environment was profiled and was wrong. A first probe then showed the narrowed trigger never fired on 'write a standalone script' (0/2) \u2014 the model read the task as too small to need tooling advice. The trigger now names the concrete moments Python tooling is chosen, rather than the abstract activity."
+          }
+        },
+        "note": "The plugin's hooks/ directory is excluded from the fork. Upstream ships a SessionStart hook that prepends PATH shims intercepting python, pip, pipx and uv in every session. The guidance is worth having; a global PATH interception that silently activates the moment uv appears on the machine is not something to install by side effect. Restore it by removing excludePaths and rebuilding."
+      }
+    },
+    "excluded": {
+      "second-opinion": "Runs an external LLM review of a diff \u2014 a third owner in the code-review domain alongside ce-code-review and the Pocock second opinion. Excluded rather than demoted.",
+      "gh-cli, git-cleanup, github-triage": "Compound owns the git/PR/CI lifecycle. gh-cli in particular intercepts ordinary GitHub fetches and would fire constantly.",
+      "property-based-testing, mutation-testing": "Would put a third voice in the testing domain alongside Compound and the Pocock TDD methodology. Genuinely useful \u2014 add deliberately if the testing strategy calls for them.",
+      "c-review, rust-review, modern-cpp, writing-lean-proofs, dwarf-expert, zeroize-audit, constant-time-analysis, firebase-apk-scanner, burpsuite-project-parser, yara-authoring": "Language or tooling surfaces absent from this environment.",
+      "building-secure-contracts, entry-point-analyzer, dimensional-analysis, trailmark": "Smart-contract and binary-analysis specialisms; no blockchain or native work here. trailmark also needs an external binary.",
+      "devcontainer-setup, open-sourcing, goal-prompt, skill-improver, testing-handbook-skills, spec-to-code-compliance, vulnerability-triage-brocards, culture-index, let-fate-decide, semgrep-rule-creator, semgrep-rule-variant-creator, claude-in-chrome-troubleshooting": "Out of scope for a general engineering lifecycle, or duplicative of skills already installed."
+    },
+    "buildDir": "marketplace"
+  },
+  "cursor": {
+    "install": "vendored-skill",
+    "cloneDir": "cursor_plugins",
+    "note": "A fifth source, deliberately outside the engineering stack. cursor/plugins is MIT with a LICENSE per plugin; the unslop skill lives under pstack, (c) 2026 Lauren Tan.",
+    "skills": {
+      "unslop": {
+        "path": "pstack/skills/unslop",
+        "class": "CONDITIONAL",
+        "domain": "prose editing (documentation tooling)",
+        "frontmatter": {
+          "description": "Cut AI tells from prose: puffery, formulaic transitions, vague attribution, em-dash pileups, and the rhythms that read as machine-written. Use when asked to unslop, de-slop, humanise, or clean up drafted writing, when prose is said to sound like ChatGPT or read as robotic, and when drafting or revising a README, doc, or announcement meant for people to read. Not for code, commit messages, or code comments."
+        },
+        "reason": "Upstream description is 'Cut AI tells from any writing. Must always apply.' \u2014 an unconditional trigger with no boundary, which in an engineering session would fire on commit messages, code comments, and every incidental piece of text. Narrowed to human-facing prose, with the negative boundary against code, and the concrete trigger words kept."
+      },
+      "cli-for-agents": {
+        "path": "cli-for-agent/skills/cli-for-agents",
+        "class": "CONDITIONAL",
+        "domain": "CLI design for agent consumption",
+        "frontmatter": {},
+        "reason": "Unmodified. Its trigger is already confined to building or reviewing a CLI, a domain no other skill in the stack claims."
+      },
+      "why": {
+        "path": "pstack/skills/why",
+        "class": "CONDITIONAL",
+        "domain": "design-rationale archaeology",
+        "frontmatter": {
+          "description": "Reconstruct why a decision was made, from the evidence rather than from the code as it stands: source control, issue tracker, long-form docs, chat, incident history. Use for \"why does X work this way\", \"why did we pick Y\", design rationale, a regression whose origin matters, a postmortem, or a threshold nobody can justify. Not for how something works today, and not a planning or review step."
+        },
+        "reason": "Upstream trigger listed the phrasings but not the boundary, leaving it adjacent to ce-explain (which teaches how something works) and ce-pov (which gives a verdict). Added the explicit contrast so it takes only the archaeology question."
+      }
+    },
+    "excluded": {
+      "review-and-ship, thermo-nuclear-code-quality-review, thermo-nuclear-review, thermos, pr-review-canvas, make-pr-easy-to-review, new-branch-and-pr, get-pr-comments, fix-ci, loop-on-ci, deslop, interrogate, blast-radius": "Compound owns review, CI, and the shipping tail. Several of these are good skills; none can run without putting a second owner on a phase Compound already holds.",
+      "teach, continual-learning, recall, reflect, weekly-review, what-did-i-get-done, workflow-from-chats": "Duplicates of ce-explain, ce-compound, and ce-handoff.",
+      "tdd (pstack), architect, how, figure-it-out": "Overlap the Pocock methodology layer and ce-plan.",
+      "principle-* (21 skills)": "A MANUAL principle set. Free contextually, but most of it restates what Compound and the Pocock layer already encode, and 21 slash commands is its own kind of clutter.",
+      "arena, swarm, orchestrate, ralph-loop, ralph-loop-help, cancel-ralph": "Multi-agent orchestration, which this host provides natively through Workflow and Agent.",
+      "cursor-sdk, create-plugin-scaffold, review-plugin-submission, docs-canvas, agent-compatibility, cursor-team-kit misc, third_party/x": "Cursor-product-specific; inert in Claude Code.",
+      "typescript-best-practices": "A real gap, but its trigger is 'any .ts or .tsx file' \u2014 it would fire on every TypeScript touch. Worth revisiting with a narrowed description.",
+      "technical-writing": "MANUAL doc-structure standard that pairs well with unslop. Declined to keep the fifth source to two model-invocable skills plus unslop.",
+      "control-ui, control-cli, create-verification-skill, maintain-verification-skill, verify-this": "Overlap the project's own verify-site skill and ToB fp-check.",
+      "benny automations, setup-pstack, poteto-mode, bro, no-comments, show-me-your-work, automate-me": "Personal-workflow and automation scaffolding for another person's setup."
+    }
+  },
+  "hashicorp": {
+    "install": "vendored-skill",
+    "cloneDir": "hashicorp_agent-skills",
+    "note": "Three skills of sixteen. The plugin is not installed: twelve of its skills are for developing Terraform providers (new-terraform-provider, provider-resources, provider-docs, provider-framework-migration, provider-actions, provider-configuration, provider-ephemeral-resources, provider-test-patterns, run-acceptance-tests) or are tied to Azure and paid HCP products (azure-verified-modules, terraform-stacks, terraform-policy). MPL-2.0 is file-level weak copyleft: these three files stay MPL and are marked as such.",
+    "skills": {
+      "terraform-style-guide": {
+        "path": "plugins/terraform/skills/terraform-style-guide",
+        "class": "PASSIVE",
+        "domain": "IaC authoring",
+        "frontmatter": {
+          "description": "HashiCorp's official HCL style conventions \u2014 file layout, naming, argument order, variable and output structure, comments. Consult when writing or editing Terraform configuration. A conventions overlay; it does not own the implementation workflow."
+        },
+        "reason": "Upstream said 'Use when writing, reviewing, or generating Terraform configurations'. The 'reviewing' verb made it a candidate for the code-review phase, the same problem react-best-practices had. Removed, and non-ownership stated."
+      },
+      "refactor-module": {
+        "path": "plugins/terraform/skills/refactor-module",
+        "class": "CONDITIONAL",
+        "domain": "IaC structure",
+        "frontmatter": {
+          "description": "Turn a monolithic Terraform configuration into reusable modules: what belongs in a module, its variable and output surface, and how to move resources without destroying them. Use when a flat pile of .tf files needs structure, when the same resources are being copied between environments, or when asked to modularise Terraform."
+        },
+        "reason": "Upstream description was a capability statement with no activation condition. Added the concrete triggers, including the state-move concern that makes this risky to do by hand."
+      },
+      "terraform-test": {
+        "path": "plugins/terraform/skills/terraform-test",
+        "class": "CONDITIONAL",
+        "domain": "IaC testing",
+        "frontmatter": {},
+        "reason": "Unmodified \u2014 already specific to .tftest.hcl, run blocks, assertions, and mocked providers."
+      }
+    },
+    "excluded": {
+      "packer plugin": "AMI and Azure image building. This environment builds Docker images.",
+      "the nine provider-development skills": "For authors of Terraform providers, not consumers of them.",
+      "azure-verified-modules, terraform-stacks, terraform-policy": "Azure-specific, or tied to paid HCP products.",
+      "terraform-search-import": "Bringing unmanaged cloud resources under Terraform. Borderline \u2014 worth adding if drift between the AWS console and infra/ turns up."
+    }
+  },
+  "aws": {
+    "install": "forked-local-marketplace",
+    "cloneDir": "aws_agent-toolkit-for-aws",
+    "marketplaceName": "aws-curated",
+    "buildDir": "marketplace-aws",
+    "note": "Forked and trimmed rather than installed whole. The upstream plugin ships 21 skills and costs about 5,000 always-on tokens, roughly 250 per skill, and more than half of them cover services absent from this environment (Swift SDK, Keyspaces, Neptune, Timestream, DocumentDB, CDK, CloudFormation, CodePipeline). Nine are kept. The plugin's MCP server, hooks, and manifests are preserved, which is why this is a plugin fork and not a set of vendored skills.",
+    "plugins": {
+      "aws-core": {
+        "class": "PASSIVE",
+        "domain": "AWS services",
+        "includeSkills": [
+          "aws-sdk-python-usage",
+          "aws-sdk-js-v3-usage",
+          "amazon-bedrock",
+          "aws-secrets-manager",
+          "aws-storage",
+          "aws-observability",
+          "aws-iam",
+          "aws-messaging-and-streaming",
+          "aws-billing-and-cost-management"
+        ],
+        "skills": {},
+        "pluginDescription": "AWS services used in this environment: boto3 and JS v3 SDK usage, Amazon Bedrock, Secrets Manager, S3 storage, IAM, SQS and EventBridge messaging, CloudWatch and X-Ray observability, and cost management.",
+        "pluginDescriptionReason": "The upstream blurb advertises CDK, CloudFormation, Aurora, DynamoDB, DocumentDB, Keyspaces, Neptune, Timestream and the Swift SDK. None of those skills survive the trim, so the manifest would have described capabilities the fork does not ship."
+      }
+    },
+    "excluded": {
+      "launch-with-aws": "An owner-shaped migration workflow ('analysis through migration to deployment') that would compete with ce-work and with the Vercel MCP for the deployment phase. It never fired in the routing eval, but removing it removes the risk.",
+      "aws-cdk, aws-cloudformation, aws-deployment": "This environment's IaC is Terraform, and its CI is GitHub Actions, not CodePipeline.",
+      "aws-database": "Routes across Aurora, DynamoDB, DocumentDB, Keyspaces, Neptune and Timestream. The databases here are plain PostgreSQL reached through SQLAlchemy.",
+      "aws-sdk-swift-usage, aws-ai-ml, aws-blocks, aws-compute, aws-containers, aws-serverless, signing-in-to-aws": "No Swift, SageMaker, AWS Blocks, EC2, ECS or Lambda surface in this environment. aws-containers is the likeliest of these to be wanted back once the Docker services land on ECS."
+    }
+  }
+}

@@ -1,0 +1,72 @@
+{
+  "$comment": "Upstream sources. scripts/sync.sh clones/updates these into upstream/ and rewrites pinnedSha. Nothing in upstream/ is ever edited.",
+  "sources": {
+    "compound-engineering": {
+      "repo": "EveryInc/compound-engineering-plugin",
+      "url": "https://github.com/EveryInc/compound-engineering-plugin",
+      "license": "MIT",
+      "authors": "Kieran Klaassen and Trevin Chow (Every Inc.)",
+      "install": "native-plugin",
+      "marketplace": "EveryInc/compound-engineering-plugin",
+      "pinnedSha": "871996c4e35512e3d33cdc9c2532395f7bf10831",
+      "pinnedVersion": ""
+    },
+    "mattpocock": {
+      "repo": "mattpocock/skills",
+      "url": "https://github.com/mattpocock/skills",
+      "license": "MIT",
+      "authors": "Matt Pocock",
+      "install": "vendored-skill",
+      "pinnedSha": "6654f6b60cd9d5be8b54c6fafe44346dabeb3b76",
+      "pinnedVersion": ""
+    },
+    "vercel": {
+      "repo": "vercel-labs/agent-skills",
+      "url": "https://github.com/vercel-labs/agent-skills",
+      "license": "MIT",
+      "authors": "Vercel Labs",
+      "install": "vendored-skill",
+      "pinnedSha": "dd089a8c752c966dee8bf0f27cb625ba193ffd9e",
+      "pinnedVersion": ""
+    },
+    "trailofbits": {
+      "repo": "trailofbits/skills",
+      "url": "https://github.com/trailofbits/skills",
+      "license": "CC BY-SA 4.0",
+      "authors": "Trail of Bits",
+      "install": "forked-local-marketplace",
+      "pinnedSha": "6ca26096b0c804ee2e8cf4e540cbc8ad82761f11",
+      "pinnedVersion": ""
+    },
+    "cursor": {
+      "repo": "cursor/plugins",
+      "url": "https://github.com/cursor/plugins",
+      "license": "MIT",
+      "authors": "Cursor, and per-plugin authors (pstack: Lauren Tan)",
+      "install": "vendored-skill",
+      "role": "documentation tooling \u2014 not part of the engineering routing stack",
+      "pinnedSha": "46125561306434d8a1d7745d540d8932ab0cd2a2",
+      "pinnedVersion": ""
+    },
+    "hashicorp": {
+      "repo": "hashicorp/agent-skills",
+      "url": "https://github.com/hashicorp/agent-skills",
+      "license": "MPL-2.0",
+      "authors": "HashiCorp",
+      "install": "vendored-skill",
+      "role": "Terraform authoring \u2014 three skills of sixteen; the rest is provider development",
+      "pinnedSha": "6333093c37a318cb800d57a6de7d0877a9e048a4",
+      "pinnedVersion": ""
+    },
+    "aws": {
+      "repo": "aws/agent-toolkit-for-aws",
+      "url": "https://github.com/aws/agent-toolkit-for-aws",
+      "license": "Apache-2.0",
+      "authors": "Amazon Web Services",
+      "install": "forked-local-marketplace",
+      "role": "AWS SDK, Bedrock, IAM, secrets, storage, messaging, observability and cost",
+      "pinnedSha": "904bfa14cc32e589e427f3dbf68c1a2ed6bd3830",
+      "pinnedVersion": ""
+    }
+  }
+}

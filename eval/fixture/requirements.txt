@@ -1,0 +1,6 @@
+fastapi==0.115.6
+sqlalchemy==2.0.36
+psycopg2-binary==2.9.10
+boto3==1.35.90
+pydantic==2.10.4
+openai==1.59.3

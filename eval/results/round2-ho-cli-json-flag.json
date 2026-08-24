@@ -1,0 +1,59 @@
+{
+  "ranAt": "2026-08-24T10:29:12",
+  "model": "session default",
+  "runs": 2,
+  "cases": 1,
+  "sessions": 2,
+  "passRate": 1.0,
+  "duplicateOwnerRuns": 0,
+  "costUsd": 0.52,
+  "results": [
+    {
+      "id": "ho-cli-json-flag",
+      "tags": [
+        "heldout",
+        "cli"
+      ],
+      "prompt": "Add a --json flag to our CLI so scripts can parse the output",
+      "passed": 2,
+      "runs": 2,
+      "duplicate_owner_runs": 0,
+      "runs_detail": [
+        {
+          "fired": [
+            "ce-work",
+            "cli-for-agents",
+            "engineering-router"
+          ],
+          "owners_fired": [
+            "ce-work"
+          ],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        },
+        {
+          "fired": [
+            "ce-work",
+            "cli-for-agents",
+            "engineering-router"
+          ],
+          "owners_fired": [
+            "ce-work"
+          ],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,51 @@
+{
+  "ranAt": "2026-08-24T10:36:06",
+  "model": "session default",
+  "runs": 2,
+  "cases": 1,
+  "sessions": 2,
+  "passRate": 1.0,
+  "duplicateOwnerRuns": 0,
+  "costUsd": 0.48,
+  "results": [
+    {
+      "id": "ho-python-uv-script",
+      "tags": [
+        "heldout",
+        "python"
+      ],
+      "prompt": "Write a Python script that re-encodes the audio fixtures at 48kHz. It needs pydub.",
+      "passed": 2,
+      "runs": 2,
+      "duplicate_owner_runs": 0,
+      "runs_detail": [
+        {
+          "fired": [
+            "modern-python"
+          ],
+          "owners_fired": [],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        },
+        {
+          "fired": [
+            "modern-python"
+          ],
+          "owners_fired": [],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        }
+      ]
+    }
+  ]
+}

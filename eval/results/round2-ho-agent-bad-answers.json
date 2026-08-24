@@ -1,0 +1,68 @@
+{
+  "ranAt": "2026-08-24T10:27:39",
+  "model": "session default",
+  "runs": 2,
+  "cases": 1,
+  "sessions": 2,
+  "passRate": 1.0,
+  "duplicateOwnerRuns": 0,
+  "costUsd": 1.8,
+  "results": [
+    {
+      "id": "ho-agent-bad-answers",
+      "tags": [
+        "heldout",
+        "collision",
+        "llm"
+      ],
+      "prompt": "Our Bedrock summariser in service/summarise.py returns incomplete answers. Improve the output quality.",
+      "passed": 2,
+      "runs": 2,
+      "duplicate_owner_runs": 0,
+      "runs_detail": [
+        {
+          "fired": [
+            "amazon-bedrock",
+            "aws-sdk-python-usage",
+            "ce-debug",
+            "claude-api",
+            "engineering-router"
+          ],
+          "owners_fired": [
+            "ce-debug"
+          ],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [
+            "claude-api"
+          ],
+          "pass": true,
+          "error": null
+        },
+        {
+          "fired": [
+            "amazon-bedrock",
+            "aws-sdk-python-usage",
+            "ce-debug",
+            "claude-api",
+            "engineering-router"
+          ],
+          "owners_fired": [
+            "ce-debug"
+          ],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [
+            "claude-api"
+          ],
+          "pass": true,
+          "error": null
+        }
+      ]
+    }
+  ]
+}

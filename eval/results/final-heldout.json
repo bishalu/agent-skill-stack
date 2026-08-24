@@ -1,0 +1,973 @@
+{
+  "ranAt": "2026-08-24T10:42:31",
+  "model": "session default",
+  "runs": 2,
+  "cases": 22,
+  "sessions": 44,
+  "passRate": 0.955,
+  "duplicateOwnerRuns": 0,
+  "costUsd": 10.7,
+  "results": [
+    {
+      "id": "ho-build-broke",
+      "tags": [
+        "heldout",
+        "debugging"
+      ],
+      "prompt": "The vitest suite started failing on main this morning. Sort it out.",
+      "passed": 2,
+      "runs": 2,
+      "duplicate_owner_runs": 0,
+      "runs_detail": [
+        {
+          "fired": [
+            "ce-debug",
+            "engineering-router"
+          ],
+          "owners_fired": [
+            "ce-debug"
+          ],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        },
+        {
+          "fired": [
+            "ce-debug",
+            "engineering-router"
+          ],
+          "owners_fired": [
+            "ce-debug"
+          ],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        }
+      ]
+    },
+    {
+      "id": "ho-two-days-stuck",
+      "tags": [
+        "heldout",
+        "escalation"
+      ],
+      "prompt": "This queue test is flaky and I have spent two days on it. Nothing I try explains it.",
+      "passed": 2,
+      "runs": 2,
+      "duplicate_owner_runs": 0,
+      "runs_detail": [
+        {
+          "fired": [
+            "diagnosing-bugs",
+            "engineering-router"
+          ],
+          "owners_fired": [],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        },
+        {
+          "fired": [
+            "ce-debug",
+            "diagnosing-bugs",
+            "engineering-router"
+          ],
+          "owners_fired": [
+            "ce-debug"
+          ],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        }
+      ]
+    },
+    {
+      "id": "ho-glance-before-push",
+      "tags": [
+        "heldout",
+        "review"
+      ],
+      "prompt": "Can you look over what I just wrote before I push it?",
+      "passed": 2,
+      "runs": 2,
+      "duplicate_owner_runs": 0,
+      "runs_detail": [
+        {
+          "fired": [
+            "ce-code-review",
+            "engineering-router"
+          ],
+          "owners_fired": [
+            "ce-code-review"
+          ],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        },
+        {
+          "fired": [
+            "ce-code-review",
+            "engineering-router"
+          ],
+          "owners_fired": [
+            "ce-code-review"
+          ],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        }
+      ]
+    },
+    {
+      "id": "ho-refunds-and-cards",
+      "tags": [
+        "heldout",
+        "security"
+      ],
+      "prompt": "I changed how we compute refunds and charge cards. Give it a careful look before it goes out.",
+      "passed": 2,
+      "runs": 2,
+      "duplicate_owner_runs": 0,
+      "runs_detail": [
+        {
+          "fired": [
+            "ce-code-review",
+            "differential-review",
+            "engineering-router"
+          ],
+          "owners_fired": [
+            "ce-code-review"
+          ],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        },
+        {
+          "fired": [
+            "ce-code-review",
+            "differential-review",
+            "engineering-router"
+          ],
+          "owners_fired": [
+            "ce-code-review"
+          ],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        }
+      ]
+    },
+    {
+      "id": "ho-csv-button",
+      "tags": [
+        "heldout",
+        "frontend"
+      ],
+      "prompt": "Build me an export-to-CSV button on the settings page",
+      "passed": 1,
+      "runs": 2,
+      "duplicate_owner_runs": 0,
+      "runs_detail": [
+        {
+          "fired": [
+            "ce-work",
+            "engineering-router"
+          ],
+          "owners_fired": [
+            "ce-work"
+          ],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [
+            "react-best-practices"
+          ],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": false,
+          "error": null
+        },
+        {
+          "fired": [
+            "ce-work",
+            "engineering-router",
+            "react-best-practices"
+          ],
+          "owners_fired": [
+            "ce-work"
+          ],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        }
+      ]
+    },
+    {
+      "id": "ho-session-means-three",
+      "tags": [
+        "heldout",
+        "domain"
+      ],
+      "prompt": "We use the word session in three places to mean three different things. Sort out the vocabulary.",
+      "passed": 2,
+      "runs": 2,
+      "duplicate_owner_runs": 0,
+      "runs_detail": [
+        {
+          "fired": [
+            "domain-modeling"
+          ],
+          "owners_fired": [],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        },
+        {
+          "fired": [
+            "domain-modeling"
+          ],
+          "owners_fired": [],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        }
+      ]
+    },
+    {
+      "id": "ho-lockfile-worry",
+      "tags": [
+        "heldout",
+        "security"
+      ],
+      "prompt": "Something in package-lock.json worries me. Are any of these packages compromised?",
+      "passed": 2,
+      "runs": 2,
+      "duplicate_owner_runs": 0,
+      "runs_detail": [
+        {
+          "fired": [
+            "engineering-router",
+            "supply-chain-risk-auditor"
+          ],
+          "owners_fired": [],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        },
+        {
+          "fired": [
+            "engineering-router",
+            "supply-chain-risk-auditor"
+          ],
+          "owners_fired": [],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        }
+      ]
+    },
+    {
+      "id": "ho-rename-var",
+      "tags": [
+        "heldout",
+        "trivial"
+      ],
+      "prompt": "Rename the prefs variable to preferences in app/settings-page.tsx",
+      "passed": 2,
+      "runs": 2,
+      "duplicate_owner_runs": 0,
+      "runs_detail": [
+        {
+          "fired": [],
+          "owners_fired": [],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        },
+        {
+          "fired": [],
+          "owners_fired": [],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        }
+      ]
+    },
+    {
+      "id": "ho-eight-booleans",
+      "tags": [
+        "heldout",
+        "frontend"
+      ],
+      "prompt": "Button.tsx has eight boolean props and I keep adding more. Fix the API.",
+      "passed": 2,
+      "runs": 2,
+      "duplicate_owner_runs": 0,
+      "runs_detail": [
+        {
+          "fired": [
+            "ce-work",
+            "composition-patterns",
+            "engineering-router",
+            "react-best-practices"
+          ],
+          "owners_fired": [
+            "ce-work"
+          ],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        },
+        {
+          "fired": [
+            "ce-work",
+            "composition-patterns",
+            "engineering-router",
+            "react-best-practices"
+          ],
+          "owners_fired": [
+            "ce-work"
+          ],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        }
+      ]
+    },
+    {
+      "id": "ho-focus-rings",
+      "tags": [
+        "heldout",
+        "ui"
+      ],
+      "prompt": "Are the focus rings and colour contrast on this button usable for keyboard users?",
+      "passed": 2,
+      "runs": 2,
+      "duplicate_owner_runs": 0,
+      "runs_detail": [
+        {
+          "fired": [
+            "web-design-guidelines"
+          ],
+          "owners_fired": [],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        },
+        {
+          "fired": [
+            "web-design-guidelines"
+          ],
+          "owners_fired": [],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        }
+      ]
+    },
+    {
+      "id": "ho-failing-test-first",
+      "tags": [
+        "heldout",
+        "testing"
+      ],
+      "prompt": "Write the failing test first, then make the queue respect a configurable concurrency limit.",
+      "passed": 2,
+      "runs": 2,
+      "duplicate_owner_runs": 0,
+      "runs_detail": [
+        {
+          "fired": [
+            "ce-work",
+            "engineering-router",
+            "tdd"
+          ],
+          "owners_fired": [
+            "ce-work"
+          ],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        },
+        {
+          "fired": [
+            "ce-work",
+            "engineering-router",
+            "tdd"
+          ],
+          "owners_fired": [
+            "ce-work"
+          ],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        }
+      ]
+    },
+    {
+      "id": "ho-two-jobs-one-module",
+      "tags": [
+        "heldout",
+        "architecture"
+      ],
+      "prompt": "lib/queue.ts is doing both scheduling and concurrency limiting. Should those be one thing?",
+      "passed": 2,
+      "runs": 2,
+      "duplicate_owner_runs": 0,
+      "runs_detail": [
+        {
+          "fired": [
+            "codebase-design"
+          ],
+          "owners_fired": [],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        },
+        {
+          "fired": [
+            "codebase-design"
+          ],
+          "owners_fired": [],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        }
+      ]
+    },
+    {
+      "id": "ho-boto3-presign",
+      "tags": [
+        "heldout",
+        "aws",
+        "python"
+      ],
+      "prompt": "Add a function that uploads the rendered video to S3 and returns a presigned URL",
+      "passed": 2,
+      "runs": 2,
+      "duplicate_owner_runs": 0,
+      "runs_detail": [
+        {
+          "fired": [
+            "aws-sdk-python-usage",
+            "ce-work",
+            "engineering-router"
+          ],
+          "owners_fired": [
+            "ce-work"
+          ],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        },
+        {
+          "fired": [
+            "aws-sdk-python-usage",
+            "ce-work",
+            "engineering-router"
+          ],
+          "owners_fired": [
+            "ce-work"
+          ],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        }
+      ]
+    },
+    {
+      "id": "ho-terraform-cache",
+      "tags": [
+        "heldout",
+        "aws",
+        "iac"
+      ],
+      "prompt": "Add a CloudFront cache behaviour for /assets in infra/cloudfront.tf",
+      "passed": 2,
+      "runs": 2,
+      "duplicate_owner_runs": 0,
+      "runs_detail": [
+        {
+          "fired": [
+            "ce-work",
+            "engineering-router",
+            "terraform-style-guide"
+          ],
+          "owners_fired": [
+            "ce-work"
+          ],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [
+            "terraform-style-guide"
+          ],
+          "pass": true,
+          "error": null
+        },
+        {
+          "fired": [
+            "engineering-router",
+            "terraform-style-guide"
+          ],
+          "owners_fired": [],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [
+            "terraform-style-guide"
+          ],
+          "pass": true,
+          "error": null
+        }
+      ]
+    },
+    {
+      "id": "ho-deploy-portfolio",
+      "tags": [
+        "heldout",
+        "collision",
+        "deployment"
+      ],
+      "prompt": "Deploy this app and give me the link",
+      "passed": 2,
+      "runs": 2,
+      "duplicate_owner_runs": 0,
+      "runs_detail": [
+        {
+          "fired": [],
+          "owners_fired": [],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        },
+        {
+          "fired": [],
+          "owners_fired": [],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        }
+      ]
+    },
+    {
+      "id": "ho-standalone-script",
+      "tags": [
+        "heldout",
+        "python",
+        "negative"
+      ],
+      "prompt": "Write a standalone script to re-encode the audio fixtures at 48kHz",
+      "passed": 2,
+      "runs": 2,
+      "duplicate_owner_runs": 0,
+      "runs_detail": [
+        {
+          "fired": [],
+          "owners_fired": [],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        },
+        {
+          "fired": [
+            "modern-python"
+          ],
+          "owners_fired": [],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        }
+      ]
+    },
+    {
+      "id": "ho-agent-bad-answers",
+      "tags": [
+        "heldout",
+        "collision",
+        "llm"
+      ],
+      "prompt": "Our Bedrock summariser in service/summarise.py returns incomplete answers. Improve the output quality.",
+      "passed": 1,
+      "runs": 2,
+      "duplicate_owner_runs": 0,
+      "runs_detail": [
+        {
+          "fired": [
+            "amazon-bedrock",
+            "claude-api",
+            "engineering-router"
+          ],
+          "owners_fired": [],
+          "duplicate_owner": false,
+          "owner_ok": false,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [
+            "claude-api"
+          ],
+          "pass": false,
+          "error": null
+        },
+        {
+          "fired": [
+            "amazon-bedrock",
+            "aws-sdk-python-usage",
+            "ce-debug",
+            "claude-api",
+            "engineering-router"
+          ],
+          "owners_fired": [
+            "ce-debug"
+          ],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [
+            "claude-api"
+          ],
+          "pass": true,
+          "error": null
+        }
+      ]
+    },
+    {
+      "id": "ho-agent-new-rule",
+      "tags": [
+        "heldout",
+        "collision",
+        "llm"
+      ],
+      "prompt": "Add a rule to the summariser so it never mentions competitor names",
+      "passed": 2,
+      "runs": 2,
+      "duplicate_owner_runs": 0,
+      "runs_detail": [
+        {
+          "fired": [
+            "ce-work",
+            "engineering-router"
+          ],
+          "owners_fired": [
+            "ce-work"
+          ],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        },
+        {
+          "fired": [
+            "claude-api",
+            "engineering-router"
+          ],
+          "owners_fired": [],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [
+            "claude-api"
+          ],
+          "pass": true,
+          "error": null
+        }
+      ]
+    },
+    {
+      "id": "ho-cli-json-flag",
+      "tags": [
+        "heldout",
+        "cli"
+      ],
+      "prompt": "Add a --json flag to our CLI so scripts can parse the output",
+      "passed": 2,
+      "runs": 2,
+      "duplicate_owner_runs": 0,
+      "runs_detail": [
+        {
+          "fired": [
+            "ce-work",
+            "cli-for-agents",
+            "engineering-router"
+          ],
+          "owners_fired": [
+            "ce-work"
+          ],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        },
+        {
+          "fired": [
+            "ce-work",
+            "cli-for-agents",
+            "engineering-router"
+          ],
+          "owners_fired": [
+            "ce-work"
+          ],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        }
+      ]
+    },
+    {
+      "id": "ho-why-hashed",
+      "tags": [
+        "heldout",
+        "rationale"
+      ],
+      "prompt": "Why do we hash the beatmap before uploading it? Nobody on the team remembers.",
+      "passed": 2,
+      "runs": 2,
+      "duplicate_owner_runs": 0,
+      "runs_detail": [
+        {
+          "fired": [
+            "why"
+          ],
+          "owners_fired": [],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        },
+        {
+          "fired": [
+            "why"
+          ],
+          "owners_fired": [],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        }
+      ]
+    },
+    {
+      "id": "ho-tf-modularise",
+      "tags": [
+        "heldout",
+        "iac"
+      ],
+      "prompt": "infra/ is nineteen flat .tf files with no modules. Should some of this be broken up?",
+      "passed": 2,
+      "runs": 2,
+      "duplicate_owner_runs": 0,
+      "runs_detail": [
+        {
+          "fired": [
+            "ce-brainstorm",
+            "codebase-design",
+            "engineering-router",
+            "refactor-module"
+          ],
+          "owners_fired": [
+            "ce-brainstorm"
+          ],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        },
+        {
+          "fired": [
+            "ce-plan",
+            "codebase-design",
+            "engineering-router",
+            "refactor-module"
+          ],
+          "owners_fired": [
+            "ce-plan"
+          ],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        }
+      ]
+    },
+    {
+      "id": "ho-python-uv-script",
+      "tags": [
+        "heldout",
+        "python"
+      ],
+      "prompt": "Write a Python script that re-encodes the audio fixtures at 48kHz. It needs pydub.",
+      "passed": 2,
+      "runs": 2,
+      "duplicate_owner_runs": 0,
+      "runs_detail": [
+        {
+          "fired": [
+            "modern-python"
+          ],
+          "owners_fired": [],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        },
+        {
+          "fired": [
+            "modern-python"
+          ],
+          "owners_fired": [],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        }
+      ]
+    }
+  ]
+}
