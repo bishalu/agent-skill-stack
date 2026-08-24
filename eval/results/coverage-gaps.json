@@ -1,0 +1,182 @@
+{
+  "ranAt": "2026-08-24T11:36:33",
+  "model": "session default",
+  "runs": 2,
+  "cases": 4,
+  "sessions": 8,
+  "passRate": 1.0,
+  "duplicateOwnerRuns": 0,
+  "costUsd": 2.02,
+  "results": [
+    {
+      "id": "ho-tf-test",
+      "tags": [
+        "heldout",
+        "iac",
+        "coverage"
+      ],
+      "prompt": "Add tests for infra/cloudfront.tf so a bad cache behaviour fails before apply",
+      "passed": 2,
+      "runs": 2,
+      "duplicate_owner_runs": 0,
+      "runs_detail": [
+        {
+          "fired": [
+            "ce-work",
+            "engineering-router",
+            "terraform-style-guide",
+            "terraform-test"
+          ],
+          "owners_fired": [
+            "ce-work"
+          ],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        },
+        {
+          "fired": [
+            "ce-work",
+            "engineering-router",
+            "terraform-style-guide",
+            "terraform-test"
+          ],
+          "owners_fired": [
+            "ce-work"
+          ],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        }
+      ]
+    },
+    {
+      "id": "ho-unslop-draft",
+      "tags": [
+        "heldout",
+        "prose",
+        "coverage"
+      ],
+      "prompt": "This README draft reads like ChatGPT wrote it. Clean up the writing.",
+      "passed": 2,
+      "runs": 2,
+      "duplicate_owner_runs": 0,
+      "runs_detail": [
+        {
+          "fired": [
+            "unslop"
+          ],
+          "owners_fired": [],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        },
+        {
+          "fired": [
+            "unslop"
+          ],
+          "owners_fired": [],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        }
+      ]
+    },
+    {
+      "id": "ho-misuse-api",
+      "tags": [
+        "heldout",
+        "security",
+        "coverage"
+      ],
+      "prompt": "Is the verifySession signature in lib/auth.ts easy to misuse? A caller could forget to check the null return and treat it as authenticated.",
+      "passed": 2,
+      "runs": 2,
+      "duplicate_owner_runs": 0,
+      "runs_detail": [
+        {
+          "fired": [
+            "sharp-edges"
+          ],
+          "owners_fired": [],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        },
+        {
+          "fired": [
+            "sharp-edges"
+          ],
+          "owners_fired": [],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        }
+      ]
+    },
+    {
+      "id": "ho-is-it-exploitable",
+      "tags": [
+        "heldout",
+        "security",
+        "coverage"
+      ],
+      "prompt": "A scanner flagged the JWT fallback secret in lib/auth.ts as critical. Is that actually exploitable here, or a false positive?",
+      "passed": 2,
+      "runs": 2,
+      "duplicate_owner_runs": 0,
+      "runs_detail": [
+        {
+          "fired": [
+            "fp-check"
+          ],
+          "owners_fired": [],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        },
+        {
+          "fired": [
+            "fp-check"
+          ],
+          "owners_fired": [],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        }
+      ]
+    }
+  ]
+}

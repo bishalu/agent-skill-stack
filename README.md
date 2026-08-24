@@ -130,6 +130,11 @@ exists to drive to zero, and it has never been anything else.
 The runner exits non-zero the moment two lifecycle owners fire in one session. Treat
 that as the gate it is.
 
+Passive overlays get three tests each, not one: does it fire on its domain alongside an
+owner, does it stay silent on a one-line edit, and does it leave the neighbouring
+specialist alone. Fixing the first by widening a trigger is easy and breaks the second
+quietly. [VERIFICATION.md](VERIFICATION.md) has the method and the coverage matrix.
+
 Three real defects came out of running it, none of which reading would have caught.
 
 `react-best-practices` only fired when a prompt said "React" or "Next.js" by name.
@@ -218,6 +223,8 @@ HashiCorp files are MPL 2.0. Everything original in this repo is MIT.
 
 [ARCHITECTURE.md](ARCHITECTURE.md) has the ownership model, the four invocation classes,
 and the conflict matrix showing who was fighting over what before curation.
+[VERIFICATION.md](VERIFICATION.md) has the testing method per invocation class and a
+generated coverage matrix showing which cases exercise which skill.
 [DEVIATIONS.md](DEVIATIONS.md) has every changed description next to the upstream text.
 [MANIFEST.md](MANIFEST.md) has pinned commits and the exclusion list.
 [UPDATING.md](UPDATING.md) is the update procedure.

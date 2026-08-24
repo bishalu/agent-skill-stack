@@ -62,6 +62,11 @@ python3 eval/rescore.py eval/results/x.json             # rescore stored runs, n
 The runner exits non-zero if any session fired two lifecycle owners. That is the
 acceptance gate.
 
+Then regenerate the coverage matrix with `python3 scripts/render-verification.py`. It
+counts how many cases require, forbid, and allow each installed skill, and lists any that
+no case names at all. Adding a skill without adding cases shows up there immediately,
+which is how the last five coverage holes were found.
+
 `rescore.py` matters more than it looks. The stored `fired` list per run is the raw
 observation and scoring is derived, so when a scoring rule turns out to be wrong you fix
 the rule and rescore rather than paying for the sessions again. Two of my early failures
