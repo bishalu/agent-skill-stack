@@ -30,7 +30,9 @@ PATH = re.compile(r"`([\w./@-]*/[\w./@-]+)`")
 # or dereferenced. Debolding "**CRITICAL**:" is a style fix, not a fact change.
 ENVVAR = re.compile(r"`([A-Z][A-Z0-9_]{3,})`|\$\{?([A-Z][A-Z0-9_]{3,})\}?|"
                     r"\b([A-Z][A-Z0-9_]{3,})=")
-ENDPOINT = re.compile(r"(/(?:api|v\d)[\w/{}.-]*)")
+# An endpoint, not the tail of "v1/v2". Require the slash to start a path rather
+# than separate two words.
+ENDPOINT = re.compile(r"(?<![\w/])(/(?:api|v\d)[\w/{}.-]*)")
 FENCE = re.compile(r"```[a-zA-Z]*\n(.*?)```", re.S)
 FLAG = re.compile(r"(?<![\w-])(--[a-z][\w-]+)")
 

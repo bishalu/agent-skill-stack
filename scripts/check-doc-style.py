@@ -32,9 +32,13 @@ CHECKS = {
                            "title-case headings; use sentence case"),
     "emoji": (re.compile(r"[\U0001F300-\U0001FAFF✅❌⚠⭐✨\U0001F947-\U0001F949]"),
               "decorative emoji"),
+    # Case-sensitive on purpose. "Robust Neural AFP" is a paper title and
+    # "Seamless" is a model name; a capitalised hit is usually a proper noun the
+    # docs are right to quote verbatim. Matching lowercase only costs the
+    # sentence-initial case and buys back every citation.
     "ai_vocab": (re.compile(r"\b(crucial|delve|pivotal|showcase|underscore|tapestry|"
                             r"leverage|utilize|facilitate|robust|seamless|holistic|"
-                            r"myriad|garner|interplay|intricate|enduring|testament)\b", re.I),
+                            r"myriad|garner|interplay|intricate|enduring|testament)\b"),
                  "AI vocabulary; use the plain word"),
     "not_just_but": (re.compile(r"\bnot (?:just|only)\b[^.\n]{0,60}\bbut\b", re.I),
                      "\"not just X but Y\"; state the point directly"),

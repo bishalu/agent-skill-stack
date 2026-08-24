@@ -104,6 +104,13 @@ def resolves(ref, files, dirs, repo, doc_dir):
         return "moved"
     if os.path.exists(os.path.join(repo, ref)):
         return True          # untracked but present, e.g. gitignored artifacts
+    # "utils/beat_grid.detect_beat_grid" is a module.function reference, not a
+    # path. Resolve it when the module exists and the tail is an identifier
+    # rather than a file extension.
+    head, _, tail = ref.rpartition(".")
+    if head and tail and not tail.startswith(tuple(e[1:] for e in CODE_EXT)):
+        if tail.isidentifier() and (head + ".py" in files or head in dirs):
+            return True
     return False
 
 
