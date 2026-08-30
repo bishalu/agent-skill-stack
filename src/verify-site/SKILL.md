@@ -123,6 +123,19 @@ failure, which is a row that stays red for months telling nobody which matters.
 - Never rebuild while a gate is running. The asset hashes change underneath it
   and every lazy import 404s, which reads as a page defect.
 
+## After the deploy, ask the deployed site a question
+
+Every stage above runs against localhost, so none of them can see a deploy that
+succeeded and shipped a broken site. That gap is not theoretical: a site whose
+API routes compile into an SSR function the CLI never uploads served 404s on its
+contact endpoint for eight hours while every local gate stayed green, because
+the deploy tool printed success and nothing asked the live host anything.
+
+Keep one post-deploy check that hits the real origin and asserts a status per
+route. Make it name the failure by its signature rather than printing a list of
+404s — "the hand-written functions answer and the framework routes do not" is a
+deploy-shape problem, and no amount of reading the code will find it.
+
 ## Cost
 
 Local dev servers bill nothing; run them freely. A deploy spends, so it happens
