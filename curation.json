@@ -60,7 +60,7 @@
         "class": "MANUAL",
         "domain": "setup/maintenance",
         "frontmatter": {},
-        "reason": "Unmodified \u2014 already disable-model-invocation upstream. Included because code-review's Spec axis reads docs/agents/issue-tracker.md, which only this skill writes."
+        "reason": "Unmodified — already disable-model-invocation upstream. Included because code-review's Spec axis reads docs/agents/issue-tracker.md, which only this skill writes."
       },
       "writing-for-agents": {
         "path": "skills/productivity/writing-for-agents",
@@ -86,16 +86,16 @@
         "class": "PASSIVE",
         "domain": "frontend implementation",
         "frontmatter": {
-          "description": "Vercel Engineering's rules for writing React and Next.js: request waterfalls, bundle size, server rendering, data fetching, and re-render cost. Consult by default on any React or Next.js work, whether that is adding or changing a component, page, route, hook, form, or data fetch, and including feature requests that describe the interface without naming the framework. Also use when explaining why React or Next code is slow. An advisory overlay for the workflow already running; it does not own implementation and is not a code-review or PR-review workflow."
+          "description": "Vercel Engineering's rules for writing React and Next.js: request waterfalls, bundle size, server rendering, data fetching, and re-render cost. Consult when writing or changing a React component, hook, form, or data fetch, including feature requests that describe the interface without naming the framework. Also use when explaining why React code is slow. Its Next.js App Router, RSC, server-action and next/dynamic rules apply only inside a Next.js project and are skipped elsewhere. An advisory overlay for the workflow already running; it does not own implementation and is not a code-review or PR-review workflow."
         },
-        "reason": "Upstream said 'used when writing, reviewing, or refactoring React/Next.js code'. The 'reviewing' verb made it a candidate owner for code review, so it was removed. Two eval rounds then chased a reliability problem. The first narrowing only fired when a prompt named React or Next: 'add a settings page to this Next.js application' fired 3/3, 'build me an export-to-CSV button on the settings page' 0/2. Widening to cover unnamed-framework UI work lifted that to 1/2, still unreliable. The fix was the opening clause: leading with 'performance rules' let the model judge the skill irrelevant to a plain feature build, so it now leads with 'rules for writing React and Next.js' and says consult by default."
+        "reason": "Upstream said 'used when writing, reviewing, or refactoring React/Next.js code'. The 'reviewing' verb made it a candidate owner for code review, so it was removed. Two eval rounds then chased a reliability problem. The first narrowing only fired when a prompt named React or Next: 'add a settings page to this Next.js application' fired 3/3, 'build me an export-to-CSV button on the settings page' 0/2. Widening to cover unnamed-framework UI work lifted that to 1/2, still unreliable. The fix was the opening clause: leading with 'performance rules' let the model judge the skill irrelevant to a plain feature build, so it now leads with 'rules for writing React and Next.js' and says consult by default. Third pass, 2026-08-24: 'Consult by default on any React or Next.js work' was demoted to 'Consult when'. No repo in this environment uses Next.js, so the default-consult claim pulled roughly 3,800 lines of App Router, RSC and server-action guidance into context on work where none of its ten CRITICAL rules apply. The Next-only material is now explicitly fenced rather than presented as the priority. React itself is still in use, so the skill stays PASSIVE."
       },
       "composition-patterns": {
         "path": "skills/composition-patterns",
         "class": "CONDITIONAL",
         "domain": "frontend component API design",
         "frontmatter": {
-          "description": "React component API design: compound components, children over render props, explicit variants instead of boolean prop proliferation, context boundaries, and the React 19 ref change. Use when designing or refactoring the public shape of a reusable component \u2014 too many boolean props, a component library API, or a prop interface that has stopped scaling. A design overlay for component interfaces, not a general React performance or implementation workflow."
+          "description": "React component API design: compound components, children over render props, explicit variants instead of boolean prop proliferation, context boundaries, and the React 19 ref change. Use when designing or refactoring the public shape of a reusable component — too many boolean props, a component library API, or a prop interface that has stopped scaling. A design overlay for component interfaces, not a general React performance or implementation workflow."
         },
         "reason": "Upstream 'component architecture' clause overlapped both react-best-practices and codebase-design. Narrowed to the public shape of a component's props, with a negative boundary against the performance overlay."
       },
@@ -104,7 +104,7 @@
         "class": "CONDITIONAL",
         "domain": "UI/UX & accessibility review",
         "frontmatter": {
-          "description": "Audit UI code against the Web Interface Guidelines \u2014 accessibility, focus states, forms, motion, typography, images, touch targets, theming, and i18n. Use when the user explicitly asks for a UI, UX, design, or accessibility review, or when the active review workflow flags an interface surface that needs one. Not the default reviewer for a general code or PR review, and not a React performance pass."
+          "description": "Audit UI code against the Web Interface Guidelines — accessibility, focus states, forms, motion, typography, images, touch targets, theming, and i18n. Use when the user explicitly asks for a UI, UX, design, or accessibility review, or when the active review workflow flags an interface surface that needs one. Not the default reviewer for a general code or PR review, and not a React performance pass."
         },
         "reason": "Upstream 'check my site against best practices' is broad enough to catch a generic review request. Replaced with an explicit-request-or-delegation trigger and a negative boundary against general review."
       },
@@ -113,9 +113,9 @@
         "class": "CONDITIONAL",
         "domain": "frontend implementation (narrow)",
         "frontmatter": {
-          "description": "Implement animations with React's View Transition API \u2014 <ViewTransition>, addTransitionType, and CSS view-transition pseudo-elements. Use for page or route transition animations, shared-element transitions, enter/exit or list-reorder animation, or directional back/forward navigation animation in React and Next.js, and whenever startViewTransition or ViewTransition is mentioned."
+          "description": "Implement animations with React's View Transition API — <ViewTransition>, addTransitionType, and CSS view-transition pseudo-elements. Use for page or route transition animations, shared-element transitions, enter/exit or list-reorder animation, or directional back/forward navigation animation in React and Next.js, and whenever startViewTransition or ViewTransition is mentioned. React only — it does not apply to Astro's native ClientRouter, transition:name or transition:persist, which are a different API that this skill's class-keyed ::view-transition-old(.class) selectors never match."
         },
-        "reason": "Trigger unchanged in substance; compressed from 92 to 58 words for the context budget."
+        "reason": "Trigger unchanged in substance; compressed from 92 to 58 words for the context budget. Second pass, 2026-08-24: kept rather than dropped, but fenced. The stack now serves an Astro repo that ships native view transitions, and there the skill is actively misleading — it proposes <ViewTransition> wrappers and a react@canary install for a feature already working, and its class-keyed pseudo-element recipes silently never match Astro's name-based groups. Removing it outright would have cost the one React repo in this environment a valid skill, so the trigger carries an explicit Astro exclusion instead."
       },
       "vercel-optimize": {
         "path": "skills/vercel-optimize",
@@ -125,7 +125,7 @@
           "description": "Audit a deployed Vercel project for cost and performance: collect account metrics first, investigate only metric-backed candidates, produce ranked recommendations. Manual invocation only.",
           "disable-model-invocation": true
         },
-        "reason": "Expensive and side-reaching \u2014 it pulls billing and analytics data from the connected Vercel account. Phase 3 puts that in MANUAL. Description trimmed accordingly since it is now slash-only."
+        "reason": "Expensive and side-reaching — it pulls billing and analytics data from the connected Vercel account. Phase 3 puts that in MANUAL. Description trimmed accordingly since it is now slash-only."
       }
     },
     "excluded": {
@@ -138,7 +138,7 @@
     "install": "forked-local-marketplace",
     "cloneDir": "trailofbits_skills",
     "marketplaceName": "trailofbits-curated",
-    "note": "Forked into a local marketplace rather than installed from trailofbits/skills, because several of these plugins carry plugin-level agents, hooks, commands, and CLAUDE_PLUGIN_ROOT-relative workflows that only survive a plugin install \u2014 and their routing metadata cannot be changed from outside the plugin. The fork is regenerated from upstream/ by scripts/build.sh; Claude's plugin cache is never edited.",
+    "note": "Forked into a local marketplace rather than installed from trailofbits/skills, because several of these plugins carry plugin-level agents, hooks, commands, and CLAUDE_PLUGIN_ROOT-relative workflows that only survive a plugin install — and their routing metadata cannot be changed from outside the plugin. The fork is regenerated from upstream/ by scripts/build.sh; Claude's plugin cache is never edited.",
     "plugins": {
       "differential-review": {
         "class": "CONDITIONAL",
@@ -146,7 +146,7 @@
         "skills": {
           "differential-review": {
             "frontmatter": {
-              "description": "Security-focused differential review of a diff, commit range, or pull request: threat-model the change, compute blast radius, and hunt for security regressions the change introduces. Use when the user explicitly asks for a security review of changes, or when the active review workflow finds the diff touches a security-sensitive surface \u2014 authentication, authorization, permissions, secrets, cryptography, payments or value transfer, untrusted input, deserialization, file upload, external calls, unsafe or native boundaries, dependency changes, or security configuration. Not for a general request to review a PR with no security signal."
+              "description": "Security-focused differential review of a diff, commit range, or pull request: threat-model the change, compute blast radius, and hunt for security regressions the change introduces. Use when the user explicitly asks for a security review of changes, or when the active review workflow finds the diff touches a security-sensitive surface — authentication, authorization, permissions, secrets, cryptography, payments or value transfer, untrusted input, deserialization, file upload, external calls, unsafe or native boundaries, dependency changes, or security configuration. Not for a general request to review a PR with no security signal."
             },
             "reason": "Upstream ('Performs security-focused differential review of code changes (PRs, commits, diffs)') had no activation condition and no negative boundary, so a bare 'review this PR' could pull it in alongside ce-code-review. Rewritten with an explicit-request-or-delegation trigger, the enumerated security surfaces, and a negative boundary."
           }
@@ -173,7 +173,7 @@
           },
           "sarif-parsing": {
             "frontmatter": {},
-            "reason": "Unmodified \u2014 already narrow, with a negative boundary against the scanners.",
+            "reason": "Unmodified — already narrow, with a negative boundary against the scanners.",
             "class": "CONDITIONAL"
           }
         }
@@ -184,7 +184,7 @@
         "skills": {
           "supply-chain-risk-auditor": {
             "frontmatter": {},
-            "reason": "Unmodified \u2014 sole owner of the supply-chain domain, trigger already specific. The router carries the rule that it runs directly rather than wrapped in the Compound feature lifecycle."
+            "reason": "Unmodified — sole owner of the supply-chain domain, trigger already specific. The router carries the rule that it runs directly rather than wrapped in the Compound feature lifecycle."
           }
         }
       },
@@ -194,7 +194,7 @@
         "skills": {
           "variant-analysis": {
             "frontmatter": {},
-            "reason": "Unmodified \u2014 upstream already states the precondition (a bug in hand) and the negative boundary (not initial discovery)."
+            "reason": "Unmodified — upstream already states the precondition (a bug in hand) and the negative boundary (not initial discovery)."
           }
         }
       },
@@ -204,7 +204,7 @@
         "skills": {
           "fp-check": {
             "frontmatter": {},
-            "reason": "Unmodified \u2014 upstream already bounds it to verifying a specific suspected finding, explicitly not hunting."
+            "reason": "Unmodified — upstream already bounds it to verifying a specific suspected finding, explicitly not hunting."
           }
         }
       },
@@ -226,7 +226,7 @@
         "skills": {
           "agentic-actions-auditor": {
             "frontmatter": {},
-            "reason": "Unmodified \u2014 trigger is already confined to workflow files that invoke AI agents."
+            "reason": "Unmodified — trigger is already confined to workflow files that invoke AI agents."
           }
         }
       },
@@ -247,7 +247,7 @@
         "class": "MANUAL",
         "domain": "secrets / security configuration",
         "skills": {},
-        "note": "Command-only plugin \u2014 ships /insecure-defaults:audit with no SKILL.md, so it has no model-invocable surface and needs no deviation."
+        "note": "Command-only plugin — ships /insecure-defaults:audit with no SKILL.md, so it has no model-invocable surface and needs no deviation."
       },
       "modern-python": {
         "class": "PASSIVE",
@@ -258,18 +258,18 @@
         "skills": {
           "modern-python": {
             "frontmatter": {
-              "description": "Modern Python project tooling \u2014 uv for environments and dependencies, ruff for lint and format, ty for type checking. Use whenever Python is being set up or run: a new project, a one-off or standalone script, adding or pinning a dependency, a requirements.txt or pyproject.toml edit, or a migration off pip, Poetry, mypy, or black. A tooling overlay; it does not own implementation or planning."
+              "description": "Modern Python project tooling — uv for environments and dependencies, ruff for lint and format, ty for type checking. Use whenever Python is being set up or run: a new project, a one-off or standalone script, adding or pinning a dependency, a requirements.txt or pyproject.toml edit, or a migration off pip, Poetry, mypy, or black. A tooling overlay; it does not own implementation or planning."
             },
-            "reason": "Added after profiling the environment: four Python repos, all on requirements.txt. The trigger gained an explicit non-ownership clause so it advises ce-work rather than competing with it. Originally excluded from this stack as out of scope \u2014 that call was made before the environment was profiled and was wrong. A first probe then showed the narrowed trigger never fired on 'write a standalone script' (0/2) \u2014 the model read the task as too small to need tooling advice. The trigger now names the concrete moments Python tooling is chosen, rather than the abstract activity."
+            "reason": "Added after profiling the environment: four Python repos, all on requirements.txt. The trigger gained an explicit non-ownership clause so it advises ce-work rather than competing with it. Originally excluded from this stack as out of scope — that call was made before the environment was profiled and was wrong. A first probe then showed the narrowed trigger never fired on 'write a standalone script' (0/2) — the model read the task as too small to need tooling advice. The trigger now names the concrete moments Python tooling is chosen, rather than the abstract activity."
           }
         },
         "note": "The plugin's hooks/ directory is excluded from the fork. Upstream ships a SessionStart hook that prepends PATH shims intercepting python, pip, pipx and uv in every session. The guidance is worth having; a global PATH interception that silently activates the moment uv appears on the machine is not something to install by side effect. Restore it by removing excludePaths and rebuilding."
       }
     },
     "excluded": {
-      "second-opinion": "Runs an external LLM review of a diff \u2014 a third owner in the code-review domain alongside ce-code-review and the Pocock second opinion. Excluded rather than demoted.",
+      "second-opinion": "Runs an external LLM review of a diff — a third owner in the code-review domain alongside ce-code-review and the Pocock second opinion. Excluded rather than demoted.",
       "gh-cli, git-cleanup, github-triage": "Compound owns the git/PR/CI lifecycle. gh-cli in particular intercepts ordinary GitHub fetches and would fire constantly.",
-      "property-based-testing, mutation-testing": "Would put a third voice in the testing domain alongside Compound and the Pocock TDD methodology. Genuinely useful \u2014 add deliberately if the testing strategy calls for them.",
+      "property-based-testing, mutation-testing": "Would put a third voice in the testing domain alongside Compound and the Pocock TDD methodology. Genuinely useful — add deliberately if the testing strategy calls for them.",
       "c-review, rust-review, modern-cpp, writing-lean-proofs, dwarf-expert, zeroize-audit, constant-time-analysis, firebase-apk-scanner, burpsuite-project-parser, yara-authoring": "Language or tooling surfaces absent from this environment.",
       "building-secure-contracts, entry-point-analyzer, dimensional-analysis, trailmark": "Smart-contract and binary-analysis specialisms; no blockchain or native work here. trailmark also needs an external binary.",
       "devcontainer-setup, open-sourcing, goal-prompt, skill-improver, testing-handbook-skills, spec-to-code-compliance, vulnerability-triage-brocards, culture-index, let-fate-decide, semgrep-rule-creator, semgrep-rule-variant-creator, claude-in-chrome-troubleshooting": "Out of scope for a general engineering lifecycle, or duplicative of skills already installed."
@@ -288,7 +288,7 @@
         "frontmatter": {
           "description": "Cut AI tells from prose: puffery, formulaic transitions, vague attribution, em-dash pileups, and the rhythms that read as machine-written. Use when asked to unslop, de-slop, humanise, or clean up drafted writing, when prose is said to sound like ChatGPT or read as robotic, and when drafting or revising a README, doc, or announcement meant for people to read. Not for code, commit messages, or code comments."
         },
-        "reason": "Upstream description is 'Cut AI tells from any writing. Must always apply.' \u2014 an unconditional trigger with no boundary, which in an engineering session would fire on commit messages, code comments, and every incidental piece of text. Narrowed to human-facing prose, with the negative boundary against code, and the concrete trigger words kept."
+        "reason": "Upstream description is 'Cut AI tells from any writing. Must always apply.' — an unconditional trigger with no boundary, which in an engineering session would fire on commit messages, code comments, and every incidental piece of text. Narrowed to human-facing prose, with the negative boundary against code, and the concrete trigger words kept."
       },
       "cli-for-agents": {
         "path": "cli-for-agent/skills/cli-for-agents",
@@ -321,7 +321,7 @@
       "principle-* (21 skills)": "A MANUAL principle set. Free contextually, but most of it restates what Compound and the Pocock layer already encode, and 21 slash commands is its own kind of clutter.",
       "arena, swarm, orchestrate, ralph-loop, ralph-loop-help, cancel-ralph": "Multi-agent orchestration, which this host provides natively through Workflow and Agent.",
       "cursor-sdk, create-plugin-scaffold, review-plugin-submission, docs-canvas, agent-compatibility, cursor-team-kit misc, third_party/x": "Cursor-product-specific; inert in Claude Code.",
-      "typescript-best-practices": "A real gap, but its trigger is 'any .ts or .tsx file' \u2014 it would fire on every TypeScript touch. Worth revisiting with a narrowed description.",
+      "typescript-best-practices": "A real gap, but its trigger is 'any .ts or .tsx file' — it would fire on every TypeScript touch. Worth revisiting with a narrowed description.",
       "control-ui, control-cli, create-verification-skill, maintain-verification-skill, verify-this": "Overlap the project's own verify-site skill and ToB fp-check.",
       "benny automations, setup-pstack, poteto-mode, bro, no-comments, show-me-your-work, automate-me": "Personal-workflow and automation scaffolding for another person's setup."
     }
@@ -336,7 +336,7 @@
         "class": "PASSIVE",
         "domain": "IaC authoring",
         "frontmatter": {
-          "description": "HashiCorp's official HCL style conventions \u2014 file layout, naming, argument order, variable and output structure, comments. Consult when writing or editing Terraform configuration. A conventions overlay; it does not own the implementation workflow."
+          "description": "HashiCorp's official HCL style conventions — file layout, naming, argument order, variable and output structure, comments. Consult when writing or editing Terraform configuration. A conventions overlay; it does not own the implementation workflow."
         },
         "reason": "Upstream said 'Use when writing, reviewing, or generating Terraform configurations'. The 'reviewing' verb made it a candidate for the code-review phase, the same problem react-best-practices had. Removed, and non-ownership stated."
       },
@@ -354,14 +354,14 @@
         "class": "CONDITIONAL",
         "domain": "IaC testing",
         "frontmatter": {},
-        "reason": "Unmodified \u2014 already specific to .tftest.hcl, run blocks, assertions, and mocked providers."
+        "reason": "Unmodified — already specific to .tftest.hcl, run blocks, assertions, and mocked providers."
       }
     },
     "excluded": {
       "packer plugin": "AMI and Azure image building. This environment builds Docker images.",
       "the nine provider-development skills": "For authors of Terraform providers, not consumers of them.",
       "azure-verified-modules, terraform-stacks, terraform-policy": "Azure-specific, or tied to paid HCP products.",
-      "terraform-search-import": "Bringing unmanaged cloud resources under Terraform. Borderline \u2014 worth adding if drift between the AWS console and infra/ turns up."
+      "terraform-search-import": "Bringing unmanaged cloud resources under Terraform. Borderline — worth adding if drift between the AWS console and infra/ turns up."
     }
   },
   "aws": {
@@ -403,5 +403,68 @@
       "aws-database": "Routes across Aurora, DynamoDB, DocumentDB, Keyspaces, Neptune and Timestream. The databases here are plain PostgreSQL reached through SQLAlchemy.",
       "aws-sdk-swift-usage, aws-ai-ml, aws-blocks, aws-compute, aws-containers, aws-serverless, signing-in-to-aws": "No Swift, SageMaker, AWS Blocks, EC2, ECS or Lambda surface in this environment. aws-containers is the likeliest of these to be wanted back once the Docker services land on ECS."
     }
+  },
+  "jakubkrehel": {
+    "install": "vendored-skill",
+    "cloneDir": "jakubkrehel_skills",
+    "note": "Two of eleven. Both are values-layer skills: they carry the concrete numbers (leading ratios, measure caps, tracking by size, breakpoint derivation) that no installed skill supplies. Both close with a Block/Approve verdict, which is a review-phase output; since build.py rewrites frontmatter only and never bodies, that verdict is disclaimed in each description instead of removed.",
+    "skills": {
+      "better-typography": {
+        "path": "skills/better-typography",
+        "class": "CONDITIONAL",
+        "domain": "typography values",
+        "frontmatter": {
+          "description": "Web typography values: woff2 delivery, variable-font axes through CSS properties rather than raw feature tags, type-scale construction, line-height by role, letter-spacing by size, measure caps, text-wrap, tabular numbers, truncation, and the iOS 16px input rule. Use when setting or correcting type values in CSS — a font-size that bypasses the scale, a leading that will not scale, an uncapped measure, a font loading the wrong axis. Supplies values to the workflow already running: it does not own review, and its closing Block/Approve verdict does not apply. Where a repo ships its own design spec, that spec wins on typeface, casing and punctuation."
+        },
+        "reason": "Three deviations, all in the description. (1) Upstream triggers on a ~20-keyword list ('typography, font loading, woff2, variable fonts, ... drop cap') broad enough to co-fire with frontend-design on any design task; narrowed to the act of setting or correcting a type value. (2) Upstream ends 'End with Block when any HIGH remains, Approve otherwise' — an owner-level review verdict that collides with ce-code-review. Bodies are never edited here (build.py apply_overrides touches frontmatter only), so the description disclaims it. (3) Its handoffs to sibling skills better-accessibility, better-colors, better-ui and better-writing are dangling — none are installed. Rather than name substitutes in the description, the spec-wins clause covers the one case that actually bites: upstream mandates curly quotes and natural-case copy, which contradicts unslop rules 17/19 and the house style in a consuming repo's own design doc."
+      },
+      "better-layout": {
+        "path": "skills/better-layout",
+        "class": "CONDITIONAL",
+        "domain": "layout structure and adaptivity",
+        "frontmatter": {
+          "description": "Layout structure and adaptivity: container queries over media queries, logical properties over physical ones, breakpoints derived from where content stops fitting rather than from device presets, full-bleed content with inset controls, safe-area insets, and grouping by space before lines. Use when structuring or reflowing a page or component, deciding what collapses at small sizes, or replacing a hand-rolled pixel breakpoint. A mechanics overlay for the workflow already running: it does not own review, and its closing Block/Approve verdict does not apply. Hit areas and focus belong to web-design-guidelines."
+        },
+        "reason": "Same two structural deviations as better-typography: the keyword trigger list is narrowed to the act of structuring or reflowing, and the Block/Approve verdict is disclaimed because it is an owner-level review output. Its hit-area handoff is redirected to web-design-guidelines, which is installed, rather than to the uninstalled better-accessibility. Its RTL and pseudo-localization material is inert in a single-locale environment and is left in place rather than trimmed — bodies are not edited, and an unused section costs only context."
+      }
+    },
+    "excluded": {
+      "better-accessibility, better-colors": "web-design-guidelines already owns accessibility and contrast review, and axe runs inside the consuming repo's own verify gate. Installing these puts a second owner on that phase.",
+      "better-ui, better-interface, explain-interface, interface-review": "Owner-level competitors. interface-review is a review workflow (ce-code-review), explain-interface is a teaching artifact (ce-explain), and better-ui/better-interface duplicate frontend-design's remit on new surfaces.",
+      "better-writing": "unslop owns prose that ships; technical-writing owns the docs.",
+      "break, variant": "Adversarial stress-testing and variant generation — useful, but outside the domains this stack curates, and break overlaps the security plugins already installed."
+    }
+  },
+  "emilkowalski": {
+    "install": "vendored-skill",
+    "cloneDir": "emilkowalski_skills",
+    "note": "One of twelve. The only motion guidance in the stack carrying real numbers — per-element duration budgets, a frequency table, interruptibility mechanics. The eleven siblings are construction-side or platform-specific and would collide with ce-work.",
+    "skills": {
+      "improve-animations": {
+        "path": "skills/improve-animations",
+        "class": "MANUAL",
+        "domain": "motion audit",
+        "frontmatter": {
+          "description": "Audit a whole surface's motion and return prioritized findings with exact target values: easing and duration budgets, purpose-and-frequency gating, interruptibility, transform-origin, reduced-motion, and token cohesion. Read-only on source. Manual invocation only; it hands findings to the planning owner. Its execute variant is not used here — implementation, worktrees and diff verdicts belong to the ce-* lifecycle. Where a repo ships a motion spec, that spec is the authority and these tables are the fallback.",
+          "disable-model-invocation": true
+        },
+        "reason": "Demoted to MANUAL rather than narrowed. Two reasons, both matching how vercel-optimize was handled in Phase 3. First, expense: Phase 2 of the workflow fans out up to eight read-only subagents, and Phase 4 writes plan files into the consuming repo. Side-effecting and expensive workflows are never auto-selected. Second, trigger breadth: upstream fires on 'make this app feel better', which is a claim on any frontend request. The skill itself is well behaved — its Hard Rule 1 forbids touching source and its Hard Rule 4 is a prompt-injection defence — so the only real collision is the execute invocation variant, which dispatches an executor into a worktree and renders a verdict on the diff: ce-work, ce-worktree and ce-code-review at once. The description disclaims that variant. Demoting also neutralizes its dangling reference to review-animations, which is not installed. AUDIT.md and PLAN-TEMPLATE.md travel with it; SKILL.md alone is inert, since the values live in AUDIT.md."
+      }
+    },
+    "excluded": {
+      "animate": "Construction-side — it writes the implementation, which is ce-work's phase. Its curve table is also a near-miss of tokens already shipping in the portfolio (--ease-out: cubic-bezier(0.23, 1, 0.32, 1) against a repo's 0.22, 1, 0.36, 1), and its Hard Rule 2 'never invent, come from the tables below' is worded more forcefully than its Hard Rule 3 'extend the codebase's tokens'. It would quietly fork the system it was brought in to protect.",
+      "review-animations": "Owner-level collision with ce-code-review on the diff-review phase.",
+      "find-animation-opportunities": "Subsumed by improve-animations' own 'missed opportunities' step.",
+      "apple-design": "Ten of seventeen sections cover gesture, drag, momentum and rubber-banding for UI this environment does not build, and its competing set of principle names would be reasoned against a consuming repo's own design doc.",
+      "animation-vocabulary, emil-design-eng": "Reference material with no trigger that routes here.",
+      "prototype, pick-ui-library, ask-sonner": "ce-prototype owns prototyping; the other two are library-selection advice for stacks not in use.",
+      "animate-expo, write-swift": "No React Native, Expo, or Swift work in this environment."
+    }
+  },
+  "$local": {
+    "$comment": "Skills authored in this repo, built from src/ by scripts/build.py. Not vendored, so no pinned SHA — the git history here IS the provenance.",
+    "engineering-router": "Passive routing overlay. Picks one lifecycle owner per phase.",
+    "verify-site": "The verification METHOD: measure the rendered value not the declared one, machine rows against eyes rows, stop on two dry passes, and the capture failures that read as success. A project with its own verify-site overrides this and supplies its ports, routes and drills.",
+    "design-transfer": "The loop for transferring a reference site's craft onto your own pages. Devices not decoration; the project's design spec outranks the reference on every disagreement."
   }
 }

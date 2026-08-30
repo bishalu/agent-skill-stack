@@ -1,0 +1,105 @@
+/* App-wide styles. Grown by accretion; no scale behind any of it. */
+
+:root {
+  --brand: #4f46e5;
+  --text: #111827;
+}
+
+body {
+  font-family: Inter, sans-serif;
+  color: var(--text);
+}
+
+h1 {
+  font-size: 42px;
+  line-height: 48px;
+  letter-spacing: 0;
+}
+
+h2 {
+  font-size: 31px;
+  line-height: 36px;
+}
+
+h3 {
+  font-size: 26px;
+  line-height: 30px;
+}
+
+h4 {
+  /* larger than h3 — nobody noticed */
+  font-size: 28px;
+  line-height: 32px;
+}
+
+p,
+li {
+  font-size: 15px;
+  line-height: 20px;
+}
+
+.settings-panel p {
+  font-size: 14px;
+  line-height: 18px;
+}
+
+.settings-panel {
+  padding-left: 24px;
+  padding-right: 24px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.settings-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 12px;
+}
+
+.settings-input {
+  font-size: 13px;
+  padding: 8px;
+}
+
+.usage-figure {
+  font-size: 22px;
+}
+
+@media (max-width: 1024px) {
+  .settings-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+@media (max-width: 768px) {
+  .settings-grid {
+    grid-template-columns: 1fr;
+  }
+  .settings-panel {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+}
+
+@media (max-width: 640px) {
+  h1 {
+    font-size: 32px;
+  }
+}
+
+button.primary {
+  background: var(--brand);
+  color: #fff;
+  font-size: 14px;
+  padding: 8px 16px;
+  transition: all 0.2s ease-in;
+}
+
+button.lg {
+  font-size: 16px;
+}
+
+button.sm {
+  font-size: 12px;
+  font-weight: 200;
+}

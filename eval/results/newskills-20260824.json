@@ -1,0 +1,190 @@
+{
+  "ranAt": "2026-08-24T21:38:16",
+  "model": "session default",
+  "runs": 2,
+  "cases": 4,
+  "sessions": 8,
+  "passRate": 1.0,
+  "duplicateOwnerRuns": 0,
+  "costUsd": 2.01,
+  "results": [
+    {
+      "id": "type-scale-globals",
+      "tags": [
+        "positive",
+        "frontend",
+        "newskills"
+      ],
+      "prompt": "The headings in app/globals.css are all hardcoded pixel sizes and the line-heights are fixed. Set up a proper type scale.",
+      "passed": 2,
+      "runs": 2,
+      "duplicate_owner_runs": 0,
+      "runs_detail": [
+        {
+          "fired": [
+            "better-typography",
+            "ce-work",
+            "engineering-router"
+          ],
+          "owners_fired": [
+            "ce-work"
+          ],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        },
+        {
+          "fired": [
+            "better-typography",
+            "ce-work",
+            "engineering-router"
+          ],
+          "owners_fired": [
+            "ce-work"
+          ],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        }
+      ]
+    },
+    {
+      "id": "breakpoints-device-presets",
+      "tags": [
+        "positive",
+        "frontend",
+        "newskills"
+      ],
+      "prompt": "app/globals.css collapses the settings grid at 1024px, 768px and 640px because those are the usual breakpoints. Make it break where the content actually stops fitting.",
+      "passed": 2,
+      "runs": 2,
+      "duplicate_owner_runs": 0,
+      "runs_detail": [
+        {
+          "fired": [
+            "better-layout",
+            "ce-work",
+            "engineering-router"
+          ],
+          "owners_fired": [
+            "ce-work"
+          ],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        },
+        {
+          "fired": [
+            "better-layout",
+            "ce-work",
+            "engineering-router"
+          ],
+          "owners_fired": [
+            "ce-work"
+          ],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        }
+      ]
+    },
+    {
+      "id": "agent-doc-sprawl",
+      "tags": [
+        "positive",
+        "docs",
+        "newskills"
+      ],
+      "prompt": "docs/agent-onboarding.md has sprawled and agents keep missing the parts that matter. Tighten it up.",
+      "passed": 2,
+      "runs": 2,
+      "duplicate_owner_runs": 0,
+      "runs_detail": [
+        {
+          "fired": [
+            "writing-for-agents"
+          ],
+          "owners_fired": [],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        },
+        {
+          "fired": [
+            "writing-for-agents"
+          ],
+          "owners_fired": [],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        }
+      ]
+    },
+    {
+      "id": "author-a-skill",
+      "tags": [
+        "positive",
+        "docs",
+        "newskills"
+      ],
+      "prompt": "Write a SKILL.md for a skill that checks our Terraform against the house style before apply.",
+      "passed": 2,
+      "runs": 2,
+      "duplicate_owner_runs": 0,
+      "runs_detail": [
+        {
+          "fired": [
+            "terraform-style-guide",
+            "writing-for-agents"
+          ],
+          "owners_fired": [],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        },
+        {
+          "fired": [
+            "terraform-style-guide",
+            "writing-for-agents"
+          ],
+          "owners_fired": [],
+          "duplicate_owner": false,
+          "owner_ok": true,
+          "missing_support": [],
+          "forbidden_fired": [],
+          "unexpected": [],
+          "pass": true,
+          "error": null
+        }
+      ]
+    }
+  ]
+}

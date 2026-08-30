@@ -233,24 +233,41 @@ def build_fork(key):
         f"This fork inherits {SOURCES[key]['license']}.\n")
 
 
-# ---------------------------------------------------------------- router
-def build_router():
-    src = os.path.join(ROOT, "src", "engineering-router")
-    dest = os.path.join(BUILD, "skills", "engineering-router")
-    copytree(src, dest)
-    inventory.append(dict(name="engineering-router", vendor="this repo", cls="PASSIVE",
-                          domain="routing", install="local skill → ~/.claude/skills", modified=False))
+# ------------------------------------------------------------ local skills
+# Every directory under src/ carrying a SKILL.md, not one hardcoded name. This
+# used to know about engineering-router alone, so adding a second locally
+# authored skill meant editing the builder — and two of them sat outside the
+# stack entirely, unversioned, until someone asked whether they were tracked.
+LOCAL_META = {
+    "engineering-router": dict(cls="PASSIVE", domain="routing"),
+    "verify-site":        dict(cls="ACTIVE",  domain="verification"),
+    "design-transfer":    dict(cls="ACTIVE",  domain="design"),
+}
 
+
+def build_local():
+    src_root = os.path.join(ROOT, "src")
+    for name in sorted(os.listdir(src_root)):
+        d = os.path.join(src_root, name)
+        if not os.path.isfile(os.path.join(d, "SKILL.md")):
+            continue
+        copytree(d, os.path.join(BUILD, "skills", name))
+        meta = LOCAL_META.get(name, dict(cls="ACTIVE", domain="uncategorised"))
+        inventory.append(dict(name=name, vendor="this repo", cls=meta["cls"],
+                              domain=meta["domain"],
+                              install="local skill -> ~/.claude/skills", modified=False))
 
 def main():
     if os.path.isdir(BUILD):
         shutil.rmtree(BUILD)
     os.makedirs(os.path.join(BUILD, "skills"))
-    build_router()
+    build_local()
     build_vendored("mattpocock")
     build_vendored("vercel")
     build_vendored("cursor")
     build_vendored("hashicorp")
+    build_vendored("jakubkrehel")
+    build_vendored("emilkowalski")
     build_fork("trailofbits")
     build_fork("aws")
 

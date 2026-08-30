@@ -60,6 +60,30 @@ _This stack_
 
 > Reconstruct why a decision was made, from the evidence rather than from the code as it stands: source control, issue tracker, long-form docs, chat, incident history. Use for "why does X work this way", "why did we pick Y", design rationale, a regression whose origin matters, a postmortem, or a threshold nobody can justify. Not for how something works today, and not a planning or review step.
 
+## `improve-animations`  ·  emilkowalski  ·  MANUAL
+
+**Why.** Demoted to MANUAL rather than narrowed. Two reasons, both matching how vercel-optimize was handled in Phase 3. First, expense: Phase 2 of the workflow fans out up to eight read-only subagents, and Phase 4 writes plan files into the consuming repo. Side-effecting and expensive workflows are never auto-selected. Second, trigger breadth: upstream fires on 'make this app feel better', which is a claim on any frontend request. The skill itself is well behaved — its Hard Rule 1 forbids touching source and its Hard Rule 4 is a prompt-injection defence — so the only real collision is the execute invocation variant, which dispatches an executor into a worktree and renders a verdict on the diff: ce-work, ce-worktree and ce-code-review at once. The description disclaims that variant. Demoting also neutralizes its dangling reference to review-animations, which is not installed. AUDIT.md and PLAN-TEMPLATE.md travel with it; SKILL.md alone is inert, since the values live in AUDIT.md.
+
+**`description`**
+
+_Upstream_
+
+> description: Survey a codebase's animation and motion code as a senior motion advisor, then produce a prioritized audit and self-contained implementation plans for other agents (or cheaper models) to execute. Read-only on source code — it plans improvements, it does not apply them. Use when the user asks to "improve the animations", "audit the motion", "make this app feel better", or wants a roadmap of animation fixes rather than a review of a single diff.
+
+_This stack_
+
+> Audit a whole surface's motion and return prioritized findings with exact target values: easing and duration budgets, purpose-and-frequency gating, interruptibility, transform-origin, reduced-motion, and token cohesion. Read-only on source. Manual invocation only; it hands findings to the planning owner. Its execute variant is not used here — implementation, worktrees and diff verdicts belong to the ce-* lifecycle. Where a repo ships a motion spec, that spec is the authority and these tables are the fallback.
+
+**`disable-model-invocation`**
+
+_Upstream_
+
+> (absent upstream)
+
+_This stack_
+
+> True
+
 ## `refactor-module`  ·  hashicorp  ·  CONDITIONAL
 
 **Why.** Upstream description was a capability statement with no activation condition. Added the concrete triggers, including the state-move concern that makes this risky to do by hand.
@@ -87,6 +111,34 @@ _Upstream_
 _This stack_
 
 > HashiCorp's official HCL style conventions — file layout, naming, argument order, variable and output structure, comments. Consult when writing or editing Terraform configuration. A conventions overlay; it does not own the implementation workflow.
+
+## `better-layout`  ·  jakubkrehel  ·  CONDITIONAL
+
+**Why.** Same two structural deviations as better-typography: the keyword trigger list is narrowed to the act of structuring or reflowing, and the Block/Approve verdict is disclaimed because it is an owner-level review output. Its hit-area handoff is redirected to web-design-guidelines, which is installed, rather than to the uninstalled better-accessibility. Its RTL and pseudo-localization material is inert in a single-locale environment and is left in place rather than trimmed — bodies are not edited, and an unused section costs only context.
+
+**`description`**
+
+_Upstream_
+
+> description: Layout structure for web interfaces. Use when structuring a page or component, deciding what collapses at small sizes, or reviewing frontend code for layout. Triggers on layout, spacing, alignment, grouping, whitespace, visual hierarchy, reading order, progressive disclosure, breakpoints, container queries, safe area, full-bleed, layout margins, RTL layout, logical properties.
+
+_This stack_
+
+> Layout structure and adaptivity: container queries over media queries, logical properties over physical ones, breakpoints derived from where content stops fitting rather than from device presets, full-bleed content with inset controls, safe-area insets, and grouping by space before lines. Use when structuring or reflowing a page or component, deciding what collapses at small sizes, or replacing a hand-rolled pixel breakpoint. A mechanics overlay for the workflow already running: it does not own review, and its closing Block/Approve verdict does not apply. Hit areas and focus belong to web-design-guidelines.
+
+## `better-typography`  ·  jakubkrehel  ·  CONDITIONAL
+
+**Why.** Three deviations, all in the description. (1) Upstream triggers on a ~20-keyword list ('typography, font loading, woff2, variable fonts, ... drop cap') broad enough to co-fire with frontend-design on any design task; narrowed to the act of setting or correcting a type value. (2) Upstream ends 'End with Block when any HIGH remains, Approve otherwise' — an owner-level review verdict that collides with ce-code-review. Bodies are never edited here (build.py apply_overrides touches frontmatter only), so the description disclaims it. (3) Its handoffs to sibling skills better-accessibility, better-colors, better-ui and better-writing are dangling — none are installed. Rather than name substitutes in the description, the spec-wins clause covers the one case that actually bites: upstream mandates curly quotes and natural-case copy, which contradicts unslop rules 17/19 and the house style in a consuming repo's own design doc.
+
+**`description`**
+
+_Upstream_
+
+> description: Web typography. Use when picking or pairing typefaces, setting up a type scale, or styling and truncating text in components. Triggers on typography, font loading, woff2, variable fonts, opentype features, type scale, heading hierarchy, line-height, letter-spacing, measure, text-wrap, truncation, tabular numbers, underlines, text selection, iOS input zoom, font smoothing, smart punctuation, text-box, drop cap.
+
+_This stack_
+
+> Web typography values: woff2 delivery, variable-font axes through CSS properties rather than raw feature tags, type-scale construction, line-height by role, letter-spacing by size, measure caps, text-wrap, tabular numbers, truncation, and the iOS 16px input rule. Use when setting or correcting type values in CSS — a font-size that bypasses the scale, a leading that will not scale, an uncapped measure, a font loading the wrong axis. Supplies values to the workflow already running: it does not own review, and its closing Block/Approve verdict does not apply. Where a repo ships its own design spec, that spec wins on typeface, casing and punctuation.
 
 ## `code-review`  ·  mattpocock  ·  MANUAL
 
@@ -302,7 +354,7 @@ _This stack_
 
 ## `react-best-practices`  ·  vercel  ·  PASSIVE
 
-**Why.** Upstream said 'used when writing, reviewing, or refactoring React/Next.js code'. The 'reviewing' verb made it a candidate owner for code review, so it was removed. Two eval rounds then chased a reliability problem. The first narrowing only fired when a prompt named React or Next: 'add a settings page to this Next.js application' fired 3/3, 'build me an export-to-CSV button on the settings page' 0/2. Widening to cover unnamed-framework UI work lifted that to 1/2, still unreliable. The fix was the opening clause: leading with 'performance rules' let the model judge the skill irrelevant to a plain feature build, so it now leads with 'rules for writing React and Next.js' and says consult by default.
+**Why.** Upstream said 'used when writing, reviewing, or refactoring React/Next.js code'. The 'reviewing' verb made it a candidate owner for code review, so it was removed. Two eval rounds then chased a reliability problem. The first narrowing only fired when a prompt named React or Next: 'add a settings page to this Next.js application' fired 3/3, 'build me an export-to-CSV button on the settings page' 0/2. Widening to cover unnamed-framework UI work lifted that to 1/2, still unreliable. The fix was the opening clause: leading with 'performance rules' let the model judge the skill irrelevant to a plain feature build, so it now leads with 'rules for writing React and Next.js' and says consult by default. Third pass, 2026-08-24: 'Consult by default on any React or Next.js work' was demoted to 'Consult when'. No repo in this environment uses Next.js, so the default-consult claim pulled roughly 3,800 lines of App Router, RSC and server-action guidance into context on work where none of its ten CRITICAL rules apply. The Next-only material is now explicitly fenced rather than presented as the priority. React itself is still in use, so the skill stays PASSIVE.
 
 **`description`**
 
@@ -312,11 +364,11 @@ _Upstream_
 
 _This stack_
 
-> Vercel Engineering's rules for writing React and Next.js: request waterfalls, bundle size, server rendering, data fetching, and re-render cost. Consult by default on any React or Next.js work, whether that is adding or changing a component, page, route, hook, form, or data fetch, and including feature requests that describe the interface without naming the framework. Also use when explaining why React or Next code is slow. An advisory overlay for the workflow already running; it does not own implementation and is not a code-review or PR-review workflow.
+> Vercel Engineering's rules for writing React and Next.js: request waterfalls, bundle size, server rendering, data fetching, and re-render cost. Consult when writing or changing a React component, hook, form, or data fetch, including feature requests that describe the interface without naming the framework. Also use when explaining why React code is slow. Its Next.js App Router, RSC, server-action and next/dynamic rules apply only inside a Next.js project and are skipped elsewhere. An advisory overlay for the workflow already running; it does not own implementation and is not a code-review or PR-review workflow.
 
 ## `react-view-transitions`  ·  vercel  ·  CONDITIONAL
 
-**Why.** Trigger unchanged in substance; compressed from 92 to 58 words for the context budget.
+**Why.** Trigger unchanged in substance; compressed from 92 to 58 words for the context budget. Second pass, 2026-08-24: kept rather than dropped, but fenced. The stack now serves an Astro repo that ships native view transitions, and there the skill is actively misleading — it proposes <ViewTransition> wrappers and a react@canary install for a feature already working, and its class-keyed pseudo-element recipes silently never match Astro's name-based groups. Removing it outright would have cost the one React repo in this environment a valid skill, so the trigger carries an explicit Astro exclusion instead.
 
 **`description`**
 
@@ -326,7 +378,7 @@ _Upstream_
 
 _This stack_
 
-> Implement animations with React's View Transition API — <ViewTransition>, addTransitionType, and CSS view-transition pseudo-elements. Use for page or route transition animations, shared-element transitions, enter/exit or list-reorder animation, or directional back/forward navigation animation in React and Next.js, and whenever startViewTransition or ViewTransition is mentioned.
+> Implement animations with React's View Transition API — <ViewTransition>, addTransitionType, and CSS view-transition pseudo-elements. Use for page or route transition animations, shared-element transitions, enter/exit or list-reorder animation, or directional back/forward navigation animation in React and Next.js, and whenever startViewTransition or ViewTransition is mentioned. React only — it does not apply to Astro's native ClientRouter, transition:name or transition:persist, which are a different API that this skill's class-keyed ::view-transition-old(.class) selectors never match.
 
 ## `vercel-optimize`  ·  vercel  ·  MANUAL
 

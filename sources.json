@@ -67,6 +67,26 @@
       "role": "AWS SDK, Bedrock, IAM, secrets, storage, messaging, observability and cost",
       "pinnedSha": "904bfa14cc32e589e427f3dbf68c1a2ed6bd3830",
       "pinnedVersion": ""
+    },
+    "jakubkrehel": {
+      "repo": "jakubkrehel/skills",
+      "url": "https://github.com/jakubkrehel/skills",
+      "license": "MIT",
+      "authors": "Jakub Krehel",
+      "install": "vendored-skill",
+      "role": "design craft \u2014 two skills of eleven; the rest is a review suite this stack already owns",
+      "pinnedSha": "ca483852de23d48ab4f4ea71da37dad12bd70a95",
+      "pinnedVersion": ""
+    },
+    "emilkowalski": {
+      "repo": "emilkowalski/skills",
+      "url": "https://github.com/emilkowalski/skills",
+      "license": "MIT",
+      "authors": "Emil Kowalski",
+      "install": "vendored-skill",
+      "role": "motion audit \u2014 one skill of twelve; the construction-side siblings collide with ce-work",
+      "pinnedSha": "d23d7f88a2e21c9e4b1418c7abe420f5c1052ba7",
+      "pinnedVersion": ""
     }
   }
 }
