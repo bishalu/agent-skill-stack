@@ -28,6 +28,21 @@
         },
         "reason": "Upstream trigger ('when the user wants to review a branch, a PR, work-in-progress changes') is an owner-level collision with ce-code-review. Demoted to MANUAL so a generic review request can never reach two reviewers; still available as /code-review for an explicit second opinion."
       },
+      "grilling": {
+        "path": "skills/productivity/grilling",
+        "class": "CONDITIONAL",
+        "domain": "design interrogation (technique)",
+        "frontmatter": {
+          "description": "Interview the user round by round to stress-test a plan, design, or decision they have already formed, mapping it as a design tree and settling one frontier of questions per round. Use when the user explicitly asks to be grilled, interrogated, or challenged on their reasoning, or when the grill-me entry point delegates here. A questioning technique applied to an existing idea; it does not own brainstorming, scoping what to build, or product framing, and it writes no plan artifact."
+        },
+        "reason": "Upstream trigger ('Use when the user wants to stress-test their thinking') is a near-owner-level collision with ce-brainstorm, which owns requirements and product framing. Narrowed to an explicit grill request plus delegation from grill-me, with an explicit non-ownership clause, following the tdd pattern. Left model-invocable on purpose: grill-me's body calls this skill by name, and disable-model-invocation would withhold it from the skill listing and break that delegation."
+      },
+      "grill-me": {
+        "path": "skills/productivity/grill-me",
+        "class": "MANUAL",
+        "domain": "design interrogation (entry point)",
+        "reason": "User-facing entry point for grilling. Installed unmodified: upstream already ships disable-model-invocation: true, so it cannot compete with ce-brainstorm for any routing decision and needs no override. Carried as /grill-me for a deliberate stress-test of a plan the user already has."
+      },
       "tdd": {
         "path": "skills/engineering/tdd",
         "class": "CONDITIONAL",
@@ -73,7 +88,7 @@
       }
     },
     "excluded": {
-      "implement, to-spec, to-tickets, wayfinder, triage, grill-with-docs, improve-codebase-architecture, prototype, research, ask-matt, grilling, grill-me, handoff, teach, retro, writing-*": "Owner-level or near-owner-level competitors to the Compound lifecycle (planning, requirements, implementation, handoff, learning), or duplicates of a Compound skill (ce-prototype, ce-handoff, ce-explain, ce-pov). Excluded rather than demoted, to keep the skill listing small. (writing-for-agents has since been installed: it owns agent-facing documents, a domain nothing else covered.)",
+      "implement, to-spec, to-tickets, wayfinder, triage, grill-with-docs, improve-codebase-architecture, prototype, research, ask-matt, handoff, teach, retro, writing-*": "Owner-level or near-owner-level competitors to the Compound lifecycle (planning, requirements, implementation, handoff, learning), or duplicates of a Compound skill (ce-prototype, ce-handoff, ce-explain, ce-pov). Excluded rather than demoted, to keep the skill listing small. (writing-for-agents has since been installed: it owns agent-facing documents, a domain nothing else covered. grilling and grill-me have since been installed: grilling narrowed to an explicit grill request with a non-ownership clause, grill-me unmodified because it is already manual-only. ce-brainstorm keeps sole ownership of requirements.)",
       "resolving-merge-conflicts, wizard, git-guardrails-claude-code, setup-pre-commit, migrate-to-shoehorn, scaffold-exercises, setup-ts-deep-modules": "Useful but outside the four lifecycle domains this stack curates; omitted to protect the context budget. Add with scripts/build.sh if wanted."
     }
   },

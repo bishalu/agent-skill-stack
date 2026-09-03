@@ -8,7 +8,7 @@
       "authors": "Kieran Klaassen and Trevin Chow (Every Inc.)",
       "install": "native-plugin",
       "marketplace": "EveryInc/compound-engineering-plugin",
-      "pinnedSha": "871996c4e35512e3d33cdc9c2532395f7bf10831",
+      "pinnedSha": "415181d3c56a6ef63415bbe9e328c9a26cad04b8",
       "pinnedVersion": ""
     },
     "mattpocock": {
@@ -26,7 +26,7 @@
       "license": "MIT",
       "authors": "Vercel Labs",
       "install": "vendored-skill",
-      "pinnedSha": "dd089a8c752c966dee8bf0f27cb625ba193ffd9e",
+      "pinnedSha": "063bee94c3f4df8453406c830b0a7df0f2860278",
       "pinnedVersion": ""
     },
     "trailofbits": {
@@ -35,7 +35,7 @@
       "license": "CC BY-SA 4.0",
       "authors": "Trail of Bits",
       "install": "forked-local-marketplace",
-      "pinnedSha": "6ca26096b0c804ee2e8cf4e540cbc8ad82761f11",
+      "pinnedSha": "d3323cefbcf645678b8dc481de204b02ad3d02dc",
       "pinnedVersion": ""
     },
     "cursor": {
@@ -45,7 +45,7 @@
       "authors": "Cursor, and per-plugin authors (pstack: Lauren Tan)",
       "install": "vendored-skill",
       "role": "documentation tooling \u2014 not part of the engineering routing stack",
-      "pinnedSha": "46125561306434d8a1d7745d540d8932ab0cd2a2",
+      "pinnedSha": "7314f723a487ec406b6369fe5865ba034cfed166",
       "pinnedVersion": ""
     },
     "hashicorp": {
@@ -55,7 +55,7 @@
       "authors": "HashiCorp",
       "install": "vendored-skill",
       "role": "Terraform authoring \u2014 three skills of sixteen; the rest is provider development",
-      "pinnedSha": "6333093c37a318cb800d57a6de7d0877a9e048a4",
+      "pinnedSha": "c2d65dfe492f74d360d35b859b88932222470bd8",
       "pinnedVersion": ""
     },
     "aws": {
@@ -65,7 +65,7 @@
       "authors": "Amazon Web Services",
       "install": "forked-local-marketplace",
       "role": "AWS SDK, Bedrock, IAM, secrets, storage, messaging, observability and cost",
-      "pinnedSha": "904bfa14cc32e589e427f3dbf68c1a2ed6bd3830",
+      "pinnedSha": "08ad220e4e9bbc498821ce9360b3dcdf4813121d",
       "pinnedVersion": ""
     },
     "jakubkrehel": {
@@ -75,7 +75,7 @@
       "authors": "Jakub Krehel",
       "install": "vendored-skill",
       "role": "design craft \u2014 two skills of eleven; the rest is a review suite this stack already owns",
-      "pinnedSha": "ca483852de23d48ab4f4ea71da37dad12bd70a95",
+      "pinnedSha": "267330e1adfc66a718fb65fa6918c1f06d0a689e",
       "pinnedVersion": ""
     },
     "emilkowalski": {

@@ -24,7 +24,7 @@ time from one file, and every one of them is listed with the upstream text it re
 | Infrastructure | [AWS](https://github.com/aws/agent-toolkit-for-aws), [HashiCorp](https://github.com/hashicorp/agent-skills) | boto3, Bedrock, IAM, CloudWatch, Terraform authoring and tests |
 | Tooling | [Cursor](https://github.com/cursor/plugins) | CLI design, design-rationale archaeology, prose editing, documentation style |
 
-31 curated skills carry routing metadata from this repo. Compound Engineering's 33
+40 curated skills carry routing metadata from this repo. Compound Engineering's 33
 install unmodified, because it is the default owner and its triggers are meant to be
 broad.
 
