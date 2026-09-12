@@ -8,7 +8,7 @@
       "authors": "Kieran Klaassen and Trevin Chow (Every Inc.)",
       "install": "native-plugin",
       "marketplace": "EveryInc/compound-engineering-plugin",
-      "pinnedSha": "415181d3c56a6ef63415bbe9e328c9a26cad04b8",
+      "pinnedSha": "73df4650533105760af4d36568a7c2b2f425bd4a",
       "pinnedVersion": ""
     },
     "mattpocock": {
@@ -17,7 +17,7 @@
       "license": "MIT",
       "authors": "Matt Pocock",
       "install": "vendored-skill",
-      "pinnedSha": "6654f6b60cd9d5be8b54c6fafe44346dabeb3b76",
+      "pinnedSha": "3cca18b368ae95cdbdebbff572ccafa662551015",
       "pinnedVersion": ""
     },
     "vercel": {
@@ -35,7 +35,7 @@
       "license": "CC BY-SA 4.0",
       "authors": "Trail of Bits",
       "install": "forked-local-marketplace",
-      "pinnedSha": "d3323cefbcf645678b8dc481de204b02ad3d02dc",
+      "pinnedSha": "321ccfe628eca0d314b0ee4eaffcdd8a05639aaf",
       "pinnedVersion": ""
     },
     "cursor": {
@@ -45,7 +45,7 @@
       "authors": "Cursor, and per-plugin authors (pstack: Lauren Tan)",
       "install": "vendored-skill",
       "role": "documentation tooling \u2014 not part of the engineering routing stack",
-      "pinnedSha": "7314f723a487ec406b6369fe5865ba034cfed166",
+      "pinnedSha": "889ec4b68fa5aab0e867dad71ec3fdf386ae48f3",
       "pinnedVersion": ""
     },
     "hashicorp": {
@@ -65,7 +65,7 @@
       "authors": "Amazon Web Services",
       "install": "forked-local-marketplace",
       "role": "AWS SDK, Bedrock, IAM, secrets, storage, messaging, observability and cost",
-      "pinnedSha": "08ad220e4e9bbc498821ce9360b3dcdf4813121d",
+      "pinnedSha": "68d9e8541c45afd2510662bcea69fe1e433ea9db",
       "pinnedVersion": ""
     },
     "jakubkrehel": {
