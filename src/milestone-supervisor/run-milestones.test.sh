@@ -27,11 +27,12 @@ cat "$FAKE_DIR/units" 2>/dev/null || true
 EOF
 cat > "$FAKE_DIR/bin/agent-sandbox" <<'EOF'
 #!/usr/bin/env bash
-printf '%s\n' "$*" >> "$FAKE_DIR/agent-sandbox.calls"
+# One line per call; a multi-line bash -lc script has its newlines shown as \n.
+all="$*"; printf '%s\n' "${all//$'\n'/\\n}" >> "$FAKE_DIR/agent-sandbox.calls"
 case "$1" in
   status) cat "$FAKE_DIR/status.json" ;;
   run)    echo "[agent-sandbox] effective budget 16 GiB (config), floor 8 GiB (config)" >&2
-          echo '{"sandbox_id": "proj-deadbeef", "status": "completed", "exit_code": 0}' ;;
+          echo '{"sandbox_id": "'"${FAKE_RUN_ID:-proj-deadbeef}"'", "status": "completed", "exit_code": 0}' ;;
   enter)  rc="${FAKE_ENTER_RC:-0}"
           if [[ "$rc" == 3 ]]; then
             echo "[agent-sandbox] effective budget 16 GiB (config), request 12g (flag)" >&2
@@ -49,7 +50,17 @@ case "$1" in
 JSON
             exit 3
           fi
-          echo '{"sandbox_id": "'"$2"'", "status": "completed", "exit_code": '"$rc"'}'
+          id="$2"; ws="${FAKE_WS_ROOT:-/nonexistent}/$id"; runs="$FAKE_DIR/runs/$id"; mkdir -p "$runs"
+          # FAKE_ENTER_EXEC=1: a bash -lc command really runs, in the fake worktree, with
+          # its stdout going only to the run's stdout.log (what --json does for real).
+          if [[ -n "${FAKE_ENTER_EXEC:-}" ]]; then
+            while (($#)) && [[ "$1" != -- ]]; do shift; done; shift
+            if [[ "$1" == bash ]]; then
+              rc=0; (cd "$ws" && bash -c "$3") >> "$runs/stdout.log" 2>> "$runs/stderr.log" || rc=$?
+            fi
+          fi
+          echo '{"sandbox_id": "'"$id"'", "worktree": "'"$ws"'", "status": "completed", "exit_code": '"$rc"','
+          echo ' "logs": {"dir": "'"$runs"'", "stdout": "'"$runs"'/stdout.log", "stderr": "'"$runs"'/stderr.log"}}'
           exit "$rc" ;;
 esac
 EOF
@@ -78,11 +89,13 @@ CHAIN="$PROJ/logs/milestones/chain.log"
 N=0
 scenario() { N=$((N + 1)); echo; echo "--- scenario $N: $*"; }
 pass() { echo "PASS: $*"; }
-fail() { echo "FAIL: $*" >&2; exit 1; }
+FAILS=0
+# KEEP_GOING=1 records a failure and carries on, to see every red scenario in one run.
+fail() { echo "FAIL: $*" >&2; [[ -n "${KEEP_GOING:-}" ]] || exit 1; FAILS=$((FAILS + 1)); }
 assert_grep() { grep -Eq -- "$1" "$2" && pass "$3" || { echo "--- $2:" >&2; cat "$2" >&2; fail "$3 (no match for '$1')"; }; }
 assert_not_grep() { grep -Eq -- "$1" "$2" && { echo "--- $2:" >&2; cat "$2" >&2; fail "$3 (unexpected match for '$1')"; } || pass "$3"; }
 assert_eq() { [[ "$1" == "$2" ]] && pass "$3" || fail "$3 (got '$1', want '$2')"; }
-reset() { rm -f "$FAKE_DIR"/systemd-run.* "$FAKE_DIR/agent-sandbox.calls" "$FAKE_DIR/docker.calls" "$FAKE_DIR/units" "$CHAIN"; }
+reset() { rm -rf "$FAKE_DIR"/systemd-run.* "$FAKE_DIR/agent-sandbox.calls" "$FAKE_DIR/docker.calls" "$FAKE_DIR/units" "$FAKE_DIR/runs" "$CHAIN" "$PROJ/logs/milestones"/*.log "$PROJ/.milestones/STATUS.md" "$PROJ/.milestones/config.local"; }
 argv_line() { tr '\n' ' ' < "$FAKE_DIR/systemd-run.argv" > "$FAKE_DIR/argv.line"; echo "$FAKE_DIR/argv.line"; }
 run_driver() { (cd "$PROJ" && "$DRIVER" "$@"); }
 
@@ -268,7 +281,7 @@ reset
 assert_grep '^run .* --new --memory 12g --cpus 4 --tag unit=milestone-proj-6-T --tag milestone=6 --json -- true$' "$FAKE_DIR/agent-sandbox.calls" "no --sandbox: the sandbox is created inside the unit, tagged"
 assert_grep '^sandbox: proj-deadbeef$' "$CHAIN" "the new id read from the result JSON"
 assert_grep '^enter proj-deadbeef --timeout 2h --memory 12g --cpus 4 --tag unit=milestone-proj-6-T --tag milestone=6 --json -- claude ' "$FAKE_DIR/agent-sandbox.calls" "milestone turn tagged with resources"
-assert_grep '^enter proj-deadbeef --timeout 30m --memory 12g --cpus 4 --tag unit=milestone-proj-6-T --tag milestone=6 --json -- bash -lc true && test -s docs/reports/milestone-6.md$' "$FAKE_DIR/agent-sandbox.calls" "gate tagged as a second call"
+assert_grep '^enter proj-deadbeef --timeout 30m --memory 12g --cpus 4 --tag unit=milestone-proj-6-T --tag milestone=6 --json -- bash -lc .*true.*test -s docs/reports/milestone-6.md' "$FAKE_DIR/agent-sandbox.calls" "gate tagged as a second call"
 assert_eq "$(grep -c '^enter ' "$FAKE_DIR/agent-sandbox.calls")" 2 "exactly two enter calls"
 assert_grep 'milestone 6: gate passed' "$CHAIN" "gate result in chain.log"
 assert_grep 'Milestone 6 of docs/spec/11-milestones.md' "$PROJ/logs/milestones/milestone-6.prompt" "prompt assembled"
@@ -298,5 +311,159 @@ assert_grep '^status --reconcile proj-aaaa0005$' "$FAKE_DIR/agent-sandbox.calls"
 assert_grep 'issuing ' "$CHAIN" "issue recorded in chain.log"
 assert_not_grep 'resume proj-aaaa0001' "$T/resume9" "the running sandbox is not resumed"
 
+# ================================================================ U2 fixtures
+cp "$PROJ/.milestones/config" "$T/config.base"
+config_with() {  # the base config plus KEY=value lines; GATE removed with -GATE
+  local l; cp "$T/config.base" "$PROJ/.milestones/config"
+  for l in "$@"; do
+    if [[ "$l" == -* ]]; then grep -v "^${l#-}=" "$PROJ/.milestones/config" > "$T/cfg.tmp"; cp "$T/cfg.tmp" "$PROJ/.milestones/config"
+    else printf '%s\n' "$l" >> "$PROJ/.milestones/config"; fi
+  done
+}
+export FAKE_WS_ROOT="$T/gws"
+GWS="$FAKE_WS_ROOT/proj-1a2b3c4d"; mkdir -p "$GWS/docs/reports"
+git -C "$GWS" init -q -b main
+echo "# Milestone 6 report" > "$GWS/docs/reports/milestone-6.md"
+git -C "$GWS" add -A && git -C "$GWS" -c user.name=t -c user.email=t@t commit -q -m "milestone 6 report"
+GSHA="$(git -C "$GWS" rev-parse HEAD | cut -c1-12)"
+gate_inside() {  # run the gate-only unit body against proj-1a2b3c4d; its exit code in GRC
+  set +e
+  (cd "$PROJ" && FAKE_ENTER_EXEC=1 "$DRIVER" --inside 6 --sandbox proj-1a2b3c4d --unit u --gate "$@") > "$T/gate.out" 2>&1; GRC=$?
+  set -e
+}
+GATELOG="$PROJ/logs/milestones/milestone-6.gate.log"
+
+# ================================================================ 10. setup, then gate, then report check
+scenario "GATE_SETUP runs before GATE before the report check, in one bash -lc"
+reset; config_with 'GATE_SETUP="echo setup"' 'GATE="echo gate"'
+gate_inside
+assert_eq "$GRC" 0 "gate passes"
+assert_eq "$(grep -c '^enter ' "$FAKE_DIR/agent-sandbox.calls")" 1 "one enter call"
+assert_grep '^enter proj-1a2b3c4d .* -- bash -lc .*echo setup.*echo gate.*test -s docs/reports/milestone-6.md' "$FAKE_DIR/agent-sandbox.calls" "setup before gate before report check"
+assert_eq "$(grep -Ex 'setup|gate' "$FAKE_DIR/runs/proj-1a2b3c4d/stdout.log" | tr '\n' ' ')" "setup gate " "setup ran before gate in the same shell"
+assert_grep "^gate pass exit=0 milestone=6 sha=$GSHA where=sandbox setup=yes env=\"-\" at=[0-9]{4}-[0-9]{2}-[0-9]{2}T" "$CHAIN" "evidence line in chain.log"
+assert_grep "^gate pass exit=0 milestone=6 sha=$GSHA where=sandbox setup=yes " "$GATELOG" "evidence line appended to the gate log"
+
+# ================================================================ 11. no setup
+scenario "no GATE_SETUP: gate then report check, evidence says setup=none"
+reset; config_with 'GATE="echo gate"'
+gate_inside
+assert_eq "$GRC" 0 "gate passes"
+assert_grep '^enter proj-1a2b3c4d .* -- bash -lc .*echo gate.*test -s docs/reports/milestone-6.md' "$FAKE_DIR/agent-sandbox.calls" "gate then report check"
+assert_not_grep 'echo setup' "$FAKE_DIR/agent-sandbox.calls" "no setup in the command"
+assert_grep "^gate pass exit=0 milestone=6 sha=[0-9a-f]{12} where=sandbox setup=none " "$CHAIN" "setup=none, 12-character sha, where=sandbox"
+
+# ================================================================ 12. GATE_ENV probe
+scenario "GATE_ENV output lands in the evidence line"
+reset; config_with 'GATE="echo gate"' 'GATE_ENV="echo catalog abc123; echo second line"'
+gate_inside
+assert_eq "$GRC" 0 "gate passes"
+assert_grep "^gate pass exit=0 milestone=6 sha=$GSHA where=sandbox setup=none env=\"catalog abc123\" at=" "$CHAIN" "env carries the probe's first line"
+
+# ================================================================ 13. failing gate and failing setup
+scenario "a failing enter writes gate FAIL exit=1 and the unit fails"
+reset; config_with 'GATE="echo gate"'
+set +e; (cd "$PROJ" && FAKE_ENTER_RC=1 "$DRIVER" --inside 6 --sandbox proj-1a2b3c4d --unit u --gate) > /dev/null 2>&1; rc=$?; set -e
+[[ "$rc" != 0 ]] && pass "unit exits non-zero ($rc)" || fail "failed gate exited 0"
+assert_grep '^gate FAIL exit=1 milestone=6 sha=[0-9a-f]{12} where=sandbox setup=none ' "$CHAIN" "FAIL evidence line"
+reset; config_with 'GATE_SETUP="exit 4"' 'GATE="echo gate"'
+gate_inside
+assert_eq "$GRC" 1 "a setup failure fails the unit"
+assert_grep '^gate FAIL exit=4 milestone=6 .* setup=yes ' "$CHAIN" "setup failure is a gate FAIL with setup's exit"
+assert_grep 'milestone 6: gate FAILED .*setup' "$CHAIN" "the chain line names setup"
+assert_not_grep '^gate$' "$FAKE_DIR/runs/proj-1a2b3c4d/stdout.log" "the gate did not run after setup failed"
+
+# ================================================================ 14. no GATE configured
+scenario "gating with no GATE in config dies naming GATE"
+reset; config_with -GATE
+set +e; run_driver 6 --sandbox proj-1a2b3c4d --gate > "$T/out14" 2>&1; rc=$?; set -e
+assert_eq "$rc" 2 "--gate exits 2"
+assert_grep '\bGATE\b' "$T/out14" "the message names GATE"
+[[ -f "$FAKE_DIR/systemd-run.count" ]] && fail "a unit was created" || pass "no unit created"
+set +e; run_driver 6 > "$T/out14b" 2>&1; rc=$?; set -e
+assert_eq "$rc" 2 "a milestone launch (which gates) exits 2 too"
+assert_grep '\bGATE\b' "$T/out14b" "and names GATE"
+gate_inside
+assert_eq "$GRC" 2 "the unit body refuses too"
+[[ -f "$FAKE_DIR/agent-sandbox.calls" ]] && fail "the body called agent-sandbox without a GATE" || pass "no agent-sandbox call"
+
+# ================================================================ 15. config verb
+scenario "config N prints resolved keys"
+reset; config_with 'EVALUATE_16=1' 'EVALUATE_TARGET_16="pnpm dev"' 'MEMORY_16=10g' 'LANE_16=library' 'GATE_SETUP="just replay"' 'MODEL=opus' 'EFFORT_16=max'
+run_driver config 16 > "$T/cfg16" 2>&1 || fail "config 16 exited $?: $(cat "$T/cfg16")"
+run_driver config 15 > "$T/cfg15" 2>&1 || fail "config 15 exited $?: $(cat "$T/cfg15")"
+assert_grep '^EVALUATE=1$' "$T/cfg16" "EVALUATE_16=1 prints EVALUATE=1"
+assert_grep '^EVALUATE=0$' "$T/cfg15" "no EVALUATE_15 prints EVALUATE=0"
+assert_grep '^MEMORY=10g$' "$T/cfg16" "MEMORY_16 wins"
+assert_grep '^MEMORY=8g$' "$T/cfg15" "15 falls back to MEMORY"
+assert_grep '^CPUS=4$' "$T/cfg16" "CPUS falls back"
+assert_grep '^MODEL=opus$' "$T/cfg15" "MODEL"
+assert_grep '^EFFORT=max$' "$T/cfg16" "EFFORT_16"
+assert_grep '^EFFORT=$' "$T/cfg15" "unset EFFORT prints empty"
+assert_grep '^LANE=library$' "$T/cfg16" "LANE_16"
+assert_grep '^LANE=main$' "$T/cfg15" "LANE defaults to main"
+assert_grep '^EVALUATE_TARGET=pnpm dev$' "$T/cfg16" "EVALUATE_TARGET_16"
+assert_grep '^GATE_SETUP=just replay$' "$T/cfg15" "GATE_SETUP"
+assert_grep '^GATE=true$' "$T/cfg15" "GATE"
+[[ -f "$FAKE_DIR/systemd-run.count" ]] && fail "config launched a unit" || pass "config launches nothing"
+
+# ================================================================ 16. lane tag
+scenario "every launch carries --tag lane=<lane>"
+reset; config_with 'LANE_12=library'
+run_driver 12 > /dev/null 2>&1 || fail "launch 12 failed"
+A="$(argv_line)"
+assert_grep '--tag unit=milestone-proj-12-[0-9T]+ --tag milestone=12 --tag lane=library' "$A" "LANE_12=library tags lane=library"
+reset; config_with 'LANE_12=library'
+run_driver 13 > /dev/null 2>&1 || fail "launch 13 failed"
+A="$(argv_line)"
+assert_grep '--tag milestone=13 --tag lane=main' "$A" "no LANE_13: lane=main"
+reset; config_with 'GATE="echo gate"'
+(cd "$PROJ" && "$DRIVER" --inside 6 --sandbox proj-1a2b3c4d --unit u) > /dev/null 2>&1 || fail "inside without tags failed"
+assert_eq "$(grep -c -- '--tag milestone=6 --tag lane=main' "$FAKE_DIR/agent-sandbox.calls")" 2 "an untagged body tags both enters with lane=main"
+
+# ================================================================ 17. creation logs per launch
+scenario "two creations each read their own sandbox id"
+reset; config_with 'GATE="echo gate"'
+(cd "$PROJ" && FAKE_RUN_ID=proj-00000012 "$DRIVER" --inside 12 --unit u12) > /dev/null 2>&1 || true
+(cd "$PROJ" && FAKE_RUN_ID=proj-00000013 "$DRIVER" --inside 13 --unit u13) > /dev/null 2>&1 || true
+assert_grep '^sandbox: proj-00000012$' "$CHAIN" "milestone 12's id"
+assert_grep '^sandbox: proj-00000013$' "$CHAIN" "milestone 13's id"
+ls "$PROJ"/logs/milestones/create-12-*.log > /dev/null 2>&1 && pass "create-12-<stamp>.log" || fail "no create-12-<stamp>.log"
+grep -q proj-00000013 "$PROJ"/logs/milestones/create-13-*.log && pass "create-13 log holds 13's id" || fail "create-13 log lacks 13's id"
+[[ -e "$PROJ/logs/milestones/create.log" ]] && fail "a shared create.log was written" || pass "no shared create.log"
+
+# ================================================================ 18. lane lifecycle rule
+scenario "a launch refuses while an unpushed STATUS.md row holds the same lane"
+reset; config_with 'LANE_12=library'
+cat > "$PROJ/.milestones/STATUS.md" <<'EOF'
+# Milestone status
+
+| Milestone | Lane | Sandbox | Merged | Gate | Unmet criteria | Open blockers | Next action |
+|---|---|---|---|---|---|---|---|
+| 12 | library | proj-00000012 | 1a2b3c4d5e6f | gate pass | - | - | - |
+| 13 | main | proj-00000013 | - | - | - | - | integrate |
+EOF
+set +e; run_driver 14 > "$T/out18" 2>&1; rc=$?; set -e
+assert_eq "$rc" 2 "milestone 14 in lane main refused"
+assert_grep 'milestone 13' "$T/out18" "the refusal names milestone 13"
+[[ -f "$FAKE_DIR/systemd-run.count" ]] && fail "a unit was created" || pass "no unit created"
+run_driver 13 > /dev/null 2>&1 && pass "relaunching 13 itself is not refused by its own row" || fail "13 refused by its own row"
+rm -f "$FAKE_DIR/systemd-run.count"
+set +e; (cd "$PROJ" && "$DRIVER" 15 > /dev/null 2>&1); rc=$?; set -e
+assert_eq "$rc" 2 "milestone 15 in lane main refused too"
+config_with 'LANE_12=library' 'LANE_15=library'
+run_driver 15 > /dev/null 2>&1 && pass "milestone 15 in lane library proceeds (12 is pushed)" || fail "15 in library refused"
+sed -i 's/^| 13 | main | proj-00000013 | - |/| 13 | main | proj-00000013 | 9f8e7d6c5b4a |/' "$PROJ/.milestones/STATUS.md"
+run_driver 14 > /dev/null 2>&1 && pass "milestone 14 proceeds once 13 records a push" || fail "14 still refused after the push"
+
+# ================================================================ 19. config.local
+scenario ".milestones/config.local overrides config"
+reset; config_with
+echo 'MEMORY=16g' > "$PROJ/.milestones/config.local"
+run_driver config 5 > "$T/cfg19" 2>&1 || fail "config 5 exited $?"
+assert_grep '^MEMORY=16g$' "$T/cfg19" "config.local's MEMORY wins"
+cp "$T/config.base" "$PROJ/.milestones/config"; rm -f "$PROJ/.milestones/config.local"
+
 echo
+(( FAILS == 0 )) || { echo "$FAILS ASSERTIONS FAILED" >&2; exit 1; }
 echo "ALL $N SCENARIOS PASSED"

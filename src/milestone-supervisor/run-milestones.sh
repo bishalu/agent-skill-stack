@@ -12,15 +12,26 @@
 #   run-milestones.sh 6 --sandbox ID --gate      # only the gate (report committed, gate never ran)
 #   run-milestones.sh status                     # this project's sandboxes, with the milestone meaning
 #   run-milestones.sh resume [--issue]           # the finishing command per unfinished sandbox
+#   run-milestones.sh config 6                   # the keys milestone 6 resolves to, KEY=value per line
 #
 # One milestone per invocation: the supervisor reviews between milestones, so the
 # driver refuses `run-milestones.sh 5 6`. The launch returns as soon as systemd accepts
 # the unit; read `status` right after, because admission runs inside the unit.
 #
+# A milestone launch refuses while .milestones/STATUS.md holds a row for another milestone
+# in the same lane whose Merged cell is empty or "-": that milestone's work is not pushed
+# yet, and a lane says "these share a dataset or modules". The table's header:
+#   | Milestone | Lane | Sandbox | Merged | Gate | Unmet criteria | Open blockers | Next action |
+#
 # <repo>/.milestones/config      shell assignments, all optional:
 #   MILESTONES_FILE=docs/spec/11-milestones.md   file whose "## Milestone N" sections are the briefs
 #   REPORT_DIR=docs/reports                      the agent writes milestone-N.md here
-#   GATE="uv run pytest -q -x && uv run ruff check src tests"   run inside the sandbox after each milestone
+#   GATE="just check"                            run inside the sandbox after each milestone; required
+#                                                to gate (no default: the gate is the project's own)
+#   GATE_SETUP="just replay"                     runs first, in the same shell, to rebuild derived state
+#                                                from committed recordings before the gate reads it
+#   GATE_ENV="sha256sum data/catalog.db | cut -c1-12"   a probe; its first stdout line goes
+#                                                into the gate's evidence line as env="..."
 #   DEPLOY_MILESTONES="7"                        numbers that need --deploy
 #   TIMEOUT=12h                                  per-milestone wall clock (12h, 90m, 3600)
 #   MEMORY=8g CPUS=6                             container resources for every milestone
@@ -28,14 +39,21 @@
 #   MODEL=opus EFFORT=high                         the model and effort the agent runs at (claude --model/--effort)
 #   MODEL_7=opus EFFORT_7=max                      per-milestone overrides; unset keys mean the session default (Opus at most)
 #                                                to MEMORY/CPUS, then to agent-sandbox's config
+#   LANE_12=library                              the lane milestone 12 runs in (default main); every
+#                                                agent-sandbox call is tagged lane=<lane>
+#   EVALUATE_16=1 EVALUATE_TARGET_16="pnpm dev"  milestone 16 gets an independent evaluation
+# <repo>/.milestones/config.local  gitignored, sourced after config: this host's values
+#                                                (a PATH prefix for its toolchain, say)
 # <repo>/.milestones/standing-rules.md          rules every milestone gets; "milestone-N" is substituted
 # <repo>/.milestones/milestone-N.md             optional extra paragraph for milestone N
 # <repo>/.milestones/notes-N.md                 optional supervisor notes, appended if present and --note is not given
 #
 # Files under <repo>/logs/milestones/: chain.log (every decision), unit-<unit>.out (the
 # unit's stdout+stderr), milestone-N.prompt, milestone-N.log and milestone-N.gate.log (the
-# agent-sandbox result JSON, or the admission refusal). The agent's transcript is the
-# sandbox's own runs/<id>/stdout.log, which `status` scans.
+# agent-sandbox result JSON, or the admission refusal), create-N-<stamp>.log (a new sandbox).
+# Every gate run appends one evidence line to its gate log and to chain.log:
+#   gate pass|FAIL exit=N milestone=N sha=<12> where=sandbox|host setup=yes|none env="..." at=<iso>
+# The agent's transcript is the sandbox's own runs/<id>/stdout.log, which `status` scans.
 #
 # A failed gate stops the unit and leaves the sandbox for inspection. Nothing is merged
 # or pushed: the work stays on the sandbox branch, and push is denied inside the container.
@@ -46,10 +64,13 @@ REPO="$(pwd -P)"
 [[ -d "$REPO/.milestones" ]] || { echo "no .milestones/ in $REPO; run from the project root" >&2; exit 2; }
 PROJECT="$(basename "$REPO")"
 MILESTONES_FILE="docs/spec/11-milestones.md"; REPORT_DIR="docs/reports"   # defaults; .milestones/config overrides
-GATE="uv run pytest -q -x && uv run ruff check src tests"; DEPLOY_MILESTONES=""; TIMEOUT="12h"
+GATE=""; GATE_SETUP=""; GATE_ENV=""; DEPLOY_MILESTONES=""; TIMEOUT="12h"
 GATE_TIMEOUT="30m"
 # shellcheck disable=SC1091
 [[ -f "$REPO/.milestones/config" ]] && source "$REPO/.milestones/config"
+# A host's own values (its toolchain's PATH) stay out of the committed config.
+# shellcheck disable=SC1091
+[[ -f "$REPO/.milestones/config.local" ]] && source "$REPO/.milestones/config.local"
 LOGS="$REPO/logs/milestones"; mkdir -p "$LOGS"
 CHAIN="$LOGS/chain.log"
 
@@ -116,16 +137,71 @@ print(s)' 2>/dev/null || true)"
   tail -n 5 "$1" | tr '\n' ' '
 }
 
-json_sandbox_id() {
-  # `.sandbox_id` from a run/enter --json result; empty when absent.
+json_field() {
+  # A string field (dotted path, e.g. logs.stdout) of a run/enter --json result in a
+  # log file; empty when absent or unreadable.
   if have_jq; then
-    json_from "$1" | jq -r '.sandbox_id // empty' 2>/dev/null || true
+    json_from "$1" | jq -r --arg p "$2" 'getpath($p | split(".")) // empty' 2>/dev/null || true
   else
     json_from "$1" | python3 -c '
 import json, sys
-try: print(json.load(sys.stdin).get("sandbox_id") or "")
-except Exception: pass' 2>/dev/null || true
+try:
+    v = json.load(sys.stdin)
+    for k in sys.argv[1].split("."): v = v.get(k) if isinstance(v, dict) else None
+    print(v if v is not None else "")
+except Exception: pass' "$2" 2>/dev/null || true
   fi
+}
+
+json_sandbox_id() { json_field "$1" sandbox_id; }   # empty when absent
+
+resolve_lane() {
+  # LANE_<n>, then main. The value becomes an agent-sandbox tag, so keep it a plain word.
+  local v="LANE_$1" lane
+  lane="${!v:-main}"
+  [[ "$lane" =~ ^[A-Za-z0-9_.-]+$ ]] || die "LANE_$1='$lane': a lane is letters, digits, _ . or -"
+  echo "$lane"
+}
+
+require_gate() {
+  # No default gate: a language-specific guess would pass or fail for the wrong reason.
+  [[ -n "$GATE" ]] || die "no GATE in $REPO/.milestones/config: set GATE to the project's check command (and GATE_SETUP if derived state must be rebuilt first)"
+}
+
+gate_evidence() {
+  # One line of gate evidence, to chain.log and appended to <gatelog>. Used by the
+  # sandbox gate here (where=sandbox) and by a host-side gate (where=host).
+  #   gate_evidence <exit> <milestone> <sha> <where> <setup yes|none> <env> <gatelog>
+  local rc="$1" n="$2" sha="$3" where="$4" setup="$5" env="$6" gatelog="$7" result=FAIL
+  (( rc == 0 )) && result=pass
+  env="${env//\"/\'}"   # keep the quoted field one field
+  local line at
+  at="$(date -Is)"
+  line="gate $result exit=$rc milestone=$n sha=${sha:-unknown} where=$where setup=$setup env=\"$env\" at=$at"
+  echo "$line" >> "$gatelog"
+  log "$line"
+}
+
+sandbox_worktree() {
+  # The sandbox's worktree: the enter result's `.worktree`, else agent-sandbox's layout.
+  local ws; ws="$(json_field "$2" worktree)"
+  [[ -n "$ws" ]] || ws="${AGENT_SANDBOX_HOME:-$HOME/agent-sandbox}/worktrees/$1"
+  echo "$ws"
+}
+
+lane_blocker() {
+  # The first STATUS.md row, other than milestone <n>, in lane <lane> whose Merged cell
+  # is empty or "-": "<milestone> <sandbox>". Nothing when the file or such a row is absent.
+  # Columns: | Milestone | Lane | Sandbox | Merged | Gate | Unmet criteria | Open blockers | Next action |
+  local f="$REPO/.milestones/STATUS.md"
+  [[ -f "$f" ]] || return 0
+  awk -F'|' -v n="$1" -v lane="$2" '
+    function t(s) { gsub(/^[ \t]+|[ \t]+$/, "", s); return s }
+    /^[ \t]*\|/ {
+      m = t($2); if (m !~ /^[0-9]+$/ || m == n) next
+      l = t($3); if (l == "") l = "main"
+      g = t($5); if (l == lane && (g == "" || g == "-")) { print m, (t($4) == "" ? "-" : t($4)); exit }
+    }' "$f"
 }
 
 sandbox_call() {
@@ -146,7 +222,7 @@ VERB=""; SANDBOX=""; DEPLOY=0; NOTE=""; CONTINUE=""; INSIDE=""; UNIT=""; GATE_ON
 MILESTONES=(); RES=(); TAGS=(); AGENT_OPTS=()
 while (($#)); do
   case "$1" in
-    status|resume) VERB="$1"; shift ;;
+    status|resume|config) VERB="$1"; shift ;;
     --sandbox) SANDBOX="$2"; shift 2 ;;
     --deploy) DEPLOY=1; shift ;;
     --note) NOTE="$2"; shift 2 ;;
@@ -157,7 +233,7 @@ while (($#)); do
     --unit) UNIT="$2"; shift 2 ;;              # (inside) the systemd unit this body runs under
     --memory|--cpus) RES+=("$1" "$2"); shift 2 ;;   # (inside) resolved by the launcher
     --model|--effort) AGENT_OPTS+=("$1" "$2"); shift 2 ;;   # (inside) the agent's model and effort
-    --tag) TAGS+=(--tag "$2"); shift 2 ;;      # (inside) unit=<unit> milestone=<n>
+    --tag) TAGS+=(--tag "$2"); shift 2 ;;      # (inside) unit=<unit> milestone=<n> lane=<lane>
     [0-9]|[0-9][0-9]) MILESTONES+=("$1"); shift ;;
     *) die "unknown argument: $1" ;;
   esac
@@ -188,22 +264,65 @@ milestone_prompt() {
 
 # ---------------------------------------------------------------- the unit's body
 run_gate() {
-  local n="$1" rc=0
-  sandbox_call "$LOGS/milestone-$n.gate.log" enter "$SANDBOX" --timeout "$GATE_TIMEOUT" "${RES[@]}" "${TAGS[@]}" --json -- \
-    bash -lc "$GATE && test -s $REPORT_DIR/milestone-$n.md" || rc=$?
+  # Setup, the env probe, the gate and the report check run in one `bash -lc`, so the
+  # state setup rebuilds is the state the gate reads. With --json, agent-sandbox sends
+  # the container's stdout only to the sandbox's stdout.log, so the script prints marker
+  # lines carrying a per-run nonce, and the driver reads them back from that log.
+  local n="$1"
+  local rc=0 gatelog="$LOGS/milestone-$n.gate.log" nonce setup=none script
+  require_gate
+  nonce="rm-gate-$(date +%s)-$$-$RANDOM"
+  # An EXIT trap names the failing step, so a setup or gate that calls `exit` itself is
+  # still attributed; `|| exit` keeps a failing step from falling through to the next.
+  script="set +e"$'\n'"trap '__gate_rc=\$?; [ \$__gate_rc -eq 0 ] || echo \"@@$nonce step=\$__gate_step\"' EXIT"
+  if [[ -n "$GATE_SETUP" ]]; then
+    setup=yes
+    script+=$'\n'"__gate_step=setup"$'\n'"{
+$GATE_SETUP
+} || exit \$?"
+  fi
+  if [[ -n "$GATE_ENV" ]]; then
+    script+=$'\n'"echo \"@@$nonce env=\$( {
+$GATE_ENV
+} 2>/dev/null | head -n 1)\""
+  fi
+  script+=$'\n'"__gate_step=gate"$'\n'"{
+$GATE
+} || exit \$?"
+  script+=$'\n'"__gate_step=report"$'\n'"test -s $REPORT_DIR/milestone-$n.md"
+  sandbox_call "$gatelog" enter "$SANDBOX" --timeout "$GATE_TIMEOUT" "${RES[@]}" "${TAGS[@]}" --json -- \
+    bash -lc "$script" || rc=$?
   if (( rc == 3 )); then
     log "milestone $n: gate not admitted; unit stops"; return 3
-  elif (( rc == 0 )); then
+  fi
+
+  # The gated commit, read on the host: the worktree is a host directory.
+  local ws sha stdout_log marks="" env="-" step
+  ws="$(sandbox_worktree "$SANDBOX" "$gatelog")"
+  sha="$(git -C "$ws" rev-parse HEAD 2>/dev/null | cut -c1-12 || true)"
+  stdout_log="$(json_field "$gatelog" logs.stdout)"
+  [[ -n "$stdout_log" && -f "$stdout_log" ]] && marks="$(grep -a "^@@$nonce " "$stdout_log" || true)"
+  step="$(sed -n "s/^@@$nonce step=//p" <<< "$marks" | tail -n 1)"
+  if [[ -n "$GATE_ENV" ]]; then
+    # A marker that never came back (no log, or the probe's line lost) is not an empty probe.
+    if grep -q "^@@$nonce env=" <<< "$marks"; then env="$(sed -n "s/^@@$nonce env=//p" <<< "$marks" | tail -n 1)"
+    else env="unavailable"; fi
+  fi
+  gate_evidence "$rc" "$n" "$sha" sandbox "$setup" "$env" "$gatelog"
+
+  if (( rc == 0 )); then
     log "milestone $n: gate passed $(date -Is)"; return 0
   fi
-  log "milestone $n: gate FAILED (exit $rc), see $LOGS/milestone-$n.gate.log and the sandbox transcript; unit stops"
+  log "milestone $n: gate FAILED (exit $rc${step:+, at $step}), see $gatelog and the sandbox transcript; unit stops"
   return 1
 }
 
 inside_body() {
   local n="$INSIDE" rc=0
   UNIT="${UNIT:-${MILESTONE_UNIT:-untracked}}"
-  ((${#TAGS[@]})) || TAGS=(--tag "unit=$UNIT" --tag "milestone=$n")
+  ((${#TAGS[@]})) || TAGS=(--tag "unit=$UNIT" --tag "milestone=$n" --tag "lane=$(resolve_lane "$n")")
+  # Fail before a sandbox or a turn is spent when the milestone could never be gated.
+  [[ -n "$CONTINUE" ]] || require_gate
 
   if [[ -n "$CONTINUE" ]]; then
     # A follow-up turn in the sandbox's last conversation: owner actions done, a
@@ -230,14 +349,16 @@ inside_body() {
   if [[ -z "$SANDBOX" ]]; then
     # A fresh worktree, seeded with whatever the sandbox config lists. Created inside
     # the unit so its admission (and any wait) is visible in status, not blocking the caller.
-    sandbox_call "$LOGS/create.log" run "$REPO" --new "${RES[@]}" "${TAGS[@]}" --json -- true || rc=$?
+    # One log per creation: two units starting together must not read each other's id.
+    local created; created="$LOGS/create-$n-$(date +%Y%m%dT%H%M%S).log"
+    sandbox_call "$created" run "$REPO" --new "${RES[@]}" "${TAGS[@]}" --json -- true || rc=$?
     (( rc == 3 )) && { log "milestone $n: sandbox creation not admitted; unit stops"; return 3; }
     # The id comes from the result JSON, else the create log's own "workspace
     # preserved" line. Never pick the newest worktree by mtime: a running agent keeps
     # its worktree newer than a freshly created one.
-    SANDBOX="$(json_sandbox_id "$LOGS/create.log")"
-    [[ -n "$SANDBOX" ]] || SANDBOX="$(sed -n 's#.*workspace preserved: .*/worktrees/\([^/ ]*\).*#\1#p' "$LOGS/create.log" | tail -1)"
-    [[ -n "$SANDBOX" ]] || { log "could not read the new sandbox id from $LOGS/create.log (agent-sandbox exit $rc)"; return 1; }
+    SANDBOX="$(json_sandbox_id "$created")"
+    [[ -n "$SANDBOX" ]] || SANDBOX="$(sed -n 's#.*workspace preserved: .*/worktrees/\([^/ ]*\).*#\1#p' "$created" | tail -1)"
+    [[ -n "$SANDBOX" ]] || { log "could not read the new sandbox id from $created (agent-sandbox exit $rc)"; return 1; }
     log "sandbox: $SANDBOX"
     rc=0
   fi
@@ -255,7 +376,7 @@ inside_body() {
 # ---------------------------------------------------------------- launch
 launch_unit() {
   # kind: milestone | continue | gate. The body is this script under --inside.
-  local kind="$1" n="$2" max t g stamp unit out
+  local kind="$1" n="$2" max t g stamp unit out lane
   export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
   export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=$XDG_RUNTIME_DIR/bus}"
   t="$(to_seconds "$TIMEOUT")"; g="$(to_seconds "$GATE_TIMEOUT")"
@@ -268,8 +389,9 @@ launch_unit() {
   unit="milestone-$(printf '%s' "$PROJECT" | tr -c 'A-Za-z0-9_.-' '-')-$n-$stamp"
   out="$LOGS/unit-$unit.out"
   resolve_resources "$n"
+  lane="$(resolve_lane "$n")"
 
-  local inner=("$SELF" --inside "$n" --unit "$unit" "${RES[@]}" "${AGENT_OPTS[@]}" --tag "unit=$unit" --tag "milestone=$n")
+  local inner=("$SELF" --inside "$n" --unit "$unit" "${RES[@]}" "${AGENT_OPTS[@]}" --tag "unit=$unit" --tag "milestone=$n" --tag "lane=$lane")
   [[ -n "$SANDBOX" ]] && inner+=(--sandbox "$SANDBOX")
   (( DEPLOY )) && inner+=(--deploy)
   [[ -n "$NOTE" ]] && inner+=(--note "$NOTE")
@@ -439,7 +561,29 @@ do_resume() {
   (( ISSUE )) || (( ! any )) || echo "(printed only; add --issue to run them)"
 }
 
+# ---------------------------------------------------------------- config
+do_config() {
+  # What milestone <n> resolves to, one KEY=value per line, so a launch can be checked
+  # before a run is spent on it.
+  local n="$1" mem cpus model effort ev tv
+  mem="MEMORY_$n"; cpus="CPUS_$n"; model="MODEL_$n"; effort="EFFORT_$n"; ev="EVALUATE_$n"; tv="EVALUATE_TARGET_$n"
+  echo "MEMORY=${!mem:-${MEMORY:-}}"
+  echo "CPUS=${!cpus:-${CPUS:-}}"
+  echo "MODEL=${!model:-${MODEL:-}}"
+  echo "EFFORT=${!effort:-${EFFORT:-}}"
+  echo "LANE=$(resolve_lane "$n")"
+  if [[ "${!ev:-}" == 1 ]]; then echo "EVALUATE=1"; else echo "EVALUATE=0"; fi
+  echo "EVALUATE_TARGET=${!tv:-}"
+  echo "GATE_SETUP=$GATE_SETUP"
+  echo "GATE=$GATE"
+  echo "GATE_ENV=$GATE_ENV"
+}
+
 # ---------------------------------------------------------------- dispatch
+if [[ "$VERB" == config ]]; then
+  [[ -z "$INSIDE" && -z "$CONTINUE" && ${#MILESTONES[@]} -eq 1 ]] || die "config takes one milestone, e.g. config 6"
+  do_config "${MILESTONES[0]}"; exit 0
+fi
 if [[ -n "$VERB" ]]; then
   [[ -z "$INSIDE" && -z "$CONTINUE" && ${#MILESTONES[@]} -eq 0 ]] || die "$VERB takes no milestone or --continue"
   "do_$VERB"; exit 0
@@ -462,6 +606,7 @@ fi
 
 ((${#MILESTONES[@]})) || die "say which milestone, e.g. 6"
 n="${MILESTONES[0]}"
+require_gate
 if (( GATE_ONLY )); then
   [[ -n "$SANDBOX" ]] || die "--gate needs --sandbox ID"
   launch_unit gate "$n"
@@ -470,4 +615,10 @@ fi
 for d in $DEPLOY_MILESTONES; do
   [[ "$n" == "$d" && $DEPLOY == 0 ]] && die "milestone $n deploys; pass --deploy to allow it"
 done
+lane="$(resolve_lane "$n")"
+blocker="$(lane_blocker "$n" "$lane")"
+if [[ -n "$blocker" ]]; then
+  log "refused: milestone ${blocker%% *} (sandbox ${blocker#* }) in lane $lane has a STATUS.md row with nothing pushed; integrate it, or give milestone $n another lane (LANE_$n) if the two share no dataset or modules"
+  exit 2
+fi
 launch_unit milestone "$n"
