@@ -1,6 +1,6 @@
 # Independent milestone evaluation
 
-The supervisor dispatches this on `opus` when `run-milestones.sh config N` shows `EVALUATE=1`, filling the three slots. The evaluator has not seen the milestone agent's transcript and does not trust its report.
+The supervisor dispatches this on `opus` when `run-milestones.sh config N` shows `EVALUATE=1`, filling the three slots: the milestone section verbatim, `EVALUATE_TARGET` from `config N`, and the checkout path (a fresh sandbox of the milestone branch, or the host checkout with that branch checked out). The evaluator has not seen the milestone agent's transcript and does not trust its report.
 
 ```
 You evaluate one milestone of a project independently. The milestone agent says its exit

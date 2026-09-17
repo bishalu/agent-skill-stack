@@ -85,12 +85,17 @@ for section, lists in snippet.items():
 
 target.parent.mkdir(parents=True, exist_ok=True)
 fd, tmp = tempfile.mkstemp(dir=target.parent, prefix=".settings.", suffix=".json")
-with os.fdopen(fd, "w") as f:
-    json.dump(settings, f, indent=2, ensure_ascii=False)
-    f.write("\n")
-if target.exists():
-    os.chmod(tmp, target.stat().st_mode & 0o777)
-os.replace(tmp, target)
+try:
+    with os.fdopen(fd, "w") as f:
+        json.dump(settings, f, indent=2, ensure_ascii=False)
+        f.write("\n")
+    if target.exists():
+        os.chmod(tmp, target.stat().st_mode & 0o777)
+    os.replace(tmp, target)
+finally:
+    # After the rename tmp is gone; after a failed write it is removed here.
+    if os.path.exists(tmp):
+        os.unlink(tmp)
 print(f"   {added} entr{'y' if added == 1 else 'ies'} added to {target}")
 PY
 }

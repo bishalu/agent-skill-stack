@@ -1,20 +1,30 @@
 {
-  "_comment": "Merged into $CLAUDE_HOME/settings.json by scripts/install.sh. Lists are unioned, never replaced. {{CLAUDE_HOME}} becomes the absolute config directory at merge time; in Edit and Write rules it is written with a leading '//' because a single '/' there means relative to the settings file.",
+  "_comment": "Merged into $CLAUDE_HOME/settings.json by scripts/install.sh. Lists are unioned, never replaced. {{CLAUDE_HOME}} becomes the absolute config directory at merge time; in Edit and Write rules it is written with a leading '//' because a single '/' there means relative to the settings file. No rule here may grant a prefix that runs arbitrary commands (systemd-run, bare systemctl --user, bare agent-sandbox) or edits code the allowed commands then run (the driver's folder, .milestones/config); bootstrap.test.sh fails on one.",
   "permissions": {
     "allow": [
       "Bash({{CLAUDE_HOME}}/skills/milestone-supervisor/run-milestones.sh:*)",
-      "Bash(agent-sandbox:*)",
-      "Bash(systemctl --user:*)",
-      "Bash(systemd-run --user:*)",
-      "Edit({{CLAUDE_HOME_ABS}}/skills/milestone-supervisor/**)",
-      "Write({{CLAUDE_HOME_ABS}}/skills/milestone-supervisor/**)",
-      "Edit(**/.milestones/**)",
-      "Write(**/.milestones/**)"
+      "Bash(agent-sandbox status:*)",
+      "Bash(agent-sandbox list:*)",
+      "Bash(agent-sandbox doctor:*)",
+      "Bash(agent-sandbox memlog show:*)",
+      "Bash(agent-sandbox enter:*)",
+      "Bash(agent-sandbox run:*)",
+      "Bash(systemctl --user status:*)",
+      "Bash(systemctl --user list-units:*)",
+      "Bash(systemctl --user is-active:*)",
+      "Edit(**/.milestones/STATUS.md)",
+      "Write(**/.milestones/STATUS.md)",
+      "Edit(**/.milestones/notes-*.md)",
+      "Write(**/.milestones/notes-*.md)",
+      "Edit(**/.milestones/evaluation-*.md)",
+      "Write(**/.milestones/evaluation-*.md)",
+      "Edit(**/.milestones/mutations/**)",
+      "Write(**/.milestones/mutations/**)"
     ]
   },
   "autoMode": {
     "environment": [
-      "**Milestone supervisor (routine)**: ~/.claude/skills/milestone-supervisor/run-milestones.sh launches autonomous Claude Code runs inside agent-sandbox containers (rootless Docker, disposable worktree, scoped IAM key) and passes --dangerously-skip-permissions to the agent inside by design; the container and the IAM boundary are the guardrails. Editing, committing and running that script, `agent-sandbox` commands, and a project's .milestones/ config are routine supervisor work, not creating an unsafe agent"
+      "**Milestone supervisor (routine)**: ~/.claude/skills/milestone-supervisor/run-milestones.sh launches autonomous Claude Code runs inside agent-sandbox containers (rootless Docker, disposable worktree, scoped IAM key) and passes --dangerously-skip-permissions to the agent inside by design; the container and the IAM boundary are the guardrails. Running that script and the `agent-sandbox` status, list, doctor, memlog, enter and run commands, and editing a project's .milestones/STATUS.md, notes-N.md and evaluation-N.md records, are routine supervisor work, not creating an unsafe agent. Editing the driver or a project's gate config (.milestones/config, config.local, standing-rules.md) is not routine and needs the owner"
     ]
   }
 }

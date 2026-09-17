@@ -36,7 +36,7 @@ cat > "$H/settings.json" <<'EOF'
 {
   "theme": "dark",
   "model": "opus",
-  "permissions": {"allow": ["Bash(ls:*)", "Bash(agent-sandbox:*)"], "defaultMode": "auto"},
+  "permissions": {"allow": ["Bash(ls:*)", "Bash(agent-sandbox status:*)"], "defaultMode": "auto"},
   "autoMode": {"soft_deny": ["$defaults"], "environment": ["### Org-wide", "an owner line"]},
   "hooks": {"Stop": []}
 }
@@ -54,7 +54,7 @@ python3 -c 'import json,sys; assert "hooks" in json.load(open(sys.argv[1]))' "$H
 ok "unrelated keys kept"
 
 [ "$(count "$H/settings.json" permissions.allow 'Bash(ls:*)')" = 1 ] || fail "owner rule dropped"
-[ "$(count "$H/settings.json" permissions.allow 'Bash(agent-sandbox:*)')" = 1 ] || fail "pre-existing snippet rule duplicated"
+[ "$(count "$H/settings.json" permissions.allow 'Bash(agent-sandbox status:*)')" = 1 ] || fail "pre-existing snippet rule duplicated"
 [ "$(count "$H/settings.json" autoMode.environment 'an owner line')" = 1 ] || fail "owner environment line dropped"
 [ "$(count "$H/settings.json" autoMode.environment "$MILESTONE_LINE")" = 1 ] || fail "milestone environment line not appended once"
 [ "$(python3 -c 'import json,sys; e=json.load(open(sys.argv[1]))["autoMode"]["environment"]; print(e.index(sys.argv[2]) == len(e)-1)' "$H/settings.json" "$MILESTONE_LINE")" = True ] \
@@ -64,9 +64,7 @@ ok "owner rules and lines kept, snippet entries present once"
 HABS="$(cd "$H" && pwd)"
 [ "$(count "$H/settings.json" permissions.allow "Bash($HABS/skills/milestone-supervisor/run-milestones.sh:*)")" = 1 ] \
   || fail "run-milestones.sh rule not expanded to CLAUDE_HOME"
-[ "$(count "$H/settings.json" permissions.allow "Edit(/$HABS/skills/milestone-supervisor/**)")" = 1 ] \
-  || fail "Edit rule not written as an absolute // path"
-[ "$(count "$H/settings.json" permissions.allow 'Write(**/.milestones/**)')" = 1 ] || fail "Write .milestones rule missing"
+[ "$(count "$H/settings.json" permissions.allow 'Write(**/.milestones/STATUS.md)')" = 1 ] || fail "Write STATUS.md rule missing"
 ! grep -q '{{' "$H/settings.json" || fail "a placeholder survived the merge"
 ! grep -q '_comment' "$H/settings.json" || fail "the snippet's _comment leaked into settings.json"
 ok "placeholders expanded"
@@ -83,6 +81,27 @@ cmp -s "$H/CLAUDE.md" "$T/after1.md" || fail "second merge changed CLAUDE.md"
 grep -q '0 entries added' "$T/merge.out" || fail "second merge did not report 0 entries added"
 ok "second merge is a no-op"
 
+# ---------------------------------------------------------------- snippet grants nothing exec-capable
+# The merge unions and never removes, so a broad rule that ships once stays in the owner's
+# settings for good. A prefix that runs arbitrary host commands, or an edit rule over code
+# an allowed command then runs, must never enter the snippet.
+python3 - "$R/src/settings-snippet.json" <<'PY' || fail "the snippet grants an exec-capable rule"
+import json, re, sys
+allow = json.load(open(sys.argv[1]))["permissions"]["allow"]
+bad = [
+    (r"^Bash\(systemd-run", "systemd-run runs any command as a unit"),
+    (r"^Bash\(systemctl --user:\*\)$", "bare systemctl --user can start and edit units"),
+    (r"^Bash\(agent-sandbox:\*\)$", "bare agent-sandbox includes rm, clean, build and config set"),
+    (r"^(Edit|Write)\(.*skills/milestone-supervisor", "the driver's folder is code the driver rule runs"),
+    (r"^(Edit|Write)\(.*\.milestones/(\*\*\)$|\*\*/\*|config)", ".milestones/config is shell the driver sources"),
+]
+hits = [f"{rule}: {why}" for rule in allow for pat, why in bad if re.search(pat, rule)]
+for h in hits:
+    print("   " + h)
+sys.exit(1 if hits else 0)
+PY
+ok "snippet grants no exec-capable prefix and no edit over driver code or gate config"
+
 # ---------------------------------------------------------------- absent settings.json
 H2="$T/home2"
 merge "$H2" || { cat "$T/merge.out"; fail "merge into an absent CLAUDE_HOME exited non-zero"; }
@@ -95,6 +114,17 @@ H3="$T/home3"; mkdir -p "$H3"; printf '{ not json' > "$H3/settings.json"
 if merge "$H3"; then fail "merge over invalid JSON succeeded"; fi
 [ "$(cat "$H3/settings.json")" = '{ not json' ] || fail "invalid settings.json was overwritten"
 ok "invalid settings.json left untouched and the merge fails"
+
+# ---------------------------------------------------------------- wrong-shaped settings.json
+for shape in '{"permissions": []}' '{"permissions": {"allow": "not-a-list"}}'; do
+  H5="$T/home5"; rm -rf "$H5"; mkdir -p "$H5"; printf '%s\n' "$shape" > "$H5/settings.json"
+  cp "$H5/settings.json" "$T/shape.json"
+  if merge "$H5"; then fail "merge over $shape succeeded"; fi
+  cmp -s "$H5/settings.json" "$T/shape.json" || fail "settings.json $shape was changed"
+  ! compgen -G "$H5/.settings.*" >/dev/null || fail "merge over $shape left a temp file"
+  grep -q 'leaving the file untouched' "$T/merge.out" || { cat "$T/merge.out"; fail "merge over $shape did not name the shape"; }
+done
+ok "wrong-shaped permissions left byte-identical and the merge fails"
 
 # ---------------------------------------------------------------- bootstrap.sh --dry-run
 H4="$T/home4"; mkdir -p "$H4"; echo '{"theme":"light"}' > "$H4/settings.json"
