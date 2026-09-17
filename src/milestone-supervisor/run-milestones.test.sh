@@ -1100,6 +1100,7 @@ gate_inside
 assert_eq "$GRC" 0 "the sandbox gate passes"
 [[ -e "$T/pg-ran" ]] && pass "the sandbox-only step ran in the sandbox" || fail "the sandbox-only step did not run in the sandbox"
 assert_grep "^gate pass exit=0 milestone=6 .* where=sandbox setup=none steps=integration:1/1 replay:0/0 static:1/1 skipped:sandbox-only:0 " "$CHAIN" "counted as passed in the sandbox"
+assert_eq "$(jq -r .produced_by "$PROJ/$(bundle_of "$CHAIN")/evidence.json" 2>/dev/null) $(jq -r .produced_by "$EJ" 2>/dev/null)" "gate integrate" "produced_by: gate for a milestone's sandbox gate, integrate for integrate"
 
 # ================================================================ U2.4 dirty tree
 scenario "gate: a dirty sandbox worktree gives dirty=yes and a dirty.patch that reproduces it, without ignored or seeded files"
@@ -1296,6 +1297,189 @@ kill "$LISTENER" 2>/dev/null || true; wait "$LISTENER" 2>/dev/null || true
 assert_eq "$IRC" 0 "the gate passes ($(tail -n 2 "$T/int.out" | tr '\n' ' '))"
 assert_eq "$(tr ' ' '\n' < "$T/ports.c" 2>/dev/null | grep . | sort | tr '\n' ' ')" "41152 41153 41154 41155 " "the bound 41150 and the live 41151 are skipped; the dead holder's 41152 is reused"
 assert_eq "$(grep '^[0-9]' "$IR/logs/milestones/ports.registry" | cut -d' ' -f1-2)" "41151 other-run" "only the live registration remains"
+
+# ================================================================ U3 mutate
+# The sandbox branch changes app.txt to v2 and adds lib.txt; the steps check both. A
+# patch is a planted defect with a "# criterion:" header.
+MREFS='refs/run-milestones/'
+mstatus() {  # STATUS.md on main naming the sandbox of milestone 7
+  printf '# Milestone status\n\n%s\n|---|---|---|---|---|---|---|---|\n| 7 | main | %s | - | - | - | - | - |\n' \
+    '| Milestone | Lane | Sandbox | Merged | Gate | Unmet criteria | Open blockers | Next action |' "$1" > "$IR/.milestones/STATUS.md"
+  g add .milestones/STATUS.md; g commit -q -m "status: milestone 7 in review"
+}
+mk_mrepo() {  # the repo, a milestone 7 sandbox branch, STATUS.md naming it, then config lines
+  mk_irepo; istatus irepo-0000000a:7
+  sb_do irepo-0000000a "echo 'app v2' > app.txt && echo lib > lib.txt && echo other > other.txt" "milestone 7 work"
+  sb_report irepo-0000000a 7
+  mstatus irepo-0000000a
+  iconfig 'GATE=""' "$@"
+}
+# The checks live outside the repository: a step command naming app.txt would make every
+# patch to app.txt a gate-named path, which mutate refuses.
+mkdir -p "$T/checks"
+printf 'grep -qx "app v2" app.txt\n' > "$T/checks/rec.sh"
+printf '! grep -q UNUSED lib.txt\n' > "$T/checks/lint.sh"
+M_STEPS="GATE_STEPS=(\"replay|rec|bash $T/checks/rec.sh\" \"static|lint|bash $T/checks/lint.sh\")"
+mk_patch() {  # name file old new [criterion]: a one-line patch, with a criterion header unless "-"
+  local f="$T/$1.patch"
+  { [[ "${5-2}" == - ]] || printf '# criterion: %s\n' "${5-2}"
+    printf 'diff --git a/%s b/%s\n--- a/%s\n+++ b/%s\n@@ -1 +1 @@\n-%s\n+%s\n' "$2" "$2" "$2" "$2" "$3" "$4"; } > "$f"
+  echo "$f"
+}
+run_mut() {  # mutate <args>; exit code in MRC; asserts host HEAD, index and worktrees untouched
+  local head idx
+  head="$(g rev-parse HEAD)"; idx="$(g ls-files -s | sha256sum)"
+  set +e; (cd "$IR" && TMPDIR="$ITMP" "$DRIVER" mutate "$@") > "$T/mut.out" 2>&1; MRC=$?; set -e
+  [[ "$(g worktree list | wc -l)" == 1 && -z "$(ls -A "$ITMP")" ]] && pass "no temporary worktree left" \
+    || { g worktree list >&2; ls -A "$ITMP" >&2; fail "a temporary worktree or directory was left"; }
+  [[ -z "$(g for-each-ref "$MREFS")" ]] && pass "no throwaway ref left" || { g for-each-ref "$MREFS" >&2; fail "a throwaway ref was left"; }
+  assert_eq "$(g rev-parse HEAD) $(g ls-files -s | sha256sum)" "$head $idx" "host HEAD and index unchanged"
+}
+mut_all() { cat "$T/mut.out" "$ICHAIN" 2>/dev/null > "$T/mut.all"; echo "$T/mut.all"; }
+MREC="$IR/.milestones/mutations/7.jsonl"
+rec() { tail -n 1 "$MREC" 2>/dev/null | jq -r "$1" 2>/dev/null || true; }
+
+scenario "mutate: a patch a replay step catches is caught, exit 0, with the step, record, bundles and events"
+mk_mrepo "$M_STEPS"
+P="$(mk_patch replay app.txt 'app v2' 'app v3' '2: the app reports v2')"
+run_mut 7 "$P"
+assert_eq "$MRC" 0 "caught exits 0 ($(tail -n 3 "$T/mut.out" | tr '\n' ' '))"
+assert_grep '^mutate milestone=7 verdict=caught failing_step=rec ' "$T/mut.out" "the verdict line names the step"
+assert_eq "$(wc -l < "$MREC" 2>/dev/null | tr -d ' ')" 1 "one record in .milestones/mutations/7.jsonl"
+assert_eq "$(rec '[.verdict, .failing_step, .criterion, .patch] | join("|")')" "caught|rec|2: the app reports v2|$P" "verdict, step, criterion and patch"
+for k in baseline_bundle baseline_seal patched_bundle patched_seal tree definition_hash at; do
+  [[ -n "$(rec ".$k // empty")" ]] && pass "record has $k" || fail "record lacks $k: $(tail -n 1 "$MREC" 2>/dev/null)"
+done
+BB="$IR/$(rec .baseline_bundle)"; PB="$IR/$(rec .patched_bundle)"
+assert_eq "$(jq -r '[.produced_by, .where, .verdict] | join(" ")' "$BB/evidence.json" 2>/dev/null)" "mutate host-mutate pass" "the baseline bundle: produced_by=mutate, where=host-mutate, pass"
+assert_eq "$(jq -r '[.produced_by, .where, .verdict, .failed_step] | join(" ")' "$PB/evidence.json" 2>/dev/null)" "mutate host-mutate fail rec" "the patched bundle: produced_by=mutate, failed at rec"
+assert_eq "$(rec .baseline_seal)" "$(sha_of "$BB/evidence.json" 2>/dev/null)" "the baseline seal is its evidence.json's sha256"
+assert_eq "$(rec .patched_seal)" "$(sha_of "$PB/evidence.json" 2>/dev/null)" "the patched seal is its evidence.json's sha256"
+assert_eq "$(seal_in "$ICHAIN" "$(rec .patched_bundle)")" "$(rec .patched_seal)" "chain.log holds the patched seal"
+BSHA="$(jq -r .sha "$BB/evidence.json" 2>/dev/null || true)"
+assert_eq "$(g rev-parse "$BSHA^1" 2>/dev/null) $(g rev-parse "$BSHA^2" 2>/dev/null)" "$(g rev-parse main) $(g rev-parse agent-sandbox/irepo-0000000a)" "the baseline is a merge of the sandbox branch into the integration head"
+assert_eq "$(rec .tree)" "$(g rev-parse "$BSHA^{tree}" 2>/dev/null)" "the record's tree is the baseline's"
+assert_eq "$(jq -r .sha "$PB/evidence.json" 2>/dev/null | xargs -I{} git -C "$IR" rev-parse {}^ 2>/dev/null)" "$BSHA" "the patched commit sits on the baseline"
+assert_eq "$(jq -r '.produced_by' "$IR"/logs/milestones/evidence/*/evidence.json 2>/dev/null | sort -u)" "mutate" "every bundle of the run carries produced_by=mutate"
+EVJ="$IR/.milestones/events.jsonl"
+assert_eq "$(jq -r 'select(.type == "finding") | [.change_id, .stage, .confirmation, .step] | join(" ")' "$EVJ" 2>/dev/null)" "milestone:7 mutate executable rec" "a finding event: stage mutate, executable, the step"
+assert_eq "$(jq -r 'select(.type == "control-proof") | [.control, .exit_code, .demonstrated, .produced_by, .observed] | map(tostring) | join(" ")' "$EVJ" 2>/dev/null)" "mutate 0 true mutate caught" "a control-proof event with the exit code and verdict"
+python3 "$HERE/grade.py" report --project "$IR" --no-mlflow > /dev/null 2>&1 && pass "grade.py reads the ledgers" || fail "grade.py report failed on the ledgers"
+
+scenario "mutate: a patch only a static step catches is caught-static, exit 1"
+mk_mrepo "$M_STEPS"
+run_mut 7 "$(mk_patch static lib.txt lib UNUSED)"
+assert_eq "$MRC" 1 "caught-static exits 1 ($(tail -n 3 "$T/mut.out" | tr '\n' ' '))"
+assert_eq "$(rec '[.verdict, .failing_step] | join(" ")')" "caught-static lint" "caught-static at lint"
+assert_not_grep '"type": "finding"' "$IR/.milestones/events.jsonl" "no finding for a static-only catch"
+
+scenario "mutate: a patch to a file no step checks is missed, exit 1"
+mk_mrepo "$M_STEPS"
+run_mut 7 "$(mk_patch missed other.txt other changed)"
+assert_eq "$MRC" 1 "missed exits 1 ($(tail -n 3 "$T/mut.out" | tr '\n' ' '))"
+assert_eq "$(rec .verdict)" "missed" "missed recorded"
+assert_grep '^mutate milestone=7 verdict=missed ' "$T/mut.out" "the verdict line says missed"
+
+scenario "mutate: a patch whose only catching step is sandbox-only on the host is inconclusive, exit 3"
+mk_mrepo "GATE_STEPS=(\"integration|pg|bash $T/checks/rec.sh|sandbox-only\" \"static|lint|bash $T/checks/lint.sh\")"
+run_mut 7 "$(mk_patch inconc app.txt 'app v2' 'app v3')"
+assert_eq "$MRC" 3 "inconclusive exits 3 ($(tail -n 3 "$T/mut.out" | tr '\n' ' '))"
+assert_eq "$(rec .verdict)" "inconclusive" "inconclusive recorded"
+
+scenario "mutate: a failing baseline exits 2 and writes no record"
+mk_mrepo "GATE_STEPS=(\"replay|rec|bash $T/checks/rec.sh\" \"static|lint|false\")"
+run_mut 7 "$(mk_patch replay app.txt 'app v2' 'app v3')"
+assert_eq "$MRC" 2 "a failing baseline exits 2"
+assert_grep 'baseline' "$(mut_all)" "the error names the baseline"
+[[ -e "$MREC" ]] && fail "a record was written" || pass "no record"
+assert_eq "$(grep -c '^gate ' "$ICHAIN" 2>/dev/null || true)" 1 "only the baseline ran"
+
+scenario "mutate: a patch that does not apply exits 2 with git's message, before any step"
+mk_mrepo "$M_STEPS"
+run_mut 7 "$(mk_patch noapply app.txt 'app v9' 'app v3')"
+assert_eq "$MRC" 2 "exits 2"
+assert_grep 'patch does not apply|patch failed' "$T/mut.out" "git's message is shown"
+[[ -e "$MREC" ]] && fail "a record was written" || pass "no record"
+assert_not_grep '^gate ' "$ICHAIN" "no step ran"
+
+scenario "mutate: a patch without a criterion header exits 2 before any step"
+mk_mrepo "$M_STEPS"
+run_mut 7 "$(mk_patch nocrit app.txt 'app v2' 'app v3' -)"
+assert_eq "$MRC" 2 "exits 2"
+assert_grep 'criterion' "$T/mut.out" "the error asks for a criterion"
+assert_not_grep '^gate ' "$ICHAIN" "no step ran"
+
+scenario "mutate: a patch touching justfile, a script a step names, .milestones/ or a path outside the repo is refused before any step"
+for variant in justfile script milestones outside; do
+  mk_mrepo "GATE_STEPS=(\"replay|rec|bash scripts/check.sh\" \"static|lint|bash $T/checks/lint.sh\")"
+  mkdir -p "$IR/scripts"; cp "$T/checks/rec.sh" "$IR/scripts/check.sh"; echo 'check:' > "$IR/justfile"
+  g add scripts justfile; g commit -q -m "host: check script and justfile"
+  case "$variant" in
+    justfile)   P="$(mk_patch "v-$variant" justfile check: nocheck:)" ;;
+    script)     P="$(mk_patch "v-$variant" scripts/check.sh 'grep -qx "app v2" app.txt' true)" ;;
+    milestones) P="$(mk_patch "v-$variant" .milestones/STATUS.md x y)" ;;
+    outside)    P="$(mk_patch "v-$variant" ../outside.txt x y)" ;;
+  esac
+  run_mut 7 "$P"
+  assert_eq "$MRC" 2 "($variant) refused with 2"
+  assert_grep "refused: the patch changes paths a mutation may not: $(sed -n 's/^+++ b\///p' "$P" | sed 's/[.]/[.]/g') " "$T/mut.out" "($variant) the refusal names the path"
+  assert_not_grep '^gate ' "$ICHAIN" "($variant) no step ran"
+  [[ -e "$MREC" ]] && fail "($variant) a record was written" || pass "($variant) no record"
+done
+
+scenario "mutate: a sandbox branch touching .milestones/ or carrying an unlisted weakening hit is refused as by integrate"
+for variant in milestones weakening; do
+  mk_mrepo "$M_STEPS"
+  case "$variant" in
+    milestones) sb_do irepo-0000000a "printf 'all met\n' > .milestones/evaluation-7.md" "self-evaluation" ;;
+    weakening)  sb_do irepo-0000000a "git rm -q tests/test_a.py" "drop a test" ;;
+  esac
+  run_mut 7 "$(mk_patch "b-$variant" app.txt 'app v2' 'app v3')"
+  assert_eq "$MRC" 2 "($variant) refused with 2"
+  case "$variant" in
+    milestones) assert_grep '\.milestones/evaluation-7\.md' "$(mut_all)" "the refusal names the supervisor file" ;;
+    weakening)  assert_grep 'deleted-test tests/test_a\.py' "$(mut_all)" "the refusal names the unlisted hit" ;;
+  esac
+  assert_not_grep '^gate ' "$ICHAIN" "($variant) no step ran"
+done
+
+scenario "mutate: --steps runs only the named steps; the others are recorded not run"
+mk_mrepo "GATE_STEPS=(\"replay|rec|bash $T/checks/rec.sh\" \"static|lint|touch $T/lint-ran\")"
+rm -f "$T/lint-ran"
+run_mut 7 "$(mk_patch steps app.txt 'app v2' 'app v3')" --steps rec
+assert_eq "$MRC" 0 "caught by the selected step ($(tail -n 3 "$T/mut.out" | tr '\n' ' '))"
+[[ -e "$T/lint-ran" ]] && fail "the unselected step ran" || pass "the unselected step never ran"
+PB="$IR/$(rec .patched_bundle)"
+assert_eq "$(jq -r '[.steps[] | "\(.name):\(.status)"] | join(" ")' "$PB/evidence.json" 2>/dev/null)" "rec:fail lint:not run: not selected" "lint recorded not run"
+assert_eq "$(rec '.steps | join(",")')" "rec" "the record names the selected steps"
+mk_mrepo "$M_STEPS"
+run_mut 7 "$(mk_patch steps2 app.txt 'app v2' 'app v3')" --steps nosuch
+assert_eq "$MRC" 2 "an unknown step name exits 2"
+
+scenario "mutate: the sandbox comes from --sandbox when STATUS.md names none; --ref sets the target base"
+mk_mrepo "$M_STEPS"
+g rm -q .milestones/STATUS.md; g commit -q -m "no status"
+run_mut 7 "$(mk_patch nosb app.txt 'app v2' 'app v3')"
+assert_eq "$MRC" 2 "no sandbox named: exits 2"
+assert_grep '--sandbox' "$T/mut.out" "the error names --sandbox"
+g branch -q older "$(g rev-list --max-parents=0 HEAD)"
+run_mut 7 "$(mk_patch withsb app.txt 'app v2' 'app v3')" --sandbox irepo-0000000a --ref older
+assert_eq "$MRC" 0 "with --sandbox and --ref it runs ($(tail -n 3 "$T/mut.out" | tr '\n' ' '))"
+BSHA="$(jq -r .sha "$IR/$(rec .baseline_bundle)/evidence.json" 2>/dev/null || true)"
+assert_eq "$(g rev-parse "$BSHA^1" 2>/dev/null)" "$(g rev-parse older)" "the merge's first parent is the --ref"
+
+scenario "mutate with INTEGRATE_GATE_WHERE=sandbox creates and removes a sandbox per run"
+mk_mrepo "$M_STEPS" 'INTEGRATE_GATE_WHERE=sandbox'
+rm -f "$FAKE_DIR/agent-sandbox.calls"
+export FAKE_RUN_CLONE=1 FAKE_RUN_ID=irepo-6c6c6c6c FAKE_ENTER_EXEC=1
+run_mut 7 "$(mk_patch sbx app.txt 'app v2' 'app v3')"
+unset FAKE_RUN_CLONE FAKE_RUN_ID FAKE_ENTER_EXEC
+assert_eq "$MRC" 0 "caught in the sandbox ($(tail -n 3 "$T/mut.out" | tr '\n' ' '))"
+assert_eq "$(grep -c '^run .* --new .*--tag purpose=mutation-gate .*--json -- true$' "$FAKE_DIR/agent-sandbox.calls")" 2 "two fresh sandboxes, baseline and patched"
+assert_eq "$(grep -c '^rm irepo-6c6c6c6c' "$FAKE_DIR/agent-sandbox.calls")" 2 "each removed"
+[[ -e "$FAKE_WS_ROOT/irepo-6c6c6c6c" ]] && fail "the sandbox worktree is still there" || pass "the sandbox worktree is gone"
+assert_eq "$(jq -r '[.produced_by, .where, .verdict] | join(" ")' "$IR/$(rec .patched_bundle)/evidence.json" 2>/dev/null)" "mutate sandbox-mutate fail" "the patched bundle is where=sandbox-mutate"
+assert_eq "$(jq -r .sha "$IR/$(rec .baseline_bundle)/evidence.json" 2>/dev/null | xargs -I{} git -C "$IR" rev-parse {}^2 2>/dev/null)" "$(g rev-parse agent-sandbox/irepo-0000000a)" "the sandbox gated the temporary merge"
 
 # ================================================================ U8 init
 NR_="$T/newrepo"

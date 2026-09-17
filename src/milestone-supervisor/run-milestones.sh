@@ -19,6 +19,8 @@
 #                                                # write logs/milestones/milestone-6.prompt
 #   run-milestones.sh init                       # set up a repository: .milestones/, CE config, a starter pack
 #   run-milestones.sh integrate app-1a2b3c4d [6]  # merge, check, gate on the host, record STATUS.md, push
+#   run-milestones.sh mutate 6 .milestones/mutations/6-drop-limit.patch [--ref REF] [--steps api,lint]
+#                                                # does the gate catch a planted defect in what integrate would gate
 #
 # One milestone per invocation: the supervisor reviews between milestones, so the
 # driver refuses `run-milestones.sh 5 6`. The launch returns as soon as systemd accepts
@@ -103,10 +105,12 @@
 # seed_kept paths. The bundle, always on the host, is
 #   logs/milestones/evidence/<milestone>-<where>-<stamp>/
 #     evidence.json  dirty.patch  untracked.txt  steps/<i>-<name>.log  steps/env.log
-# evidence.json is written after the last step, and its sha256 is logged as the seal.
+# evidence.json is written after the last step, and its sha256 is logged as the seal. Its
+# produced_by names the verb that made it (gate, integrate, check, mutate); only an
+# integrate bundle is ever delivery evidence.
 # Each run appends to its gate log and chain.log:
 #   gate pass|FAIL exit=N milestone=N sha=<12> tree=<12> def=<12> dirty=yes|no
-#     where=sandbox|host-integrate|sandbox-integration|local setup=yes|none
+#     where=sandbox|host-integrate|sandbox-integration|local|host-mutate|sandbox-mutate setup=yes|none
 #     steps=integration:<passed>/<n> replay:<passed>/<n> static:<passed>/<n> skipped:sandbox-only:<k>
 #     env="..." evidence=<bundle> at=<iso>                                  (one line)
 # and to chain.log only:
@@ -147,6 +151,32 @@
 # the merge local and logs the pre-merge sha with the `git reset --hard` that drops it; on
 # an already-merged re-run it logs `git log --oneline <upstream>..HEAD` instead, because a
 # reset would also drop fix-forward commits. Exit 2 refused, 1 gate or push failed.
+#
+# mutate N <patch> [--ref REF] [--steps name,name] [--sandbox ID], from the host checkout.
+# The sandbox is the Sandbox cell of milestone N's STATUS.md row, else --sandbox. In order:
+#   1. integrate's candidate checks on agent-sandbox/<id>: its range touches no .milestones/
+#      path and no path ignored in the host checkout, and every weakening or gate-config hit
+#      is approved (today: listed in the report's "Test expectation changes" section);
+#   2. the patch carries a "# criterion: <exit criterion text or index>" line before its
+#      first diff, and changes no GATE_DEFINITION_GLOBS file, no .milestones/ path, no path
+#      outside the repository and no file a step, GATE_SETUP or GATE_ENV command names;
+#   3. the target: a temporary merge of agent-sandbox/<id> into the integration branch head
+#      (INTEGRATION_BRANCH, else the checked-out branch), or into --ref, built in a temporary
+#      worktree; the patch must `git apply --check` there and is committed on top. Both
+#      commits are held by refs under refs/run-milestones/mutate/ until the run ends;
+#   4. the baseline: the selected steps (all, or --steps; setup always runs) on the target,
+#      where INTEGRATE_GATE_WHERE says (host-mutate: a temporary worktree; sandbox-mutate: a
+#      fresh sandbox of the commit, removed after). It must pass;
+#   5. the patched commit, same steps, every step run even after a failure;
+#   6. the verdict from the patched bundle: caught (an integration or replay step failed,
+#      exit 0), inconclusive (none failed, and one of them was not run, sandbox-only on the
+#      host, exit 3), caught-static (only a static step failed, exit 1), missed (exit 1);
+#   7. one line appended to .milestones/mutations/N.jsonl: patch, criterion, verdict,
+#      failing_step, steps, where, sha and tree (the baseline's), patched_sha, both bundles
+#      and seals, definition_hash, at; then grade.py events: control-proof for every
+#      verdict, and a finding (stage mutate, executable) when caught.
+# Worktrees, refs, sandboxes and ports are removed on every exit path. A refusal, a patch
+# that does not apply, a failing baseline or any other error exits 2 and writes no record.
 set -euo pipefail
 
 SELF="$(readlink -f "${BASH_SOURCE[0]}")"
@@ -463,13 +493,14 @@ release_ports() {
 }
 
 # ---- cleanup on every exit path of a gate run
-GATE_TMP=""; INTEGRATE_TREE=""; GATE_SANDBOX_CREATED=""
+GATE_TMP=""; INTEGRATE_TREE=""; GATE_SANDBOX_CREATED=""; MUTATE_TMP=""; MUTATE_REFS=()
 on_exit() {
   release_ports
   [[ -z "$GATE_TMP" ]] || rm -rf "$GATE_TMP" 2> /dev/null || true
   GATE_TMP=""
   integrate_cleanup
   remove_gate_sandbox
+  mutate_cleanup
 }
 arm_cleanup() { trap on_exit EXIT; trap 'exit 130' INT TERM; }
 
@@ -612,6 +643,9 @@ doc = {
     "sandbox": h["sandbox"] or None, "setup": h["setup"], "env": h["env"],
     "report": h["report"] or None, "timeout": h["timeout"],
     "ports": [int(p) for p in h["ports"].split()],
+    "produced_by": h["produced_by"],
+    "selected": [x for x in h["selected"].split(",") if x] or None,
+    "keep_going": h["keep_going"] == "1",
     "driver": h["driver"], "started_at": h["started_at"], "finished_at": h["finished_at"],
     "counts": counts, "steps": steps,
 }
@@ -625,15 +659,29 @@ PY
 
 # ---- one gate run
 GATE_RC=0; GATE_BUNDLE=""; GATE_FAILED_STEP=""; GATE_COUNTS=""; GATE_TREE=""; GATE_DEF=""; GATE_ADMISSION=0
+# Set by a caller for its next gate_run: GATE_SELECT holds step names (space separated; empty
+# runs every step, and setup always runs), the rest are recorded "not run: not selected".
+# GATE_KEEP_GOING=1 runs the later steps after a failure (mutate's patched run needs to
+# know which kinds fail), stopping only at an admission refusal or a spent GATE_TIMEOUT.
+GATE_SELECT=""; GATE_KEEP_GOING=0
 gate_run() {
   # gate_run <where> <milestone> <dir> <sha> [sandbox-id]
   #   where: sandbox (a milestone's own sandbox, whose report must exist), host-integrate,
-  #   sandbox-integration, local. <dir> is the gated worktree as the host sees it.
+  #   sandbox-integration, local, host-mutate, sandbox-mutate. <dir> is the gated worktree as
+  #   the host sees it. evidence.json's produced_by follows where: sandbox -> gate,
+  #   *-integrate/*-integration -> integrate, local -> check, *-mutate -> mutate.
   # Returns GATE_RC: 0, or the failing step's exit. Returns 1 with no bundle when the run
   # could not start (unreadable tree, no ports). Sets GATE_BUNDLE, GATE_FAILED_STEP,
   # GATE_COUNTS, GATE_TREE, GATE_DEF and GATE_ADMISSION (a step enter not admitted).
-  local where="$1" n="$2" dir="$3" sha="$4" sb="${5:-}" route=host target="$3"
-  case "$where" in sandbox|sandbox-integration) route=sandbox; target="$sb" ;; esac
+  local where="$1" n="$2" dir="$3" sha="$4" sb="${5:-}" route=host target="$3" produced_by
+  case "$where" in sandbox|sandbox-integration|sandbox-mutate) route=sandbox; target="$sb" ;; esac
+  case "$where" in
+    sandbox) produced_by=gate ;;
+    host-integrate|sandbox-integration) produced_by=integrate ;;
+    local) produced_by=check ;;
+    host-mutate|sandbox-mutate) produced_by=mutate ;;
+    *) log "milestone $n: unknown gate location '$where'; no gate step ran"; return 1 ;;
+  esac
   GATE_RC=0; GATE_BUNDLE=""; GATE_FAILED_STEP=""; GATE_COUNTS=""; GATE_ADMISSION=0; SB_STDOUT=""; SB_RUNDIR=""
   arm_cleanup
   GATE_TREE="$(git -C "$dir" rev-parse --verify -q "$sha^{tree}" 2> /dev/null)" \
@@ -653,7 +701,7 @@ gate_run() {
   fi
   GATE_BUNDLE="$b"
 
-  local started seed_kept="" seed_read=0 dirty=no env="-" probed=0 total deadline rem k rc t0 report=""
+  local started seed_kept="" seed_read=0 dirty=no env="-" probed=0 total deadline rem k rc t0 report="" halt=0
   local s_status=() s_exit=() s_ms=() s_log=()
   started="$(date -Is)"
   gate_dirty "$dir" "$b" "$sha" || log "  could not read the dirt of $dir; the bundle counts as dirty"
@@ -661,7 +709,12 @@ gate_run() {
   total="$(to_seconds "$GATE_TIMEOUT")"; deadline=$(( SECONDS + total ))
   for k in "${!ST_NAME[@]}"; do
     s_log[k]=""; s_exit[k]=""; s_ms[k]=""
-    if (( GATE_RC )); then s_status[k]="not run"; continue; fi
+    if (( GATE_RC )) && [[ "$GATE_KEEP_GOING" != 1 || "$halt" == 1 ]]; then
+      s_status[k]="not run"; continue
+    fi
+    if [[ -n "$GATE_SELECT" && "${ST_NAME[k]}" != setup && " $GATE_SELECT " != *" ${ST_NAME[k]} "* ]]; then
+      s_status[k]="not run: not selected"; continue
+    fi
     # The GATE_ENV probe: once, after setup, before the first other step. Not a step.
     if [[ -n "$GATE_ENV" && "$probed" == 0 && "${ST_NAME[k]}" != setup ]]; then
       probed=1; rem=$(( deadline - SECONDS ))
@@ -686,8 +739,9 @@ gate_run() {
     s_ms[k]=$(( (${EPOCHREALTIME//[.,]/} - t0) / 1000 )); s_exit[k]="$rc"
     if (( rc == 0 )); then s_status[k]=pass; continue; fi
     s_status[k]=fail
-    if [[ "$route" == sandbox ]] && (( rc == 3 && ADMISSION_REFUSED )); then s_status[k]="not admitted"; GATE_ADMISSION=1; fi
-    GATE_RC="$rc"; GATE_FAILED_STEP="${ST_NAME[k]}"
+    if [[ "$route" == sandbox ]] && (( rc == 3 && ADMISSION_REFUSED )); then s_status[k]="not admitted"; GATE_ADMISSION=1; halt=1; fi
+    (( rc != 124 )) || halt=1
+    if (( ! GATE_RC )); then GATE_RC="$rc"; GATE_FAILED_STEP="${ST_NAME[k]}"; fi
   done
   if [[ "$where" == sandbox ]]; then
     # The milestone's report, read on the host after the steps.
@@ -705,6 +759,7 @@ gate_run() {
       failed_step="$GATE_FAILED_STEP" sha="$sha" tree="$GATE_TREE" definition_hash="$GATE_DEF" dirty="$dirty" \
       dirty_tracked="$DIRTY_TRACKED" dirty_untracked="$DIRTY_UNTRACKED" seed_kept="$seed_kept" sandbox="$sb" \
       setup="$setup" env="$env" report="$report" timeout="$GATE_TIMEOUT" ports="${PORTS[*]}" driver="$SELF" \
+      produced_by="$produced_by" selected="${GATE_SELECT// /,}" keep_going="$GATE_KEEP_GOING" \
       started_at="$started" finished_at="$(date -Is)" -- "${args[@]}")" || [[ ! -s "$b/evidence.json" ]]; then
     log "milestone $n: could not write $b/evidence.json (python3); the gate counts as failed"
     (( GATE_RC )) || GATE_RC=1
@@ -778,6 +833,7 @@ sandbox_call() {
 }
 
 # ---------------------------------------------------------------- arguments
+MUTATE_PATCH=""; MUTATE_REF=""; MUTATE_STEPS=""; MUTATE_EXIT=2
 VERB=""; INTEGRATE_ID=""; SANDBOX=""; DEPLOY=0; NOTE=""; CONTINUE=""; INSIDE=""; UNIT=""; GATE_ONLY=0; ISSUE=0
 MILESTONES=(); RES=(); TAGS=(); AGENT_OPTS=()
 while (($#)); do
@@ -785,6 +841,11 @@ while (($#)); do
     status|resume|config|prompt) VERB="$1"; shift ;;
     init) die "init takes no other arguments: run-milestones.sh init" ;;
     integrate) VERB=integrate; shift; INTEGRATE_ID="${1-}"; if (($#)); then shift; fi ;;   # the next argument is the id
+    mutate) VERB=mutate; shift   # mutate N <patch>: the patch path may start with a digit
+            if (($#)) && [[ "$1" =~ ^[0-9]+$ ]]; then MILESTONES+=("$1"); shift; fi
+            if (($#)) && [[ "$1" != --* ]]; then MUTATE_PATCH="$1"; shift; fi ;;
+    --ref|--steps) (($# >= 2)) || die "$1 needs a value"
+            if [[ "$1" == --ref ]]; then MUTATE_REF="$2"; else MUTATE_STEPS="$2"; fi; shift 2 ;;
     --sandbox) SANDBOX="$2"; shift 2 ;;
     --deploy) DEPLOY=1; shift ;;
     --note) NOTE="$2"; shift 2 ;;
@@ -1167,7 +1228,7 @@ report_expectation_section() {
 }
 
 weakening_hits() {
-  # "<kind> <path>" per hit in the diff <base>..HEAD:
+  # weakening_hits <base> [<head>, default HEAD]: "<kind> <path>" per hit in the diff <base>..<head>:
   #   skip-marker     an added line matching TEST_WEAKENING_PATTERN in a TEST_GLOBS file
   #   removed-assert  a removed line matching TEST_ASSERT_PATTERN in a TEST_GLOBS file
   #   deleted-test    a deleted TEST_GLOBS file
@@ -1176,7 +1237,7 @@ weakening_hits() {
   #                   config or the gate recipe can narrow the suite without touching a test)
   # The line checks are limited to test files so application code (an iterator's .skip(,
   # a production assert) and the report quoting a marker are not hits.
-  local base="$1" status path body
+  local base="$1" head="${2:-HEAD}" status path body
   while IFS= read -r -d '' status && IFS= read -r -d '' path; do
     if path_matches "$path" "$SNAPSHOT_GLOBS" && [[ "$status" != A ]]; then
       echo "snapshot $path"
@@ -1184,14 +1245,61 @@ weakening_hits() {
     if path_matches "$path" "$GATE_DEFINITION_GLOBS"; then echo "gate-config $path"; fi
     path_matches "$path" "$TEST_GLOBS" || continue
     if [[ "$status" == D ]]; then echo "deleted-test $path"; continue; fi
-    body="$(git -c core.quotePath=false diff --no-color --no-ext-diff --no-renames --unified=0 "$base" HEAD -- "$path" \
+    body="$(git -c core.quotePath=false diff --no-color --no-ext-diff --no-renames --unified=0 "$base" "$head" -- "$path" \
       | awk '/^@@/ { b = 1; next } /^diff --git / { b = 0 } b')"
     # grep reads a here-string, never a pipe: `sed | grep -q` under pipefail fails when grep
     # exits at its first match while sed still writes, which hides a hit in a large diff.
     if grep -Eq -- "$TEST_WEAKENING_PATTERN" <<< "$(sed -n 's/^+//p' <<< "$body")"; then echo "skip-marker $path"; fi
     if grep -Eq -- "$TEST_ASSERT_PATTERN" <<< "$(sed -n 's/^-//p' <<< "$body")"; then echo "removed-assert $path"; fi
-  done < <(git -c core.quotePath=false diff --no-renames --name-status -z "$base" HEAD)
+  done < <(git -c core.quotePath=false diff --no-renames --name-status -z "$base" "$head")
 }
+
+# ---- candidate preconditions, shared by integrate and mutate
+CANDIDATE_REFUSAL=""
+candidate_range_refusal() {
+  # candidate_range_refusal <base> <sandbox-branch>: returns 1 with CANDIDATE_REFUSAL set when
+  # the branch's own range <base>..<branch> touches .milestones/ (supervisor files come only
+  # from host commits) or adds or changes a path `git check-ignore` reports ignored in the
+  # host checkout (a merge would overwrite it). A git error refuses too.
+  local base="$1" sbranch="$2" p rc=0 bad=() ignored=() changed ig_out listed
+  CANDIDATE_REFUSAL=""
+  listed="$(git -c core.quotePath=false log --no-renames --format= --name-only "$base..$sbranch" -- .milestones)" \
+    || { CANDIDATE_REFUSAL="could not list the supervisor files $sbranch touches"; return 1; }
+  while IFS= read -r p; do
+    [[ -n "$p" ]] && bad+=("$p")
+  done < <(sort -u <<< "$listed")
+  if (( ${#bad[@]} )); then
+    CANDIDATE_REFUSAL="$sbranch touches supervisor files under .milestones/, which only host commits may change: ${bad[*]}"; return 1
+  fi
+  changed="$(mktemp "${TMPDIR:-/tmp}/candidate-paths.XXXXXX")"
+  git -c core.quotePath=false diff --no-renames --name-only -z --diff-filter=d "$base" "$sbranch" > "$changed" \
+    || { rm -f "$changed"; CANDIDATE_REFUSAL="could not list the paths $sbranch changes"; return 1; }
+  ig_out="$(git -c core.quotePath=false check-ignore -z --stdin < "$changed" | tr '\0' '\n')" || rc=$?
+  rm -f "$changed"
+  (( rc <= 1 )) || { CANDIDATE_REFUSAL="git check-ignore failed (exit $rc) while checking $sbranch for ignored paths"; return 1; }
+  while IFS= read -r p; do
+    [[ -n "$p" ]] && ignored+=("$p")
+  done <<< "$ig_out"
+  if (( ${#ignored[@]} )); then
+    CANDIDATE_REFUSAL="$sbranch adds or changes paths ignored in this checkout, which a merge would overwrite: ${ignored[*]}"; return 1
+  fi
+}
+
+unapproved_hits() {
+  # unapproved_hits <base> <head> <report path>: HITS gets every weakening and gate-config hit
+  # in <base>..<head>, UNAPPROVED the ones nothing approves, one "<kind> <path>" per line.
+  # The one place approval is decided: today a hit is approved when its path appears whole in
+  # the "Test expectation changes" section of <report> at <head>.
+  local base="$1" head="$2" report="$3" section="" kind path
+  HITS="$(weakening_hits "$base" "$head" | sort -u)"; UNAPPROVED=""
+  [[ -n "$HITS" ]] || return 0
+  section="$(git show "$head:$report" 2>/dev/null | report_expectation_section || true)"
+  while read -r kind path; do
+    section_lists "$path" "$section" || UNAPPROVED+="$kind $path"$'\n'
+  done <<< "$HITS"
+  UNAPPROVED="${UNAPPROVED%$'\n'}"
+}
+HITS=""; UNAPPROVED=""
 
 section_lists() {
   # section_lists <path> <section text>: the path appears whole, bounded on each side by
@@ -1247,42 +1355,52 @@ status_upsert() {
   cat "$tmp" > "$sfile"; rm -f "$tmp"   # keep the file's own mode
 }
 
-host_gate() {
-  # Gate HEAD on the host in a temporary detached worktree seeded with SEED_PATHS copies,
-  # so GATE_SETUP never writes the host files every sandbox is seeded from. The bundle is
-  # written under the project's logs before the worktree is removed. Returns the gate's exit.
-  local n="$1" sha="$2" rc=0 p
-  arm_cleanup
-  INTEGRATE_TREE="$(mktemp -d "${TMPDIR:-/tmp}/integrate-$PROJECT-$n.XXXXXX")"
-  git worktree add -q --detach "$INTEGRATE_TREE/tree" "$sha" > /dev/null || { log "  could not add a worktree of ${sha:0:12}"; return 1; }
+seed_worktree() {
+  # Copy each SEED_PATHS entry from the host checkout into worktree <dir>.
+  local dir="$1" p
   local -
   set -f
   for p in ${SEED_PATHS:-}; do
     if [[ "$p" == /* || "/$p/" == */../* ]]; then log "  seed path '$p' skipped: not a path inside the repository"; continue; fi
     [[ -e "$REPO/$p" ]] || { log "  seed path $p absent on the host; skipped"; continue; }
-    if [[ -d "$REPO/$p" ]]; then mkdir -p "$INTEGRATE_TREE/tree/$p"; cp -a "$REPO/$p/." "$INTEGRATE_TREE/tree/$p/"
-    else mkdir -p "$(dirname "$INTEGRATE_TREE/tree/$p")"; cp -a "$REPO/$p" "$INTEGRATE_TREE/tree/$p"; fi
+    if [[ -d "$REPO/$p" ]]; then mkdir -p "$dir/$p"; cp -a "$REPO/$p/." "$dir/$p/"
+    else mkdir -p "$(dirname "$dir/$p")"; cp -a "$REPO/$p" "$dir/$p"; fi
     log "  seeded $p"
   done
-  set +f
+}
+
+host_gate() {
+  # host_gate <milestone> <sha> [where, default host-integrate]
+  # Gate <sha> on the host in a temporary detached worktree seeded with SEED_PATHS copies,
+  # so GATE_SETUP never writes the host files every sandbox is seeded from. The bundle is
+  # written under the project's logs before the worktree is removed. Returns the gate's exit.
+  local n="$1" sha="$2" where="${3:-host-integrate}" rc=0
+  arm_cleanup
+  INTEGRATE_TREE="$(mktemp -d "${TMPDIR:-/tmp}/integrate-$PROJECT-$n.XXXXXX")"
+  git worktree add -q --detach "$INTEGRATE_TREE/tree" "$sha" > /dev/null || { log "  could not add a worktree of ${sha:0:12}"; return 1; }
+  seed_worktree "$INTEGRATE_TREE/tree"
   log "  host gate in $INTEGRATE_TREE/tree (timeout $GATE_TIMEOUT)"
-  gate_run host-integrate "$n" "$INTEGRATE_TREE/tree" "$sha" || rc=$?
+  gate_run "$where" "$n" "$INTEGRATE_TREE/tree" "$sha" || rc=$?
   integrate_cleanup
   return "$rc"
 }
 
 GATE_REFUSED=""
 sandbox_integration_gate() {
-  # INTEGRATE_GATE_WHERE=sandbox: a fresh sandbox of the host checkout, whose HEAD is the
-  # merge commit, refused unless its worktree is at that commit, gated step by step through
-  # enter and removed on every exit path. Sets GATE_REFUSED for a sandbox at another commit.
-  local n="$1" head="$2" lane="$3" created id ws wsha rc=0
+  # sandbox_integration_gate <milestone> <head> <lane> [source, default the host checkout]
+  #   [where, default sandbox-integration]
+  # INTEGRATE_GATE_WHERE=sandbox: a fresh sandbox of <source> (a checkout whose HEAD is
+  # <head>), refused unless its worktree is at that commit, gated step by step through enter
+  # and removed on every exit path. Sets GATE_REFUSED for a sandbox at another commit.
+  local n="$1" head="$2" lane="$3" src="${4:-$REPO}" where="${5:-sandbox-integration}" created id ws wsha rc=0
+  local purpose=integration-gate what="the merge commit" verb=integrate
+  [[ "$where" != sandbox-mutate ]] || { purpose=mutation-gate; what="the commit to gate"; verb=mutate; }
   arm_cleanup
   resolve_resources "$n"
-  TAGS=(--tag "milestone=$n" --tag "lane=$lane" --tag purpose=integration-gate)
-  created="$LOGS/integrate-$n-sandbox-$(date +%Y%m%dT%H%M%S).log"
-  log "  integration sandbox for ${head:0:12}, created from $REPO (log $created)"
-  sandbox_call "$created" run "$REPO" --new "${RES[@]}" "${TAGS[@]}" --json -- true || rc=$?
+  TAGS=(--tag "milestone=$n" --tag "lane=$lane" --tag "purpose=$purpose")
+  created="$LOGS/$verb-$n-sandbox-$(date +%Y%m%dT%H%M%S%N).log"
+  log "  $purpose sandbox for ${head:0:12}, created from $src (log $created)"
+  sandbox_call "$created" run "$src" --new "${RES[@]}" "${TAGS[@]}" --json -- true || rc=$?
   if (( rc == 3 && ADMISSION_REFUSED )); then GATE_FAILED_STEP="sandbox creation, not admitted"; return 3; fi
   id="$(json_sandbox_id "$created")"
   if [[ -z "$id" || ! "$id" =~ $SANDBOX_ID_RE || "$id" == *..* ]]; then
@@ -1296,10 +1414,10 @@ sandbox_integration_gate() {
   wsha=""
   [[ -z "$ws" || ! -d "$ws" ]] || wsha="$(git -C "$ws" rev-parse --verify -q HEAD 2> /dev/null || true)"
   if [[ "$wsha" != "$head" ]]; then
-    GATE_REFUSED="integration sandbox $id is at ${wsha:-an unreadable HEAD}, not the merge commit $head"
+    GATE_REFUSED="integration sandbox $id is at ${wsha:-an unreadable HEAD}, not $what $head"
     remove_gate_sandbox; return 2
   fi
-  gate_run sandbox-integration "$n" "$ws" "$head" "$id" || rc=$?
+  gate_run "$where" "$n" "$ws" "$head" "$id" || rc=$?
   remove_gate_sandbox
   return "$rc"
 }
@@ -1363,26 +1481,12 @@ do_integrate() {
   done
 
   # ---- the sandbox's own range: what agent-sandbox/<id> brings beyond the upstream
-  local base p rc_ig=0 bad=() ignored=() report="$REPORT_DIR/milestone-$n.md" rblob bblob
+  local base report="$REPORT_DIR/milestone-$n.md" rblob bblob
   base="$(git merge-base "$upstream" "$sbranch")" || refuse "$sbranch shares no history with the upstream of $branch"
   # Supervisor files (STATUS.md cells, evaluation-N.md, config) come only from host
-  # commits, which the ahead rule's .milestones-only allowance covers.
-  while IFS= read -r p; do
-    [[ -n "$p" ]] && bad+=("$p")
-  done < <(git -c core.quotePath=false log --no-renames --format= --name-only "$base..$sbranch" -- .milestones | sort -u)
-  (( ${#bad[@]} == 0 )) || refuse "$sbranch touches supervisor files under .milestones/, which only host commits may change: ${bad[*]}"
-  # A merge writes over an ignored host file (an env file, seeded data) without a word.
-  local changed ig_out
-  changed="$(mktemp "${TMPDIR:-/tmp}/integrate-paths.XXXXXX")"
-  git -c core.quotePath=false diff --no-renames --name-only -z --diff-filter=d "$base" "$sbranch" > "$changed" \
-    || { rm -f "$changed"; refuse "could not list the paths $sbranch changes"; }
-  ig_out="$(git -c core.quotePath=false check-ignore -z --stdin < "$changed" | tr '\0' '\n')" || rc_ig=$?
-  rm -f "$changed"
-  (( rc_ig <= 1 )) || refuse "git check-ignore failed (exit $rc_ig) while checking $sbranch for ignored paths"
-  while IFS= read -r p; do
-    [[ -n "$p" ]] && ignored+=("$p")
-  done <<< "$ig_out"
-  (( ${#ignored[@]} == 0 )) || refuse "$sbranch adds or changes paths ignored in this checkout, which a merge would overwrite: ${ignored[*]}"
+  # commits, which the ahead rule's .milestones-only allowance covers; a merge writes over an
+  # ignored host file (an env file, seeded data) without a word.
+  candidate_range_refusal "$base" "$sbranch" || refuse "$CANDIDATE_REFUSAL"
   # The report the sandbox gate checked with test -s: added or changed by this range, non-empty.
   rblob="$(git rev-parse -q --verify "$sbranch:$report" 2>/dev/null || true)"
   bblob="$(git rev-parse -q --verify "$base:$report" 2>/dev/null || true)"
@@ -1417,19 +1521,14 @@ do_integrate() {
   }
 
   # ---- weakening scan over everything about to be pushed
-  local hits unlisted=() section="" kind path
-  hits="$(weakening_hits "$upstream" | sort -u)"
-  if [[ -n "$hits" ]]; then
-    section="$(git show "HEAD:$report" 2>/dev/null | report_expectation_section || true)"
-    while read -r kind path; do
-      section_lists "$path" "$section" || unlisted+=("$kind $path")
-    done <<< "$hits"
-    if (( ${#unlisted[@]} )); then
+  unapproved_hits "$upstream" HEAD "$report"
+  if [[ -n "$HITS" ]]; then
+    if [[ -n "$UNAPPROVED" ]]; then
       kept "refused: test weakening not listed in the 'Test expectation changes' section of $report:"
-      for c in "${unlisted[@]}"; do log "    $c"; done
+      while IFS= read -r c; do log "    $c"; done <<< "$UNAPPROVED"
       exit 2
     fi
-    log "  weakening hits all listed in $report: $(tr '\n' ';' <<< "$hits")"
+    log "  weakening hits all listed in $report: $(tr '\n' ';' <<< "$HITS")"
   else
     log "  weakening scan: no hits in $upstream..HEAD"
   fi
@@ -1492,6 +1591,386 @@ do_integrate() {
   log "integrate milestone $n: pushed $branch to $remote as ${final:0:12} ($final) $(date -Is)"
 }
 
+# ---------------------------------------------------------------- mutate
+# `mutate N <patch>` plants a defect in what integrate would gate and reports whether the
+# gate steps reject it. Nothing touches the host checkout's HEAD, index or branches: the
+# target is built in a temporary worktree, its commits are held by throwaway refs under
+# MUTATE_REF_PREFIX, and every worktree, ref and sandbox it made is removed on every exit.
+MUTATE_REF_PREFIX="refs/run-milestones/mutate/"
+
+mutate_cleanup() {
+  local d r
+  if [[ -n "$MUTATE_TMP" ]]; then
+    for d in "$MUTATE_TMP"/*/; do
+      [[ -d "$d" ]] || continue
+      git -C "$REPO" worktree remove --force "${d%/}" > /dev/null 2>&1 || true
+    done
+    rm -rf "$MUTATE_TMP"
+    git -C "$REPO" worktree prune > /dev/null 2>&1 || true
+    MUTATE_TMP=""
+  fi
+  # Only refs this run named under the prefix are deleted, never an empty or foreign name.
+  for r in "${MUTATE_REFS[@]}"; do
+    [[ "$r" == "$MUTATE_REF_PREFIX"?* && "$r" != *..* ]] || continue
+    git -C "$REPO" update-ref -d "$r" > /dev/null 2>&1 || true
+  done
+  MUTATE_REFS=()
+}
+
+status_sandbox_cell() {
+  # The Sandbox cell of milestone <n>'s STATUS.md row in the host checkout; empty when absent.
+  local sfile="$REPO/.milestones/STATUS.md"
+  [[ -f "$sfile" ]] || return 0
+  awk -F'|' -v n="$1" '
+    function t(s) { gsub(/^[ \t]+|[ \t]+$/, "", s); return s }
+    /^[ \t]*\|/ && t($2) == n { v = t($4); if (v != "-") print v; exit }' "$sfile"
+}
+
+patch_criterion() {
+  # The first "# criterion: <text>" line before the patch's first diff header.
+  awk '/^(diff --git |--- |\+\+\+ |@@ )/ { exit }
+    match($0, /^#[ \t]*criterion:[ \t]*/) { v = substr($0, RLENGTH + 1); sub(/[ \t\r]+$/, "", v); if (v != "") { print v; exit } }' "$1"
+}
+
+patch_paths() {
+  # Every path patch <file> names, one per line: the diff --git header, ---/+++ lines and
+  # rename/copy lines, outside hunk bodies, with a/ and b/ stripped and /dev/null skipped.
+  python3 - "$1" <<'PY'
+import re, sys
+
+def unq(p):
+    if len(p) >= 2 and p[0] == '"' and p[-1] == '"':
+        p = p[1:-1].encode("latin-1", "backslashreplace").decode("unicode_escape").encode("latin-1", "replace").decode("utf-8", "replace")
+    return p
+
+def strip(p):
+    return p[2:] if p[:2] in ("a/", "b/") else p
+
+out, old, new = set(), 0, 0
+for line in open(sys.argv[1], "rb").read().decode("utf-8", "replace").splitlines():
+    if old > 0 or new > 0:  # a hunk body: its lines are content, never headers
+        c = line[:1]
+        if c == "\\":
+            continue
+        if c == "-":
+            old -= 1
+            continue
+        if c == "+":
+            new -= 1
+            continue
+        if c == " " or line == "":
+            old -= 1
+            new -= 1
+            continue
+        old = new = 0  # a short hunk: read the line as a header
+    m = re.match(r"^@@ -\d+(?:,(\d+))? \+\d+(?:,(\d+))? @@", line)
+    if m:
+        old = int(m.group(1)) if m.group(1) is not None else 1
+        new = int(m.group(2)) if m.group(2) is not None else 1
+        continue
+    if line.startswith(("--- ", "+++ ")):
+        p = unq(line[4:].split("\t")[0])
+        if p != "/dev/null":
+            out.add(strip(p))
+    elif line.startswith(("rename from ", "rename to ", "copy from ", "copy to ")):
+        out.add(unq(line.split(" ", 2)[2]))
+    elif line.startswith("diff --git "):
+        rest = line[len("diff --git "):]
+        q = re.match(r'^("(?:[^"\\]|\\.)*"|\S+) ("(?:[^"\\]|\\.)*"|.+)$', rest) if rest.startswith('"') else None
+        if q:
+            out.update((strip(unq(q.group(1))), strip(unq(q.group(2)))))
+        elif rest.startswith("a/") and rest.rfind(" b/") > 0:
+            i = rest.rfind(" b/")
+            out.update((rest[2:i], rest[i + 3:]))
+        else:
+            out.add(rest)
+for p in sorted(out):
+    print(p)
+PY
+}
+
+gate_named_paths() {
+  # The repository-relative words of every step command, GATE_SETUP and GATE_ENV that could
+  # name a file (split as the shell would, also at "="), one per line. A patch may not
+  # change a file the gate itself runs, like a check script.
+  python3 - "${ST_CMD[@]}" "$GATE_ENV" <<'PY'
+import posixpath, shlex, sys
+out = set()
+for cmd in sys.argv[1:]:
+    try:
+        lx = shlex.shlex(cmd, posix=True, punctuation_chars=True)
+        lx.whitespace_split = True
+        words = list(lx)
+    except ValueError:
+        words = cmd.split()
+    for w in words:
+        for part in w.split("="):
+            part = part.strip()
+            if not part or part[0] in "-$/~" or "$" in part:
+                continue
+            p = posixpath.normpath(part)
+            if p == "." or p == ".." or p.startswith("../"):
+                continue
+            out.add(p)
+for p in sorted(out):
+    print(p)
+PY
+}
+
+mutate_path_refusal() {
+  # Why patch path <path> may not be changed by a mutation, given the gate-named paths in
+  # <named>; nothing when it may.
+  local p="$1" named="$2"
+  if [[ -z "$p" || "$p" == /* ]]; then echo "not a relative path"; return; fi
+  if [[ "/$p/" == */../* || "/$p/" == */./* ]]; then echo "outside the repository"; return; fi
+  if [[ "/$p/" == */.git/* ]]; then echo "git's own files"; return; fi
+  if [[ "$p" == .milestones || "$p" == .milestones/* ]]; then echo "a supervisor file under .milestones/"; return; fi
+  if path_matches "$p" "$GATE_DEFINITION_GLOBS"; then echo "a gate definition file (GATE_DEFINITION_GLOBS)"; return; fi
+  if grep -qxF -- "$p" <<< "$named"; then echo "a file a gate step, GATE_SETUP or GATE_ENV names"; fi
+  return 0
+}
+
+mutate_gate() {
+  # mutate_gate <milestone> <sha> <where> <label>: one gate run of <sha> on the route
+  # INTEGRATE_GATE_WHERE names. host-mutate: a temporary worktree (host_gate).
+  # sandbox-mutate: a fresh sandbox created from a temporary seeded worktree at <sha>,
+  # removed after. Returns the run's exit; GATE_BUNDLE is empty when no bundle was written.
+  local n="$1" sha="$2" where="$3" label="$4" rc=0 src
+  GATE_FAILED_STEP=""; GATE_REFUSED=""; GATE_BUNDLE=""; GATE_ADMISSION=0
+  if [[ "$where" == host-mutate ]]; then
+    host_gate "$n" "$sha" host-mutate || rc=$?
+    return "$rc"
+  fi
+  src="$MUTATE_TMP/src-$label"
+  git worktree add -q --detach "$src" "$sha" > /dev/null 2>&1 || { log "  could not add a worktree of ${sha:0:12}"; return 1; }
+  seed_worktree "$src"
+  sandbox_integration_gate "$n" "$sha" "$(resolve_lane "$n")" "$src" sandbox-mutate || rc=$?
+  git worktree remove --force "$src" > /dev/null 2>&1 || true
+  return "$rc"
+}
+
+do_mutate() {
+  local n="${MILESTONES[0]:-}" patch="$MUTATE_PATCH" ref="$MUTATE_REF" usage
+  usage="mutate N <patch> [--ref REF] [--steps name,name] [--sandbox ID]"
+  [[ "$n" =~ ^[0-9]+$ ]] || die "mutate needs a milestone number: $usage"
+  [[ -n "$patch" ]] || die "mutate needs a patch file: $usage"
+  [[ -f "$patch" && -r "$patch" ]] || die "mutate: no readable patch file $patch"
+  [[ "$ref" != -* ]] || die "mutate: --ref '$ref' is not a ref"
+  require_gate
+  arm_cleanup
+  local patch_abs patch_rel
+  patch_abs="$(readlink -f -- "$patch")"; patch_rel="${patch_abs#"$REPO"/}"
+  log "=== mutate milestone $n with $patch_rel: $(date -Is) ==="
+  merr() { log "mutate milestone $n: $*; no record written"; exit 2; }
+  mrefuse() { log "mutate milestone $n refused: $*; no record written"; exit 2; }
+
+  local where gwhere="${INTEGRATE_GATE_WHERE:-host}"
+  case "$gwhere" in
+    host) where=host-mutate ;;
+    sandbox) where=sandbox-mutate ;;
+    *) mrefuse "INTEGRATE_GATE_WHERE=$gwhere: want host or sandbox" ;;
+  esac
+
+  # ---- the steps: all, or --steps (setup always runs when GATE_SETUP is set)
+  local sel="" s k found names=()
+  if [[ -n "$MUTATE_STEPS" ]]; then
+    IFS=, read -r -a names <<< "$MUTATE_STEPS"
+    for s in "${names[@]}"; do
+      [[ -n "$s" ]] || continue
+      found=0
+      for k in "${!ST_NAME[@]}"; do [[ "${ST_NAME[k]}" != "$s" ]] || found=1; done
+      (( found )) || merr "--steps: no gate step named '$s' (the steps: ${ST_NAME[*]})"
+      [[ " $sel " == *" $s "* ]] || sel+="${sel:+ }$s"
+    done
+    [[ -n "$sel" ]] || merr "--steps names no step"
+  fi
+
+  # ---- the candidate: milestone N's sandbox branch
+  local id cell tag sbranch
+  cell="$(status_sandbox_cell "$n")"
+  if [[ -n "$cell" ]]; then
+    [[ -z "$SANDBOX" || "$SANDBOX" == "$cell" ]] || mrefuse "STATUS.md names sandbox $cell for milestone $n, not --sandbox $SANDBOX"
+    id="$cell"
+  else
+    id="$SANDBOX"
+  fi
+  [[ -n "$id" ]] || merr "STATUS.md names no sandbox for milestone $n; name it with --sandbox ID"
+  [[ "$id" =~ $SANDBOX_ID_RE && "$id" != *..* ]] || mrefuse "'$id' is not a sandbox id (letters, digits, . _ -, at most 128, no '..')"
+  tag="$(sandbox_milestone_tag "$id")"
+  [[ -z "$tag" || "$tag" == "$n" ]] || mrefuse "sandbox $id is tagged milestone $tag, not $n"
+  sbranch="agent-sandbox/$id"
+  git rev-parse --quiet --verify "refs/heads/$sbranch^{commit}" > /dev/null || merr "no branch $sbranch in $REPO"
+
+  # ---- the target base: --ref, else the integration branch head (INTEGRATION_BRANCH, else
+  # the checked-out branch). The scans run from its upstream, as integrate's do.
+  local base_sha against branch=""
+  if [[ -n "$ref" ]]; then
+    base_sha="$(git rev-parse --quiet --verify "$ref^{commit}")" || merr "--ref $ref is not a commit"
+    against="$base_sha"
+  else
+    branch="${INTEGRATION_BRANCH:-}"
+    if [[ -z "$branch" ]]; then
+      branch="$(git symbolic-ref --quiet --short HEAD)" || merr "HEAD is detached and INTEGRATION_BRANCH is unset; name the target base with --ref"
+    fi
+    base_sha="$(git rev-parse --quiet --verify "refs/heads/$branch^{commit}")" || merr "no integration branch $branch"
+    against="$(git rev-parse --quiet --verify "$branch@{upstream}" 2> /dev/null)" || against="$base_sha"
+  fi
+  local mbase
+  mbase="$(git merge-base "$against" "$sbranch")" || mrefuse "$sbranch shares no history with ${against:0:12}"
+  candidate_range_refusal "$mbase" "$sbranch" || mrefuse "$CANDIDATE_REFUSAL"
+
+  # ---- the patch: a cited criterion, and no path the gate or the supervisor owns
+  local criterion paths named p why bad=()
+  criterion="$(patch_criterion "$patch_abs")"
+  [[ -n "$criterion" ]] || merr "$patch_rel has no '# criterion: <exit criterion text or index>' line before its first diff; a mutation cites the exit criterion it breaks"
+  paths="$(patch_paths "$patch_abs")" || merr "could not read the paths $patch_rel changes"
+  [[ -n "$paths" ]] || merr "$patch_rel names no file"
+  named="$(gate_named_paths)" || merr "could not read the paths the gate commands name"
+  while IFS= read -r p; do
+    why="$(mutate_path_refusal "$p" "$named")"
+    [[ -z "$why" ]] || bad+=("$p ($why)")
+  done <<< "$paths"
+  (( ${#bad[@]} == 0 )) || mrefuse "the patch changes paths a mutation may not: ${bad[*]}"
+
+  # ---- the target tree: a temporary merge, then the patched commit on top of it
+  local build stamp target patched bref pref gitid=(-c user.name=run-milestones -c user.email=run-milestones@localhost -c commit.gpgsign=false)
+  MUTATE_TMP="$(mktemp -d "${TMPDIR:-/tmp}/mutate-$PROJECT-$n.XXXXXX")"
+  build="$MUTATE_TMP/build"; stamp="$(date +%Y%m%dT%H%M%S)-$$"
+  git worktree add -q --detach "$build" "$base_sha" > /dev/null 2>&1 || merr "could not add a worktree of ${base_sha:0:12}"
+  if git merge-base --is-ancestor "$sbranch" "$base_sha"; then
+    log "  $sbranch is already in ${base_sha:0:12}; the target is that commit"
+  elif ! git -C "$build" "${gitid[@]}" merge --no-ff --no-verify --no-overwrite-ignore -q \
+         -m "mutate: merge $sbranch for milestone $n" "$sbranch" > "$MUTATE_TMP/merge.log" 2>&1; then
+    merr "merging $sbranch into ${base_sha:0:12} failed: $(tail -n 3 "$MUTATE_TMP/merge.log" | tr '\n' ' ')"
+  fi
+  target="$(git -C "$build" rev-parse HEAD)"
+  bref="${MUTATE_REF_PREFIX}$n-$stamp/baseline"; MUTATE_REFS+=("$bref")
+  git update-ref "$bref" "$target" || merr "could not hold ${target:0:12} under $bref"
+  log "  target ${target:0:12}: $sbranch merged into ${base_sha:0:12}${ref:+ (--ref $ref)}${branch:+ ($branch)}"
+
+  unapproved_hits "$against" "$target" "$REPORT_DIR/milestone-$n.md"
+  if [[ -n "$UNAPPROVED" ]]; then
+    log "mutate milestone $n refused: test weakening not listed in the 'Test expectation changes' section of $REPORT_DIR/milestone-$n.md:"
+    while IFS= read -r p; do log "    $p"; done <<< "$UNAPPROVED"
+    log "  no record written"; exit 2
+  fi
+
+  if ! git -C "$build" apply --check "$patch_abs" > "$MUTATE_TMP/apply.log" 2>&1; then
+    log "mutate milestone $n: $patch_rel does not apply to ${target:0:12}:"
+    while IFS= read -r p; do log "    $p"; done < "$MUTATE_TMP/apply.log"
+    log "  no record written"; exit 2
+  fi
+  git -C "$build" apply --index "$patch_abs" > "$MUTATE_TMP/apply.log" 2>&1 \
+    || merr "applying $patch_rel failed: $(tail -n 3 "$MUTATE_TMP/apply.log" | tr '\n' ' ')"
+  git -C "$build" "${gitid[@]}" commit --no-verify -q -m "mutate: $patch_rel (criterion: $criterion)" > "$MUTATE_TMP/commit.log" 2>&1 \
+    || merr "$patch_rel changes nothing in ${target:0:12}"
+  patched="$(git -C "$build" rev-parse HEAD)"
+  pref="${MUTATE_REF_PREFIX}$n-$stamp/patched"; MUTATE_REFS+=("$pref")
+  git update-ref "$pref" "$patched" || merr "could not hold ${patched:0:12} under $pref"
+  git worktree remove --force "$build" > /dev/null 2>&1 || true
+
+  # ---- baseline: the selected steps on the unpatched target must pass
+  local brc=0 bbundle btree bdef bseal
+  GATE_SELECT="$sel"; GATE_KEEP_GOING=0
+  log "  baseline run on ${target:0:12} ($where${sel:+, steps: $sel})"
+  mutate_gate "$n" "$target" "$where" baseline || brc=$?
+  bbundle="$GATE_BUNDLE"; btree="$GATE_TREE"; bdef="$GATE_DEF"
+  [[ -z "$GATE_REFUSED" ]] || merr "baseline: $GATE_REFUSED"
+  [[ -n "$bbundle" || "$brc" != 3 ]] || merr "the baseline sandbox was not admitted"
+  [[ -n "$bbundle" ]] || merr "the baseline run could not start${GATE_FAILED_STEP:+ ($GATE_FAILED_STEP)}"
+  (( ! GATE_ADMISSION )) || merr "a baseline step was not admitted (evidence: ${bbundle#"$REPO"/})"
+  (( brc == 0 )) || merr "the baseline failed (exit $brc${GATE_FAILED_STEP:+ at $GATE_FAILED_STEP}) on the unpatched target ${target:0:12}; a mutation needs a passing baseline (evidence: ${bbundle#"$REPO"/})"
+  bundle_sealed "$bbundle" || merr "the baseline bundle ${bbundle#"$REPO"/} does not match its seal"
+  bseal="$(seal_of "$bbundle")"
+
+  # ---- patched: the same steps, every one run, on the patched commit
+  local prc=0 pbundle pseal pcounts
+  GATE_SELECT="$sel"; GATE_KEEP_GOING=1
+  log "  patched run on ${patched:0:12}"
+  mutate_gate "$n" "$patched" "$where" patched || prc=$?
+  GATE_SELECT=""; GATE_KEEP_GOING=0
+  pbundle="$GATE_BUNDLE"; pcounts="$GATE_COUNTS"
+  [[ -z "$GATE_REFUSED" ]] || merr "patched: $GATE_REFUSED"
+  [[ -n "$pbundle" || "$prc" != 3 ]] || merr "the patched sandbox was not admitted"
+  [[ -n "$pbundle" ]] || merr "the patched run could not start${GATE_FAILED_STEP:+ ($GATE_FAILED_STEP)}"
+  (( ! GATE_ADMISSION )) || merr "a patched step was not admitted (evidence: ${pbundle#"$REPO"/})"
+  bundle_sealed "$pbundle" || merr "the patched bundle ${pbundle#"$REPO"/} does not match its seal"
+  [[ "$GATE_DEF" == "$bdef" ]] || merr "the gate definition changed between the baseline and patched runs"
+  pseal="$(seal_of "$pbundle")"
+  log "  patched run exit $prc${GATE_FAILED_STEP:+ (first failure at $GATE_FAILED_STEP)}"
+
+  # ---- verdict (R7), record, events
+  local out verdict step at live line
+  out="$(python3 - "$pbundle/evidence.json" <<'PY'
+import json, sys
+steps = json.load(open(sys.argv[1]))["steps"]
+real = ("integration", "replay")
+fails = [s for s in steps if s["status"] == "fail"]
+real_fail = [s for s in fails if s["kind"] in real]
+real_unrun = [s for s in steps if s["kind"] in real and s["status"].startswith("not run") and s["status"] != "not run: not selected"]
+if real_fail:
+    print("caught", real_fail[0]["name"])
+elif real_unrun:
+    print("inconclusive", fails[0]["name"] if fails else "-")
+elif fails:
+    print("caught-static", fails[0]["name"])
+else:
+    print("missed", "-")
+PY
+)" || merr "could not read ${pbundle#"$REPO"/}/evidence.json"
+  read -r verdict step <<< "$out"
+  case "$verdict" in
+    caught) MUTATE_EXIT=0 ;;
+    caught-static|missed) MUTATE_EXIT=1 ;;
+    inconclusive) MUTATE_EXIT=3 ;;
+    *) merr "no verdict from ${pbundle#"$REPO"/}/evidence.json" ;;
+  esac
+  at="$(date -Is)"; live="$(gate_definition_hash)"
+  line="mutate milestone=$n verdict=$verdict failing_step=$step exit=$MUTATE_EXIT criterion=\"${criterion//\"/\'}\" patch=$patch_rel sha=${target:0:12} tree=${btree:0:12} def=${bdef:0:12} where=$where baseline=${bbundle#"$REPO"/} patched=${pbundle#"$REPO"/} at=$at"
+  mkdir -p "$REPO/.milestones/mutations"
+  local rec_rc=0 grade events
+  events="$(python3 - "$REPO/.milestones/mutations/$n.jsonl" "$n" "$id" "$patch_rel" "$criterion" "$verdict" "$step" \
+      "$sel" "$(IFS=' '; echo "${ST_NAME[*]}")" "$where" "${ref:-${branch}}" "$target" "$btree" "$patched" \
+      "${bbundle#"$REPO"/}" "$bseal" "${pbundle#"$REPO"/}" "$pseal" "$bdef" "$live" "$at" "$MUTATE_EXIT" "$line" "$pcounts" \
+      "$pbundle/evidence.json" <<'PY'
+import json, sys
+(path, n, sandbox, patch, criterion, verdict, step, sel, allsteps, where, base, sha, tree, patched,
+ bb, bs, pb, ps, dh, live, at, code, line, counts, pev) = sys.argv[1:]
+ev = json.load(open(pev))
+names = sel.split() if sel else [s for s in allsteps.split() if s != "setup"]
+rec = {"milestone": int(n), "sandbox": sandbox, "patch": patch, "criterion": criterion, "verdict": verdict,
+       "failing_step": None if step == "-" else step, "steps": names, "where": where, "base": base,
+       "sha": sha, "tree": tree, "patched_sha": patched, "patched_tree": ev.get("tree"),
+       "baseline_bundle": bb, "baseline_seal": bs, "patched_bundle": pb, "patched_seal": ps,
+       "definition_hash": dh, "produced_by": "mutate", "at": at}
+with open(path, "a") as f:
+    f.write(json.dumps(rec) + "\n")
+change = "milestone:" + n
+not_run = sum(1 for s in ev["steps"] if s["status"].startswith("not run"))
+proof = {"control": "mutate", "attempt": patch, "criterion": criterion, "expected": "caught", "observed": verdict,
+         "exit_code": int(code), "outcome_line": line, "demonstrated": dh == live, "gate_hash": dh,
+         "live_gate_hash": live, "sha": sha, "tree": tree, "seal": ps, "bundle": pb, "where": where,
+         "dirty": bool(ev.get("dirty")), "not_run": not_run, "steps": counts, "produced_by": "mutate", "at": at}
+print("control-proof\t" + json.dumps(proof))
+if verdict == "caught":
+    finding = {"stage": "mutate", "confirmation": "executable",
+               "title": "planted defect %s (criterion %s)" % (patch, criterion), "step": step, "bundle": pb,
+               "detail": "caught by step %s on %s" % (step, where), "at": at}
+    print("finding\t" + json.dumps(finding))
+PY
+)" || rec_rc=$?
+  (( rec_rc == 0 )) || merr "could not write .milestones/mutations/$n.jsonl"
+  log "$line"
+  grade="$(dirname "$SELF")/grade.py"
+  local kind js
+  while IFS=$'\t' read -r kind js; do
+    [[ -n "$kind" ]] || continue
+    if [[ ! -f "$grade" ]]; then log "  no grade.py beside the driver; $kind event not written"; continue; fi
+    python3 "$grade" event "$kind" --change "milestone:$n" --project "$REPO" --no-mlflow --json "$js" >> "$CHAIN" 2>&1 \
+      || log "  grade.py refused the $kind event (see chain.log); the mutation record stands"
+  done <<< "$events"
+}
+
 # ---------------------------------------------------------------- config
 do_config() {
   # What milestone <n> resolves to, one KEY=value per line, so a launch can be checked
@@ -1524,6 +2003,11 @@ do_prompt() {
 }
 
 # ---------------------------------------------------------------- dispatch
+if [[ "$VERB" != mutate && ( -n "$MUTATE_REF" || -n "$MUTATE_STEPS" ) ]]; then die "--ref and --steps belong to mutate"; fi
+if [[ "$VERB" == mutate ]]; then
+  [[ -z "$INSIDE" && -z "$CONTINUE" && ${#MILESTONES[@]} -eq 1 ]] || die "mutate takes one milestone and a patch: mutate N <patch> [--ref REF] [--steps name,name] [--sandbox ID]"
+  do_mutate; exit "$MUTATE_EXIT"
+fi
 if [[ "$VERB" == integrate ]]; then
   [[ -z "$INSIDE" && -z "$CONTINUE" && -z "$SANDBOX" ]] || die "integrate takes a sandbox id and an optional milestone, nothing else"
   do_integrate; exit 0
