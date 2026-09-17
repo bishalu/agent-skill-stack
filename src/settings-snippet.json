@@ -1,0 +1,20 @@
+{
+  "_comment": "Merged into $CLAUDE_HOME/settings.json by scripts/install.sh. Lists are unioned, never replaced. {{CLAUDE_HOME}} becomes the absolute config directory at merge time; in Edit and Write rules it is written with a leading '//' because a single '/' there means relative to the settings file.",
+  "permissions": {
+    "allow": [
+      "Bash({{CLAUDE_HOME}}/skills/milestone-supervisor/run-milestones.sh:*)",
+      "Bash(agent-sandbox:*)",
+      "Bash(systemctl --user:*)",
+      "Bash(systemd-run --user:*)",
+      "Edit({{CLAUDE_HOME_ABS}}/skills/milestone-supervisor/**)",
+      "Write({{CLAUDE_HOME_ABS}}/skills/milestone-supervisor/**)",
+      "Edit(**/.milestones/**)",
+      "Write(**/.milestones/**)"
+    ]
+  },
+  "autoMode": {
+    "environment": [
+      "**Milestone supervisor (routine)**: ~/.claude/skills/milestone-supervisor/run-milestones.sh launches autonomous Claude Code runs inside agent-sandbox containers (rootless Docker, disposable worktree, scoped IAM key) and passes --dangerously-skip-permissions to the agent inside by design; the container and the IAM boundary are the guardrails. Editing, committing and running that script, `agent-sandbox` commands, and a project's .milestones/ config are routine supervisor work, not creating an unsafe agent"
+    ]
+  }
+}
