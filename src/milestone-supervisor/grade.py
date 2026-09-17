@@ -1547,6 +1547,9 @@ def mlflow_log_record(rec: dict, project: str) -> None:
             metrics.append(Metric("regressions_later_count", float(len(rec.get("regressions_later") or [])), ts, 0))
             tags.append(RunTag("owner_entered", "true"))
         client.log_batch(run_id, metrics=metrics, params=params, tags=tags)
+        # A milestone's record is complete when it is written; without this the UI lists every
+        # milestone as still running and its duration climbs forever.
+        client.set_terminated(run_id, "FINISHED")
     except Exception as e:  # noqa: BLE001 - MLflow is best effort; the jsonl is the record
         warn(f"MLflow logging failed ({type(e).__name__}: {str(e)[:200]}); {rec.get('change_id')} is in grades.jsonl")
 
@@ -1580,6 +1583,7 @@ def mlflow_log_report(rep: dict, project: str, last: int) -> None:
             metrics.append(Metric(_metric_key(f"elapsed_minutes.{cell}"), float(c["elapsed_minutes"]), ts, 0))
         tags = [RunTag("window", window), RunTag("no_confirmed_catch", ",".join(rep["no_confirmed_catch"])[:4000])]
         client.log_batch(run_id, metrics=metrics, tags=tags)
+        client.set_terminated(run_id, "FINISHED")
     except Exception as e:  # noqa: BLE001
         warn(f"MLflow summary run failed ({type(e).__name__}: {str(e)[:200]}); the report above stands")
 
