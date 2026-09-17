@@ -67,9 +67,18 @@ GATE=""
 
 TIMEOUT=12h   # per-milestone wall clock (12h, 90m, 3600)
 
+# Who gives the approvals a delivery needs (weakening hits, gate-config changes, the gate definition,
+# an exhausted budget). supervisor, the default, runs the whole spec unattended: the supervisor
+# records each approval itself, marked by=supervisor with its reason in .milestones/approvals/N.md
+# and in the events ledger, for the owner to read afterwards. owner makes every one of them a typed
+# confirmation at an interactive terminal, so an unattended run stops until the owner is there.
+# A criterion waiver is the owner's either way: no evidence, no self-approval.
+# APPROVAL_MODE=supervisor
+
 # Attempt budgets per milestone, with _<n> overrides (MAX_FAILED_GATES_7=5). Exhausting one refuses
 # every further launch, --continue, --gate, integrate and mutate of that milestone and writes
-# ESCALATED into STATUS.md; only an owner approval allows one more attempt.
+# ESCALATED into STATUS.md; an approval allows one more attempt (the supervisor grants it itself
+# under APPROVAL_MODE=supervisor, and the ledger records that it did).
 # MAX_FAILED_GATES=3
 # MAX_FINISHING_TURNS=3
 # MAX_HOURS=24

@@ -552,7 +552,10 @@ REAL_GIT="$(command -v git)"
 g() { git -C "$IR" "$@"; }
 # iconfig writes the config, then the owner approves that gate definition at a terminal (approve_def), as
 # an owner does when configuring the gate: the delivery guard pushes only under an approved definition.
-iconfig() { printf '%s\n' 'REPORT_DIR=docs/reports' 'GATE="true"' "$@" > "$IR/.milestones/config"; approve_def "$IR"; }
+# APPROVAL_MODE=owner unless a scenario says otherwise: the refusals below are the owner path,
+# where every weakening, gate-config and budget approval is the owner's to type. The supervisor
+# path (the default in a project, so a whole spec runs unattended) has its own scenarios.
+iconfig() { printf '%s\n' 'REPORT_DIR=docs/reports' 'GATE="true"' 'APPROVAL_MODE=owner' "$@" > "$IR/.milestones/config"; approve_def "$IR"; }
 approve_def() {  # <checkout> [tmpdir]: approve 1 gate-definition typed at a pty in <checkout>
   local out rc=0
   out="$( (cd "$1" && TMPDIR="${2:-$ITMP}" pty_run "approve 1 gate-definition"$'\n' "$DRIVER" approve 1 gate-definition) 2>&1 )" || rc=$?
@@ -639,8 +642,12 @@ istatus() {  # id:milestone ... (an empty milestone leaves the record untagged)
 sb_branch() { g rev-parse -q --verify "refs/heads/agent-sandbox/$1" > /dev/null || g branch -q "agent-sandbox/$1" origin/main; }
 sb_do() {  # id "shell in the checkout" message: one commit on agent-sandbox/<id>
   sb_branch "$1"; g switch -q "agent-sandbox/$1"
-  # The host's own uncommitted records (acceptance, mutation results) never ride on a sandbox commit.
-  (cd "$IR" && bash -c "$2") && g add -A -- . ':(exclude).milestones/acceptance' ':(exclude).milestones/mutations' && g commit -q -m "$3"
+  # The host's own uncommitted records (acceptance, mutation results, the event and grade ledgers)
+  # never ride on a sandbox commit: the host writes them as it works and commits them at integrate.
+  (cd "$IR" && bash -c "$2") \
+    && g add -A -- . ':(exclude).milestones/acceptance' ':(exclude).milestones/mutations' \
+         ':(exclude).milestones/events.jsonl' ':(exclude).milestones/grades.jsonl' \
+    && g commit -q -m "$3"
   g switch -q main
 }
 sb_report() {  # id milestone [extra markdown]
@@ -1687,7 +1694,7 @@ mkdir -p "$T/failgit"
 # shellcheck disable=SC2016
 printf '#!/usr/bin/env bash\nif [[ -n "${FAILGIT:-}" && "$*" =~ $FAILGIT ]]; then echo "fatal: simulated failure" >&2; exit 128; fi\nexec "%s" "$@"\n' "$REAL_GIT" > "$T/failgit/git"
 chmod +x "$T/failgit/git"
-APPROVAL_RE='^- approved [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}([+-][0-9]{2}:[0-9]{2}|Z) milestone=7 kind=[a-z-]+ hit=[a-z-]+ path=("[^"]+"|-) blob=([0-9a-f]{40}|none|-) hash=([0-9a-f]{64}|-) criterion=([0-9]+\.c[0-9]+|-) budget=([A-Za-z0-9_.-]+|-) confirm="approve 7 [a-z-]+"$'
+APPROVAL_RE='^- approved [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}([+-][0-9]{2}:[0-9]{2}|Z) milestone=7 kind=[a-z-]+ hit=[a-z-]+ path=("[^"]+"|-) blob=([0-9a-f]{40}|none|-) hash=([0-9a-f]{64}|-) criterion=([0-9]+\.c[0-9]+|-) budget=([A-Za-z0-9_.-]+|-) confirm="(approve 7 [a-z-]+|-)"( by=(owner|supervisor))?( reason="[^"]*")?$'
 
 scenario "accept --init: criteria from the Exit paragraph, split at sentence ends and depth-zero semicolons; stable ids; no overwrite without --force"
 mk_irepo nowaive
@@ -1852,7 +1859,7 @@ assert_eq "$ARC" 0 "the waiver typed at a terminal is written ($(tail -n 2 "$T/a
 assert_eq "$(g show --name-only --format= HEAD)" ".milestones/approvals/7.md" "the commit holds the approvals file alone"
 assert_eq "$(grep -c '^- approved ' "$APPR")" 2 "one entry per criterion"
 assert_eq "$(grep -Ec "$APPROVAL_RE" "$APPR")" 2 "entries in the documented line format"
-assert_grep '^- approved .* kind=criterion-waiver hit=- path=- blob=- hash=- criterion=7\.c2 budget=- confirm="approve 7 criterion-waiver"$' "$APPR" "the waiver entry names the criterion and the typed confirmation"
+assert_grep '^- approved .* kind=criterion-waiver hit=- path=- blob=- hash=- criterion=7\.c2 budget=- confirm="approve 7 criterion-waiver" by=owner$' "$APPR" "the waiver entry names the criterion and the typed confirmation"
 echo "- approved by hand" >> "$APPR"
 iapprove 7 gate-definition
 assert_eq "$ARC" 2 "approve refuses while the approvals file has uncommitted edits"
@@ -1866,7 +1873,7 @@ assert_eq "$ARC" 2 "a budget approval is refused while the budget is not exhaust
 assert_grep "not exhausted" "$T/approve.out" "  because nothing is exhausted"
 iapprove 7 gate-definition
 assert_eq "$ARC" 0 "a gate-definition approval"
-assert_grep '^- approved .* kind=gate-definition hit=- path=- blob=- hash=[0-9a-f]{64} criterion=- budget=- confirm="approve 7 gate-definition"$' "$APPR" "carries the definition hash"
+assert_grep '^- approved .* kind=gate-definition hit=- path=- blob=- hash=[0-9a-f]{64} criterion=- budget=- confirm="approve 7 gate-definition" by=owner$' "$APPR" "carries the definition hash"
 run_int irepo-0000000a
 assert_eq "$IRC" 0 "the waivers complete acceptance: pushed ($(tail -n 2 "$T/int.out" | tr '\n' ' '))"
 
@@ -2184,7 +2191,7 @@ scenario "budgets: an owner budget approval allows exactly one more attempt, and
 iconfig 'GATE="false"'
 iapprove 7 budget failed_gates
 assert_eq "$ARC" 0 "the owner approves one more failed gate ($(tail -n 2 "$T/approve.out" | tr '\n' ' '))"
-assert_grep '^- approved .* milestone=7 kind=budget hit=- path=- blob=- hash=- criterion=- budget=failed_gates confirm="approve 7 budget"$' "$APPR" "  in the documented line format"
+assert_grep '^- approved .* milestone=7 kind=budget hit=- path=- blob=- hash=- criterion=- budget=failed_gates confirm="approve 7 budget" by=owner$' "$APPR" "  in the documented line format"
 run_int irepo-0000000a
 assert_eq "$IRC" 1 "the one more attempt runs its gate (and fails)"
 assert_eq "$(ev '.type == "budget" and .action == "extra-attempt"' | tail -n 1 | jq -r '[.budget, (.approval | test("approvals/7\\.md"))] | map(tostring) | join(" ")')" "failed_gates true" "  a budget extra-attempt event references the approval"
@@ -2509,3 +2516,32 @@ assert_grep '[-]-where' "$T/mut.out" "the refusal names the option"
 echo
 (( FAILS == 0 )) || { echo "$FAILS ASSERTIONS FAILED" >&2; exit 1; }
 echo "ALL $N SCENARIOS PASSED"
+
+# ================================================================ APPROVAL_MODE=supervisor
+# The owner's unattended default: the supervisor records the approvals itself and the run
+# continues. Every entry says by=supervisor with its reason, so the ledger shows what was
+# self-approved; a criterion waiver is never self-granted.
+scenario "APPROVAL_MODE=supervisor: the supervisor approves its own hits, and the entries say so"
+mk_irepo; iconfig2() { printf '%s\n' 'REPORT_DIR=docs/reports' 'GATE="true"' 'APPROVAL_MODE=supervisor' > "$IR/.milestones/config"; }
+iconfig2
+istatus irepo-0000000a:7
+sb_do irepo-0000000a "sed -i '1i import pytest\n@pytest.mark.skip' tests/test_a.py" "skip a test"
+sb_report irepo-0000000a 7
+RPRE="$(remote_head)"
+run_int irepo-0000000a
+assert_eq "$IRC" 0 "integrate proceeds unattended ($(tail -n 3 "$T/int.out" | tr '\n' ' '))"
+assert_eq "$(remote_head)" "$(g rev-parse HEAD)" "pushed"
+assert_grep 'approved by the supervisor \(APPROVAL_MODE=supervisor\): skip-marker tests/test_a\.py' "$T/int.out" "the log says the supervisor approved it"
+assert_grep '^- approved .* kind=weakening hit=skip-marker path="tests/test_a\.py" .* confirm="-" by=supervisor reason="[^"]+"$' "$APPR" "the entry is marked by=supervisor with a reason"
+assert_grep '"granted_by": ?"supervisor"' "$IR/.milestones/events.jsonl" "an approval event records the granter"
+
+scenario "APPROVAL_MODE=supervisor: a criterion waiver is still the owner's"
+out="$(cd "$IR" && TMPDIR="$ITMP" "$DRIVER" approve 7 criterion-waiver 7.c1 --as supervisor 2>&1)" && rc=0 || rc=$?
+assert_eq "$rc" 2 "approve --as supervisor refuses a criterion waiver"
+assert_grep "acceptance still needs evidence|is the owner's" <(printf '%s\n' "$out") "and says why"
+
+scenario "APPROVAL_MODE=owner: --as supervisor is refused"
+iconfig
+out="$(cd "$IR" && TMPDIR="$ITMP" "$DRIVER" approve 7 gate-config justfile --as supervisor 2>&1)" && rc=0 || rc=$?
+assert_eq "$rc" 2 "approve --as supervisor refuses under APPROVAL_MODE=owner"
+assert_grep "APPROVAL_MODE is 'owner'" <(printf '%s\n' "$out") "and names the mode"

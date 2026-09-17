@@ -681,3 +681,28 @@ def test_report_counts_spec_clarification_by_kind_and_never_drops_plan_doc_revie
     assert "Spec clarifications by kind" in out
     assert "conflict 1" in out
     assert "Plan doc-review" in out and "1 corrections over 1 findings" in out
+
+
+def test_report_counts_approvals_by_who_granted_them(tmp_path, capsys):
+    """An unattended run approves for itself; the report has to show how much of it did.
+
+    The owner reads this to see what went through without them. A budget extension the
+    supervisor granted itself counts here too, under budget:<name>, because a run that keeps
+    extending its own budget is the loud case.
+    """
+    root = make_project(tmp_path, "")
+    ev(root, "approval", "--change", "milestone:7", "item_kind=weakening", "approval=- approved x",
+       "path=tests/test_a.py", "granted_by=supervisor", "detail=integrate of milestone 7")
+    ev(root, "approval", "--change", "milestone:7", "item_kind=gate-definition", "approval=- approved y",
+       "granted_by=supervisor", "detail=the gate definition in force")
+    ev(root, "approval", "--change", "milestone:7", "item_kind=criterion-waiver", "approval=- approved z",
+       "criterion=7.c1", "granted_by=owner", "detail=typed at a terminal")
+    ev(root, "budget", "--change", "milestone:7", "budget=failed_gates", "limit=3", "count=3",
+       "action=extra-attempt", "granted_by=supervisor", "detail=granted by the supervisor")
+    rep = grade.build_report(root, last=5)
+    assert rep["approvals"]["weakening"] == {"owner": 0, "supervisor": 1}
+    assert rep["approvals"]["gate-definition"] == {"owner": 0, "supervisor": 1}
+    assert rep["approvals"]["criterion-waiver"] == {"owner": 1, "supervisor": 0}
+    assert rep["approvals"]["budget:failed_gates"] == {"owner": 0, "supervisor": 1}
+    assert run(["report", "--last", "5", "--project", str(root), "--no-mlflow"]) == 0
+    assert "3 granted by the supervisor" in capsys.readouterr().out

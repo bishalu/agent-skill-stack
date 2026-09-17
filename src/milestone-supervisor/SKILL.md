@@ -198,7 +198,7 @@ Done when `chain.log` holds the `delivery milestone=N` line and the push, the mi
 
 ## Owner approvals
 
-Some things only the owner can allow. Each is given with `run-milestones.sh approve`, typed by the owner at an interactive terminal, and nothing else counts:
+Some things the owner decides. Each is given with `run-milestones.sh approve`, and `APPROVAL_MODE` in `.milestones/config` says who may give it:
 
 - `approve N criterion-waiver N.c<i>...`: an exit criterion accepted without evidence.
 - `approve N weakening <hit kind> <path>...`: a weakening-scan hit (`skip-marker`, `removed-assert`, `removed-test`, `deleted-test`, `snapshot`), approved for the path's current blob on the candidate branch, so a later change to the file is unapproved again.
@@ -206,13 +206,19 @@ Some things only the owner can allow. Each is given with `run-milestones.sh appr
 - `approve N gate-definition`: the current gate definition hash, over the step list, `GATE_SETUP`, `GATE_ENV`, `.milestones/config`, `config.local`, the driver and the `MAX_*` budget keys. Needed after any change to one of those, and once after installing a new driver: the first delivery after an install refuses until the owner approves the new definition.
 - `approve N budget <failed_gates|finishing_turns|wall_hours>...`: one more attempt once that budget is exhausted.
 
-`approve` refuses unless stdin is a terminal, prints the lines it will write, and writes them only when the owner types `approve N <kind>` exactly. It appends to `.milestones/approvals/N.md` and commits that file alone. Readers use the committed file and ignore any line not in the exact format. The supervisor's tool shell has no terminal, so the supervisor cannot give an approval. When `integrate` refuses for want of one, put the printed `approve` command, the diff or hash it covers and your reading of it in front of the owner, and wait.
+`approve` appends to `.milestones/approvals/N.md` and commits that file alone. Readers use the committed file and ignore any line not in the exact format. Every entry records who granted it, and every entry written emits an `approval` event carrying the same `granted_by`, so `grade.py report` shows how much of a run went through unreviewed.
+
+**`APPROVAL_MODE=supervisor` (the default) runs the whole spec unattended.** The supervisor records the approvals itself: each entry is written `confirm="-" by=supervisor reason="..."`, the reason names the integrate or delivery that needed it, and the log says so at the moment it happens. It covers weakening hits, gate-config changes, the gate definition and an exhausted budget. Anything the supervisor approves for itself is still in the ledger and still in `approvals/N.md` for the owner to read afterwards.
+
+**`APPROVAL_MODE=owner` asks the owner every time.** `approve` then refuses unless stdin is a terminal, prints the lines it will write, and writes them only when the owner types `approve N <kind>` exactly. The supervisor's tool shell has no terminal, so it cannot give an approval: when `integrate` refuses for want of one, put the printed `approve` command, the diff or hash it covers and your reading of it in front of the owner, and wait.
+
+**A criterion waiver is the owner's in both modes.** It says an exit criterion was met with no evidence, which is the one approval that cannot be checked afterwards, so `approve --as supervisor` refuses it. An unattended run that reaches an unevidenced criterion stops and escalates rather than waiving it. The unattended mode removes the owner from the loop; it does not remove the evidence requirement.
 
 ## Budgets and escalation
 
 Each milestone has three attempt budgets: failed gates (`MAX_FAILED_GATES`, default 3), finishing turns (`MAX_FINISHING_TURNS`, default 3) and wall hours since its first launch (`MAX_HOURS`, default 24), each with a `_N` override. Counts are the larger of the `events.jsonl` and `chain.log` counts, so neither ledger alone resets them. When one is spent, a launch, `--continue`, `--gate`, `integrate` or `mutate` of that milestone refuses with exit 2, sets its STATUS Next action to `ESCALATED: ...` (left uncommitted), and keeps the sandboxes and bundles.
 
-An exhausted budget is a stop, not a retry. Write into `chain.log` what the attempts were and why each failed, then put the milestone in front of the owner with a recommendation: one more attempt (`approve N budget <name>`), a spec change, or a cut. A budget key edited in config changes the gate definition, so raising a limit also needs `approve N gate-definition`.
+An exhausted budget is a stop, not a retry. Write into `chain.log` what the attempts were and why each failed, then put the milestone in front of the owner with a recommendation: one more attempt (`approve N budget <name>`), a spec change, or a cut. Under `APPROVAL_MODE=supervisor` the supervisor grants that one more attempt itself and logs it with `granted_by=supervisor`, so an exhaustion is visible in the ledger rather than being a stop; a budget that keeps needing extensions is the signal to read, and the escalation line is still written. A budget key edited in config changes the gate definition, so raising a limit also needs `approve N gate-definition`.
 
 ## Logging
 

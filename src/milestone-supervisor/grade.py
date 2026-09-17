@@ -97,9 +97,11 @@ acceptance     criterion, verdict (evidence|waived|unmet); evidence_kind (bundle
                test_ids; mutation needs mutation; owner-approval needs approval.
                Optional criterion_text, evaluator (reviewer-grade context, never evidence).
 approval       item_kind (criterion-waiver|weakening|gate-config|gate-definition|budget),
-               approval (the approvals entry); optional path, blob, hash, criterion.
+               approval (the approvals entry); optional path, blob, hash, criterion,
+               granted_by (owner|supervisor: who allowed it, under APPROVAL_MODE).
 budget         budget (failed_gates|finishing_turns|wall_hours), limit, count, action
-               (warning|exhausted|extra-attempt); optional events_count, chain_count, approval.
+               (warning|exhausted|extra-attempt); optional events_count, chain_count,
+               approval, granted_by.
 control-proof  control, exit_code, outcome_line (verbatim), demonstrated; optional
                gate_hash, live_gate_hash.
 Evidence identity and eligibility fields, optional on integrate, push, acceptance and
@@ -902,12 +904,13 @@ EVENT_SPECS: dict[str, dict] = {
                                             "budget")),
                      "approval": "str"},
         "optional": {"path": "str", "blob": "str", "hash": "str", "criterion": "id", "confirmed_at": "iso",
-                     "detail": "str"},
+                     "granted_by": ("enum", ("owner", "supervisor")), "detail": "str"},
     },
     "budget": {
         "required": {"budget": ("enum", ("failed_gates", "finishing_turns", "wall_hours")), "limit": "num",
                      "count": "num", "action": ("enum", ("warning", "exhausted", "extra-attempt"))},
-        "optional": {"events_count": "int", "chain_count": "int", "approval": "str", "detail": "str"},
+        "optional": {"events_count": "int", "chain_count": "int", "approval": "str",
+                     "granted_by": ("enum", ("owner", "supervisor")), "detail": "str"},
     },
     "control-proof": {
         "required": {"control": "str", "exit_code": "int", "outcome_line": "str", "demonstrated": "bool"},
@@ -1337,6 +1340,20 @@ def build_report(root: Path, last: int = 20) -> dict:
     for cid in first_fail:
         recovery.setdefault(cid, None)  # failed and not pushed yet
 
+    # Who allowed what. An unattended run (APPROVAL_MODE=supervisor) lets the supervisor record
+    # its own approvals, so the count of supervisor-granted ones is what the owner reads to see
+    # how much went through unreviewed, and a rising budget-extension count is the loud one.
+    approvals: dict[str, dict] = {}
+    for e in events:
+        if e.get("type") == "approval":
+            kind = e.get("item_kind") or "unspecified"
+        elif e.get("type") == "budget" and e.get("action") == "extra-attempt":
+            kind = f"budget:{e.get('budget') or 'unspecified'}"
+        else:
+            continue
+        row = approvals.setdefault(kind, {"owner": 0, "supervisor": 0})
+        row[e.get("granted_by") if e.get("granted_by") in row else "owner"] += 1
+
     interventions: dict[str, dict] = {}
     for e in events:
         if e.get("type") != "intervention":
@@ -1387,6 +1404,7 @@ def build_report(root: Path, last: int = 20) -> dict:
         "stages_not_observed": not_observed,
         "escapes": escapes,
         "integration": {"failure_classes": dict(classes), "recovery_minutes": recovery},
+        "approvals": approvals,
         "interventions": interventions,
         "by_path_and_size": cells,
     }
@@ -1431,6 +1449,11 @@ def format_report(rep: dict) -> str:
                                               or "(none)"))
     out += [f"  recovery {cid}: {'not pushed' if m is None else f'{m} min from first failed integrate to push'}"
             for cid, m in integ["recovery_minutes"].items()]
+    out.append("")
+    apr = rep.get("approvals") or {}
+    sup = sum(r["supervisor"] for r in apr.values())
+    out.append(f"Approvals by who granted them ({sup} granted by the supervisor, unattended):")
+    out += [f"  {k}: {r['owner']} owner, {r['supervisor']} supervisor" for k, r in sorted(apr.items())] or ["  (none)"]
     out.append("")
     out.append("Interventions by class:")
     out += [f"  {c}: {r['count']} ({r['minutes']} min logged, {r['minutes_unknown']} without minutes)"

@@ -344,6 +344,12 @@ MILESTONES_FILE="docs/spec/11-milestones.md"; REPORT_DIR="docs/reports"   # defa
 GATE=""; GATE_SETUP=""; GATE_ENV=""; DEPLOY_MILESTONES=""; TIMEOUT="12h"
 GATE_TIMEOUT="30m"; GATE_STEPS=(); GATE_PORT_RANGE="20000-29999"; INTEGRATE_GATE_WHERE="host"
 SANDBOX_GATE_STEPS=""; REGENERATE_ON_CONFLICT=""; REGENERATE_COMMAND=""
+# Who approves a weakening, a gate-config or gate-definition change, or a budget extension.
+# supervisor (the default): the supervisor records the approval itself and the run continues
+# unattended; every entry says by=supervisor with its reason, so the ledger shows what was
+# self-approved. owner: the run stops and the owner types the confirmation at a terminal.
+# A criterion waiver is the owner's in both modes: acceptance still needs evidence.
+APPROVAL_MODE="supervisor"
 # shellcheck disable=SC2034  # read through resolve_override and hashed through compgen -v MAX_
 MAX_FAILED_GATES=3 MAX_FINISHING_TURNS=3 MAX_HOURS=24   # attempt budgets (see budget_state); _N overrides
 # shellcheck disable=SC1091
@@ -351,6 +357,8 @@ MAX_FAILED_GATES=3 MAX_FINISHING_TURNS=3 MAX_HOURS=24   # attempt budgets (see b
 # A host's own values (its toolchain's PATH) stay out of the committed config.
 # shellcheck disable=SC1091
 [[ -f "$REPO/.milestones/config.local" ]] && source "$REPO/.milestones/config.local"
+[[ "$APPROVAL_MODE" == supervisor || "$APPROVAL_MODE" == owner ]] \
+  || die "APPROVAL_MODE is '$APPROVAL_MODE'; it is supervisor (the supervisor approves, unattended) or owner (the owner types each approval at a terminal)"
 LOGS="$REPO/logs/milestones"; mkdir -p "$LOGS"
 CHAIN="$LOGS/chain.log"
 
@@ -1001,7 +1009,7 @@ sandbox_call() {
 # ---------------------------------------------------------------- arguments
 MUTATE_PATCH=""; MUTATE_REF=""; MUTATE_STEPS=""; MUTATE_WHERE=""; MUTATE_EXIT=2
 ACCEPT_INIT=0; ACCEPT_FORCE=0; ACCEPT_CRITERION=""; ACCEPT_EVIDENCE=""; ACCEPT_CONTEXT=""
-APPROVE_KIND=""; APPROVE_ITEMS=()
+APPROVE_KIND=""; APPROVE_ITEMS=(); APPROVE_AS=""; APPROVE_REASON="${APPROVE_REASON:-}"
 VERB=""; INTEGRATE_ID=""; SANDBOX=""; DEPLOY=0; NOTE=""; CONTINUE=""; INSIDE=""; UNIT=""; GATE_ONLY=0; ISSUE=0
 MILESTONES=(); RES=(); TAGS=(); AGENT_OPTS=()
 while (($#)); do
@@ -1027,6 +1035,8 @@ while (($#)); do
             case "$1" in --ref) MUTATE_REF="$2" ;; --steps) MUTATE_STEPS="$2" ;; *) MUTATE_WHERE="$2" ;; esac
             shift 2 ;;
     --sandbox) SANDBOX="$2"; shift 2 ;;
+    --as) APPROVE_AS="$2"; shift 2 ;;          # approve: --as supervisor, under APPROVAL_MODE=supervisor
+    --reason) APPROVE_REASON="$2"; shift 2 ;;  # approve --as supervisor: what the entry records
     --deploy) DEPLOY=1; shift ;;
     --note) NOTE="$2"; shift 2 ;;
     --continue) CONTINUE="$2"; shift 2 ;;
@@ -1513,13 +1523,13 @@ path_blob() {
 # (path, blob), gate-definition (hash: the gate definition hash), budget (budget). blob is the
 # path's object id at the candidate head, "none" for a deleted path. Readers take the file as
 # committed at the commit they check, and ignore every line not in exactly this form.
-APPROVAL_LINE_RE='^- approved ([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}([+-][0-9]{2}:[0-9]{2}|Z)) milestone=([0-9]+) kind=(criterion-waiver|weakening|gate-config|gate-definition|budget) hit=([a-z-]+) path=("[^"]+"|-) blob=([0-9a-f]{40}|[0-9a-f]{64}|none|-) hash=([0-9a-f]{64}|-) criterion=([0-9]+\.c[0-9]+|-) budget=([A-Za-z0-9_.-]+|-) confirm="approve ([0-9]+) ([a-z-]+)"$'
+APPROVAL_LINE_RE='^- approved ([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}([+-][0-9]{2}:[0-9]{2}|Z)) milestone=([0-9]+) kind=(criterion-waiver|weakening|gate-config|gate-definition|budget) hit=([a-z-]+) path=("[^"]+"|-) blob=([0-9a-f]{40}|[0-9a-f]{64}|none|-) hash=([0-9a-f]{64}|-) criterion=([0-9]+\.c[0-9]+|-) budget=([A-Za-z0-9_.-]+|-) confirm="(approve ([0-9]+) ([a-z-]+)|-)"( by=(owner|supervisor))?( reason="[^"]*")?$'
 
 approval_entries() {
   # approval_entries <n> <commit>: the valid entries of .milestones/approvals/<n>.md as committed
   # at <commit>, one per line, tab separated: kind hit path blob hash criterion budget time. Nothing
   # when the file is absent there; returns 1 on a git error.
-  local n="$1" at="$2" af=".milestones/approvals/$1.md" have text line m kind hit path blob hash crit budget cn ck when
+  local n="$1" at="$2" af=".milestones/approvals/$1.md" have text line m kind hit path blob hash crit budget cn ck when by
   have="$(GIT_LITERAL_PATHSPECS=1 git ls-tree --full-tree --name-only "$at" -- "$af")" || return 1
   [[ -n "$have" ]] || return 0
   text="$(git cat-file blob "$at:$af")" || return 1
@@ -1527,8 +1537,15 @@ approval_entries() {
     [[ "$line" =~ $APPROVAL_LINE_RE ]] || continue
     when="${BASH_REMATCH[1]}"; m="${BASH_REMATCH[3]}"; kind="${BASH_REMATCH[4]}"; hit="${BASH_REMATCH[5]}"; path="${BASH_REMATCH[6]}"
     blob="${BASH_REMATCH[7]}"; hash="${BASH_REMATCH[8]}"; crit="${BASH_REMATCH[9]}"; budget="${BASH_REMATCH[10]}"
-    cn="${BASH_REMATCH[11]}"; ck="${BASH_REMATCH[12]}"
-    [[ "$m" == "$n" && "$cn" == "$n" && "$ck" == "$kind" ]] || continue
+    cn="${BASH_REMATCH[12]}"; ck="${BASH_REMATCH[13]}"; by="${BASH_REMATCH[15]:-owner}"
+    # An owner entry carries the typed phrase; a supervisor entry carries "-" and by=supervisor.
+    # A line written before this field existed has no by= and is an owner approval.
+    if [[ "$by" == supervisor ]]; then
+      [[ "${BASH_REMATCH[11]}" == - ]] || continue
+    else
+      [[ "$cn" == "$n" && "$ck" == "$kind" ]] || continue
+    fi
+    [[ "$m" == "$n" ]] || continue
     [[ "$path" == - ]] || path="${path:1:${#path}-2}"
     case "$kind" in
       criterion-waiver) [[ "$hit|$path|$blob|$hash|$budget" == "-|-|-|-|-" && "$crit" == "$n".c* ]] || continue ;;
@@ -1537,7 +1554,7 @@ approval_entries() {
       gate-definition)  [[ "$hit|$path|$blob|$crit|$budget" == "-|-|-|-|-" && "$hash" != - ]] || continue ;;
       budget)           [[ "$hit|$path|$blob|$hash|$crit" == "-|-|-|-|-" && "$budget" != - ]] || continue ;;
     esac
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$kind" "$hit" "$path" "$blob" "$hash" "$crit" "$budget" "$when"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$kind" "$hit" "$path" "$blob" "$hash" "$crit" "$budget" "$when" "$by"
   done <<< "$text"
 }
 
@@ -1579,6 +1596,24 @@ approve_commands() {
     if [[ "$kind" == gate-config ]]; then echo "$SELF approve $n gate-config $(printf '%q' "$path")"
     else echo "$SELF approve $n weakening $kind $(printf '%q' "$path")"; fi
   done
+}
+
+self_approve_hits() {
+  # self_approve_hits <n> <head> <reason>: under APPROVAL_MODE=supervisor, record an approval
+  # for every "<kind> <path>" line on stdin, marked by=supervisor with its reason, and log it.
+  # Returns 1 when any approval could not be written, so the caller still refuses.
+  local n="$1" head="$2" why="$3" kind path rc=0
+  while read -r kind path; do
+    [[ -n "$kind" ]] || continue
+    if [[ "$kind" == gate-config ]]; then set -- approve "$n" gate-config "$path"
+    else set -- approve "$n" weakening "$kind" "$path"; fi
+    if APPROVE_REASON="$kind $path, $why" "$SELF" "$@" --as supervisor --ref "$head" > /dev/null 2>&1; then
+      log "  approved by the supervisor (APPROVAL_MODE=supervisor): $kind $path"
+    else
+      log "  could not record the supervisor's approval of $kind $path"; rc=1
+    fi
+  done
+  return $rc
 }
 
 # ---- candidate preconditions, shared by integrate and mutate
@@ -1898,6 +1933,15 @@ do_integrate() {
         git merge --abort > /dev/null 2>&1 || true
         int_event fail signal=scan-refusal detail="the weakening scan failed: $SCAN_ERROR"
         refuse "the weakening scan failed: $SCAN_ERROR; merge aborted, HEAD back at $pre"; }
+      if [[ -n "$UNAPPROVED" && "$APPROVAL_MODE" == supervisor ]]; then
+        log "  APPROVAL_MODE=supervisor: recording the supervisor's own approval of each hit"
+        if self_approve_hits "$n" "$mcommit" "integrate of milestone $n, $(date -Is)" <<< "$UNAPPROVED"; then
+          unapproved_hits "$upstream" "$mcommit" "$n" || {
+            git merge --abort > /dev/null 2>&1 || true
+            int_event fail signal=scan-refusal detail="the weakening scan failed after self-approval: $SCAN_ERROR"
+            refuse "the weakening scan failed: $SCAN_ERROR; merge aborted, HEAD back at $pre"; }
+        fi
+      fi
       if [[ -n "$UNAPPROVED" ]]; then
         git merge --abort > /dev/null 2>&1 || true
         int_event fail signal=scan-refusal detail="unapproved hits: $(tr '\n' ';' <<< "$UNAPPROVED")"
@@ -1940,7 +1984,7 @@ do_integrate() {
     fi
     log "  merged $sbranch as $(git rev-parse --short=12 HEAD)"
   fi
-  local head; head="$(git rev-parse HEAD)"
+  local head=""   # the gated commit, taken below once nothing more will be committed
   recovery() {  # how to see or drop what stays local
     if (( merged_now )); then echo "the merge stays local. pre-merge $pre; to drop it: git reset --hard $pre"
     else echo "HEAD stays as it was (this run merged nothing); the unpushed commits: git log --oneline $upstream..HEAD"; fi
@@ -1958,8 +2002,31 @@ do_integrate() {
     log "  nothing pushed; $(recovery)"
   }
 
+  # ---- unattended: approve the gate definition before the gate runs, so the approval commit
+  # lands before the gated tree is fixed rather than after it (which would change HEAD under
+  # the delivery guard's own unchanged-since-the-gate check).
+  if [[ "$APPROVAL_MODE" == supervisor ]]; then
+    local live_def approved_def appout
+    load_gate_steps; live_def="$(gate_definition_hash)"; approved_def="$(latest_approved_gate_hash || true)"
+    if [[ -n "$live_def" && "$live_def" != "$approved_def" ]]; then
+      if appout="$(APPROVE_REASON="the gate definition in force for this integrate, $(date -Is)" \
+           "$SELF" approve "$n" gate-definition --as supervisor 2>&1)"; then
+        log "  gate definition ${live_def:0:12} approved by the supervisor (APPROVAL_MODE=supervisor)"
+      else
+        log "  could not record the supervisor's gate-definition approval: $(tr '\n' ' ' <<< "$appout" | cut -c1-200)"
+      fi
+    fi
+  fi
+
   # ---- weakening scan over everything about to be pushed
   unapproved_hits "$upstream" HEAD "$n" || { int_event fail signal=scan-refusal detail="the weakening scan failed: $SCAN_ERROR"; kept "refused: the weakening scan failed: $SCAN_ERROR"; exit 2; }
+  if [[ -n "$UNAPPROVED" && "$APPROVAL_MODE" == supervisor ]]; then
+    log "  APPROVAL_MODE=supervisor: recording the supervisor's own approval of each hit"
+    if self_approve_hits "$n" HEAD "integrate of milestone $n, $(date -Is)" <<< "$UNAPPROVED"; then
+      unapproved_hits "$upstream" HEAD "$n" \
+        || { int_event fail signal=scan-refusal detail="the weakening scan failed after self-approval: $SCAN_ERROR"; kept "refused: the weakening scan failed: $SCAN_ERROR"; exit 2; }
+    fi
+  fi
   if [[ -n "$HITS" ]]; then
     if [[ -n "$UNAPPROVED" ]]; then
       int_event fail signal=scan-refusal detail="unapproved hits: $(tr '\n' ';' <<< "$UNAPPROVED")"
@@ -1985,6 +2052,11 @@ do_integrate() {
     fi
     log "  evaluation record $evf present, no owner action left"
   fi
+
+  # ---- the gated commit. Every approval this run records commits to .milestones/ first, so
+  # the commit is taken here, once nothing else will land. Anything committed after this point
+  # was never gated, which is what the unchanged check below refuses.
+  head="$(git rev-parse HEAD)"
 
   # ---- the gate, where INTEGRATE_GATE_WHERE says; or, with --evidence, the sealed bundle in its place
   local grc=0 why="" idf=()
@@ -2954,15 +3026,32 @@ approve_candidate_head() {
 do_approve() {
   local n="${MILESTONES[0]:-}" kind="$APPROVE_KIND" usage rel f at head="" typed p h hash ids st existed=1 sha
   local items=("${APPROVE_ITEMS[@]}") entries=()
-  usage="approve N criterion-waiver N.c<i>... | approve N weakening <hit kind> <path>... | approve N gate-config <path>... | approve N gate-definition | approve N budget <name>...  ([--sandbox ID | --ref REF] picks the candidate head for blob ids)"
+  usage="approve N criterion-waiver N.c<i>... | approve N weakening <hit kind> <path>... | approve N gate-config <path>... | approve N gate-definition | approve N budget <name>...  ([--sandbox ID | --ref REF] picks the candidate head for blob ids; --as supervisor records it without the owner, only when APPROVAL_MODE=supervisor and never for a criterion waiver)"
   [[ "$n" =~ ^[0-9]+$ && -n "$kind" ]] || die "approve needs a milestone and a kind: $usage"
-  # Consent is typed by the owner at a terminal. Nothing is read or written before this check, and
-  # there is no flag or variable that stands in for it.
-  [[ -t 0 ]] || die "approve refused: stdin is not a terminal. An owner approval is typed by the owner at an interactive terminal; a headless shell cannot give one. Nothing written."
+  local by=owner
+  if [[ "$APPROVE_AS" == supervisor ]]; then
+    # The owner chose an unattended run (APPROVAL_MODE=supervisor). The supervisor records the
+    # approval itself, and the entry says so: by=supervisor, confirm="-", and a reason. A criterion
+    # waiver is never self-granted: acceptance still needs real evidence or the owner.
+    [[ "$APPROVAL_MODE" == supervisor ]] \
+      || die "approve --as supervisor refused: APPROVAL_MODE is '$APPROVAL_MODE'. Set APPROVAL_MODE=supervisor in .milestones/config to let the supervisor approve. Nothing written."
+    [[ "$kind" != criterion-waiver ]] \
+      || die "approve --as supervisor refused: a criterion waiver says a criterion was met without evidence, so it is the owner's. Nothing written."
+    by=supervisor
+  else
+    # Consent is typed by the owner at a terminal. Nothing is read or written before this check, and
+    # there is no flag or variable that stands in for it.
+    [[ -t 0 ]] || die "approve refused: stdin is not a terminal. An owner approval is typed by the owner at an interactive terminal; a headless shell cannot give one. Nothing written."
+  fi
   rel=".milestones/approvals/$n.md"; f="$REPO/$rel"
   at="$(date -Is)"
-  entry() { printf -- '- approved %s milestone=%s kind=%s hit=%s path=%s blob=%s hash=%s criterion=%s budget=%s confirm="approve %s %s"' \
-              "$at" "$n" "$kind" "$1" "$2" "$3" "$4" "$5" "$6" "$n" "$kind"; }
+  entry() {
+    local confirm="approve $n $kind" tail=""
+    if [[ "$by" == supervisor ]]; then confirm="-"; tail=" by=supervisor reason=\"${APPROVE_REASON:-recorded by the supervisor under APPROVAL_MODE=supervisor}\""
+    else tail=" by=owner"; fi
+    printf -- '- approved %s milestone=%s kind=%s hit=%s path=%s blob=%s hash=%s criterion=%s budget=%s confirm="%s"%s' \
+      "$at" "$n" "$kind" "$1" "$2" "$3" "$4" "$5" "$6" "$confirm" "$tail"
+  }
   path_ok() { [[ -n "$1" && "$1" != /* && "$1" != *'"'* && "$1" =~ ^[[:print:]]+$ && "/$1/" != */../* ]]; }
   case "$kind" in
     criterion-waiver)
@@ -3014,14 +3103,16 @@ do_approve() {
   [[ -z "$st" ]] || die "approve: $rel has uncommitted edits; a line not written by approve is never committed by it. Restore it (git checkout -- $rel, or remove it). Nothing written."
   echo "Milestone $n, approval of kind $kind${head:+ (blob ids at ${head:0:12})}:"
   printf '  %s\n' "${entries[@]}"
-  echo "Type exactly: approve $n $kind"
-  IFS= read -r typed || typed=""
-  typed="${typed%$'\r'}"
-  [[ "$typed" == "approve $n $kind" ]] || die "approve refused: the confirmation typed was not 'approve $n $kind'. Nothing written."
+  if [[ "$by" == owner ]]; then
+    echo "Type exactly: approve $n $kind"
+    IFS= read -r typed || typed=""
+    typed="${typed%$'\r'}"
+    [[ "$typed" == "approve $n $kind" ]] || die "approve refused: the confirmation typed was not 'approve $n $kind'. Nothing written."
+  fi
   git cat-file -e "HEAD:$rel" 2> /dev/null || existed=0
   mkdir -p "$(dirname "$f")" || die "approve: cannot create $(dirname "$rel"). Nothing written."
   if [[ ! -e "$f" ]]; then
-    printf '# Owner approvals, milestone %s\n\nWritten only by run-milestones.sh approve at a terminal; every line in another form is ignored.\n\n' "$n" > "$f" \
+    printf '# Approvals, milestone %s\n\nWritten only by run-milestones.sh approve; every line in another form is ignored.\nby=owner means the owner typed the confirmation at a terminal. by=supervisor means the\nsupervisor recorded it under APPROVAL_MODE=supervisor, which the owner chose.\n\n' "$n" > "$f" \
       || die "approve: cannot write $rel"
   fi
   printf '%s\n' "${entries[@]}" >> "$f" || die "approve: cannot write $rel"
@@ -3032,6 +3123,18 @@ do_approve() {
   fi
   sha="$(git rev-parse --short=12 HEAD)"
   log "approve milestone $n: $kind ${APPROVE_ITEMS[*]} committed in $rel as $sha$( [[ -z "$head" ]] || echo " (blobs at ${head:0:12})")"
+  # One event per entry written, from the one place that writes them, so the ledger counts the
+  # owner's approvals and the supervisor's own alike. A report that only saw the self-granted
+  # ones would read as if the owner had approved nothing.
+  local e
+  for e in "${entries[@]}"; do
+    emit_event approval "$n" "$(json_obj item_kind="$kind" approval="$e" granted_by="$by" \
+      path="$(sed -n 's/.* path="\([^"]*\)".*/\1/p' <<< "$e")" \
+      blob="$(sed -n 's/.* blob=\([^ ]*\) .*/\1/p' <<< "$e" | grep -v '^-$' || true)" \
+      hash="$(sed -n 's/.* hash=\([^ ]*\) .*/\1/p' <<< "$e" | grep -v '^-$' || true)" \
+      criterion="$(sed -n 's/.* criterion=\([^ ]*\) .*/\1/p' <<< "$e" | grep -v '^-$' || true)" \
+      confirmed_at="$at" detail="${APPROVE_REASON:-typed by the owner at a terminal}")"
+  done
 }
 
 # ---------------------------------------------------------------- events, the delivery guard and audit
@@ -3103,7 +3206,14 @@ def git(*a):
     return subprocess.run(["git", *a], check=True, capture_output=True).stdout.decode("utf-8", "replace")
 def gate_definition(n, line):
     m = rx.match(line)
-    if not m or m.group(4) != "gate-definition" or m.group(3) != n or m.group(11) != n or m.group(12) != "gate-definition":
+    if not m or m.group(4) != "gate-definition" or m.group(3) != n:
+        return None
+    # An owner entry repeats the milestone and kind in the typed phrase; a supervisor entry
+    # carries "-" there and says by=supervisor. A line written before by= existed is an owner one.
+    if m.group(11) == "-":
+        if m.group(15) != "supervisor":
+            return None
+    elif m.group(12) != n or m.group(13) != "gate-definition":
         return None
     if (m.group(5), m.group(6), m.group(7), m.group(9), m.group(10)) != ("-",) * 5 or m.group(8) == "-":
         return None
@@ -3218,6 +3328,18 @@ PY
   # ---- identity of the gate definition: the latest owner approval, and what the gate is now
   DV_APPROVED="$(latest_approved_gate_hash)" \
     || { DELIVERY_WHY="could not read the gate-definition approvals committed at HEAD"; return 1; }
+  if [[ "$APPROVAL_MODE" == supervisor && "$DV_DEF" != "$DV_APPROVED" ]]; then
+    # Unattended: the supervisor approves the definition the bundle actually ran, so an installed
+    # driver or an edited config does not stop the run. The entry records it as self-granted.
+    local appout
+    if appout="$(APPROVE_REASON="the definition the sealed bundle ran, $(date -Is)" \
+         "$SELF" approve "$n" gate-definition --as supervisor 2>&1)"; then
+      log "  gate definition ${DV_DEF:0:12} approved by the supervisor (APPROVAL_MODE=supervisor)"
+      DV_APPROVED="$(latest_approved_gate_hash)" || DV_APPROVED=""
+    else
+      log "  could not record the supervisor's gate-definition approval; refusing as in owner mode: $(tr '\n' ' ' <<< "$appout" | cut -c1-300)"
+    fi
+  fi
   if [[ -z "$DV_APPROVED" ]]; then
     DELIVERY_APPROVE=1
     DELIVERY_WHY="no owner approval of a gate definition is committed in .milestones/approvals/; the bundle's definition is ${DV_DEF:0:12}"; return 1
@@ -3523,12 +3645,25 @@ budget_guard() {
     fi
     if [[ "$state" == extra && "$extra" == 1 ]]; then
       log "  budget $name of milestone $n is at its limit; an owner approval allows one more attempt: $ref"
-      emit_event budget "$n" "$(json_obj budget="$name" action=extra-attempt limit:="$limit" count:="$count" approval="$ref" detail="$verb allowed by the approval")"
+      emit_event budget "$n" "$(json_obj budget="$name" action=extra-attempt limit:="$limit" count:="$count" approval="$ref" \
+        granted_by="$(grep -q 'by=supervisor' <<< "$ref" && echo supervisor || echo owner)" detail="$verb allowed by the approval")"
     fi
     [[ "$state" != exhausted || -n "$hit" ]] || hit="$name"$'\t'"$count"$'\t'"$limit"$'\t'"$evc"$'\t'"$chc"$'\t'"$display"
   done <<< "$out"
   [[ -n "$hit" ]] || return 0
   IFS=$'\t' read -r name count limit evc chc display <<< "$hit"
+  if [[ "$APPROVAL_MODE" == supervisor ]]; then
+    # The owner chose an unattended run: the supervisor grants the extension itself and says so.
+    # The escalation and the counts are still written, so the ledger shows every extension.
+    if APPROVE_REASON="budget $name exhausted ($display) before $verb, $(date -Is)" \
+         "$SELF" approve "$n" budget "$name" --as supervisor > /dev/null 2>&1; then
+      log "  budget $name of milestone $n exhausted ($display); the supervisor granted one more attempt (APPROVAL_MODE=supervisor)"
+      emit_event budget "$n" "$(json_obj budget="$name" action=extra-attempt limit:="$limit" count:="$count" \
+        granted_by=supervisor detail="granted by the supervisor under APPROVAL_MODE=supervisor before $verb")"
+      return 0
+    fi
+    log "  could not record the supervisor's budget approval; refusing as in owner mode"
+  fi
   log "refused: budget $name exhausted for milestone $n ($display): $verb refused; sandboxes and bundles are kept; owner approval needed: $SELF approve $n budget $name"
   log "budget exhausted milestone=$n budget=$name count=$count limit=$limit verb=$verb at=$(date -Is)"
   status_set_next "$n" "$(resolve_lane "$n")" "$sb" "ESCALATED: $name exhausted ($display); owner approval needed: approve $n budget $name"
@@ -3546,6 +3681,7 @@ do_config() {
   echo "LANE=$(resolve_lane "$n")"
   if [[ "${!ev:-}" == 1 ]]; then echo "EVALUATE=1"; else echo "EVALUATE=0"; fi
   echo "EVALUATE_TARGET=${!tv:-}"
+  echo "APPROVAL_MODE=$APPROVAL_MODE"
   echo "GATE_SETUP=$GATE_SETUP"
   echo "GATE=$GATE"
   echo "GATE_ENV=$GATE_ENV"
