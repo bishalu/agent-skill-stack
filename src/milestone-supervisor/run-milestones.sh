@@ -171,16 +171,21 @@ to_seconds() {
 
 have_jq() { [[ -z "${RUN_MILESTONES_NO_JQ:-}" ]] && command -v jq >/dev/null 2>&1; }
 
+resolve_override() {
+  # KEY_<n>, then KEY, then empty: the fallback every per-milestone key follows.
+  local per="$1_$2"
+  echo "${!per:-${!1:-}}"
+}
+
 resolve_resources() {
   # MEMORY_<n>, CPUS_<n>; then MEMORY, CPUS; then nothing (agent-sandbox's config).
   # MODEL_<n>, EFFORT_<n>; then MODEL, EFFORT; then nothing (claude's session default).
   # The agent's model and effort are per milestone because the stages differ in
   # what they need: a plan or a review earns a strong model, a docs or a
   # measurement milestone does not.
-  local n="$1" mem cpus mv cv model effort modv effv
-  mv="MEMORY_$n"; cv="CPUS_$n"; modv="MODEL_$n"; effv="EFFORT_$n"
-  mem="${!mv:-${MEMORY:-}}"; cpus="${!cv:-${CPUS:-}}"
-  model="${!modv:-${MODEL:-}}"; effort="${!effv:-${EFFORT:-}}"
+  local n="$1" mem cpus model effort
+  mem="$(resolve_override MEMORY "$n")"; cpus="$(resolve_override CPUS "$n")"
+  model="$(resolve_override MODEL "$n")"; effort="$(resolve_override EFFORT "$n")"
   RES=(); AGENT_OPTS=()
   [[ -n "$mem" ]] && RES+=(--memory "$mem")
   [[ -n "$cpus" ]] && RES+=(--cpus "$cpus")
@@ -656,6 +661,7 @@ do_resume() {
 # pushes. Every refusal and failure pushes nothing; after the merge it keeps the merge
 # local and logs the pre-merge sha for a manual reset.
 SANDBOX_ID_RE='^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$'   # agent-sandbox's own id rule
+STATUS_HEADER='| Milestone | Lane | Sandbox | Merged | Gate | Unmet criteria | Open blockers | Next action |'
 
 # Defaults for the weakening scan, overridable in config. A glob with no "/" matches the
 # file name; one ending in "/" matches that directory anywhere in the path; any other
@@ -745,10 +751,10 @@ status_upsert() {
   # set; Unmet criteria, Open blockers and Next action of an existing row are kept.
   local sfile="$REPO/.milestones/STATUS.md" n="$1" lane="$2" id="$3" merged="$4" gate="$5" tmp
   if [[ ! -f "$sfile" ]]; then
-    printf '# Milestone status\n\n| Milestone | Lane | Sandbox | Merged | Gate | Unmet criteria | Open blockers | Next action |\n|---|---|---|---|---|---|---|---|\n' > "$sfile"
+    printf '# Milestone status\n\n%s\n|---|---|---|---|---|---|---|---|\n' "$STATUS_HEADER" > "$sfile"
   fi
   tmp="$(mktemp "$sfile.XXXXXX")"
-  awk -F'|' -v n="$n" -v lane="$lane" -v id="$id" -v merged="$merged" -v gate="$gate" '
+  awk -F'|' -v n="$n" -v lane="$lane" -v id="$id" -v merged="$merged" -v gate="$gate" -v hdr="$STATUS_HEADER" '
     function t(s) { gsub(/^[ \t]+|[ \t]+$/, "", s); return s }
     function c(s) { s = t(s); return s == "" ? "-" : s }
     { line[NR] = $0 }
@@ -765,7 +771,7 @@ status_upsert() {
         if (i == last && !done) print "| " n " | " lane " | " id " | " merged " | " gate " | - | - | - |"
       }
       if (!last) {
-        print "| Milestone | Lane | Sandbox | Merged | Gate | Unmet criteria | Open blockers | Next action |"
+        print hdr
         print "|---|---|---|---|---|---|---|---|"
         print "| " n " | " lane " | " id " | " merged " | " gate " | - | - | - |"
       }
@@ -822,7 +828,7 @@ host_gate() {
 }
 
 do_integrate() {
-  local id="$INTEGRATE_ID" n="" tag branch upstream remote mref pre base sbranch c m ok
+  local id="$INTEGRATE_ID" n="" tag branch upstream remote mref pre sbranch c m ok
   # The id reaches git as a ref name: check it before any git command runs.
   [[ -n "$id" ]] || die "integrate needs a sandbox id: integrate <sandbox-id> [milestone]"
   [[ "$id" =~ $SANDBOX_ID_RE && "$id" != *..* ]] || die "integrate: '$id' is not a sandbox id (letters, digits, . _ -, at most 128, no '..')"
@@ -853,7 +859,7 @@ do_integrate() {
   upstream="$(git rev-parse --quiet --verify "$branch@{upstream}")" || refuse "branch $branch has no upstream; set one with git branch -u <remote>/<branch>"
   remote="$(git config "branch.$branch.remote")"; mref="$(git config "branch.$branch.merge")"
   [[ -z "$(git rev-list "HEAD..$upstream")" ]] || refuse "branch $branch is behind its upstream; pull first"
-  # The ahead rule (KTD5). Every commit on the branch that its upstream lacks must be
+  # The ahead rule. Every commit on the branch that its upstream lacks must be
   #   a) reachable from agent-sandbox/<id> (this sandbox's own work),
   #   b) an earlier merge of agent-sandbox/<id> (its second parent is an ancestor of that
   #      branch) or a descendant of one (fix-forward and STATUS commits on top of it), or
@@ -916,8 +922,9 @@ do_integrate() {
   # ---- evaluation record
   local ev="EVALUATE_$n" evf=".milestones/evaluation-$n.md"
   if [[ "${!ev:-}" == 1 ]]; then
-    git cat-file -e "HEAD:$evf" 2>/dev/null || { kept "refused: EVALUATE_$n=1 and $evf is not committed"; exit 2; }
-    if git show "HEAD:$evf" | grep -qi 'owner action required'; then
+    local evcontent
+    evcontent="$(git show "HEAD:$evf" 2>/dev/null)" || { kept "refused: EVALUATE_$n=1 and $evf is not committed"; exit 2; }
+    if grep -qi 'owner action required' <<< "$evcontent"; then
       kept "refused: $evf still has a line marked owner action required"; exit 2
     fi
     log "  evaluation record $evf present, no owner action left"
@@ -952,12 +959,9 @@ do_integrate() {
 do_config() {
   # What milestone <n> resolves to, one KEY=value per line, so a launch can be checked
   # before a run is spent on it.
-  local n="$1" mem cpus model effort ev tv
-  mem="MEMORY_$n"; cpus="CPUS_$n"; model="MODEL_$n"; effort="EFFORT_$n"; ev="EVALUATE_$n"; tv="EVALUATE_TARGET_$n"
-  echo "MEMORY=${!mem:-${MEMORY:-}}"
-  echo "CPUS=${!cpus:-${CPUS:-}}"
-  echo "MODEL=${!model:-${MODEL:-}}"
-  echo "EFFORT=${!effort:-${EFFORT:-}}"
+  local n="$1" key
+  local ev="EVALUATE_$n" tv="EVALUATE_TARGET_$n"
+  for key in MEMORY CPUS MODEL EFFORT; do echo "$key=$(resolve_override "$key" "$n")"; done
   echo "LANE=$(resolve_lane "$n")"
   if [[ "${!ev:-}" == 1 ]]; then echo "EVALUATE=1"; else echo "EVALUATE=0"; fi
   echo "EVALUATE_TARGET=${!tv:-}"

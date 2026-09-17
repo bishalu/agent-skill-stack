@@ -254,7 +254,7 @@ PY
     done 3<<< "$missing"
   fi
   if sandbox_running; then
-    # KTD9: a full install reinstalls plugins that running sandboxes mount.
+    # A full install reinstalls plugins that running sandboxes mount.
     say "skip     full install: a sandbox container is running; config only for now"
     act "CLAUDE_HOME='$G' '$R/scripts/install.sh' --config-only"
     pending "run scripts/install.sh between milestones (a sandbox was running)"
