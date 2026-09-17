@@ -1,0 +1,112 @@
+# Read by run-milestones.sh (the milestone-supervisor skill). Shell assignments, sourced by bash.
+# Host-only values (a PATH prefix for this machine's toolchain) go in the gitignored
+# .milestones/config.local, sourced after this file. The driver's header comment documents every key.
+#
+# This file, config.local, the step list, GATE_SETUP, GATE_ENV, the driver and the MAX_* keys are
+# hashed into the gate definition. After changing any of them the owner approves the new definition
+# (run-milestones.sh approve N gate-definition) before the next delivery, and evidence accepted under
+# the old definition has to be taken again.
+
+# The file whose "## Milestone N" sections are the briefs, and where each milestone's report goes.
+MILESTONES_FILE=docs/milestones.md   # fill in: the path of this project's milestones file
+REPORT_DIR=docs/reports
+
+# The gate: runs in the sandbox after each milestone, and again over the merge when integrate ships
+# it. There is no default, and an empty gate makes every launch, --gate, integrate and mutate refuse.
+# Fill in one of the two forms below: GATE as the whole check, or GATE_STEPS as labeled steps.
+GATE=""
+# Steps run in order, each as its own process sharing the worktree (not a shell, so a step cannot
+# export anything to the next one). Entries are kind|name|command[|sandbox-only]; kind is
+# integration (real services, stores or a browser), replay (recorded external calls) or static
+# (lint, types, drift). The kinds show up in the evidence line, so a milestone that touches a store
+# or the browser can be seen to have been exercised. A sandbox-only step is recorded
+# "not run: sandbox-only" on the host, and a host gate run that skipped one never delivers: with
+# such steps, set INTEGRATE_GATE_WHERE=sandbox.
+# GATE_STEPS=(
+#   "static|lint|just lint"
+#   "replay|engine|just test-engine"
+#   "integration|api|just test-api"
+#   "integration|both-backends|just test-all-backends|sandbox-only"
+# )
+# GATE_SETUP="make fixtures"          # runs first as the step `setup`: rebuild derived state from committed recordings
+# GATE_ENV="sha256sum data/app.db | cut -c1-12"   # a probe; its first stdout line goes into the gate's evidence line
+# GATE_TIMEOUT=30m                    # bound on a whole gate run, sandbox and host; each step gets what is left
+# GATE_PORT_RANGE=20000-29999         # where a host gate run's GATE_PORT_1..4 come from, so two runs never collide
+
+# The post-turn gate in the milestone's own sandbox may run a subset of the steps, named here, to
+# keep a turn cheap; `--gate` always runs every step, so one full sandbox gate stays available on
+# demand. A subset bundle records the rest "not run: not selected" and never delivers.
+# SANDBOX_GATE_STEPS="lint replay"
+
+# A merge conflict only in generated paths is mechanical, not a finishing turn: when every
+# conflicted path matches REGENERATE_ON_CONFLICT (space-separated paths or directory prefixes) and
+# REGENERATE_COMMAND is set, integrate takes the integration branch's side of those paths, runs the
+# command in a temporary seeded worktree of the merge (never in this checkout), copies only those
+# paths back and completes the merge; the merge is then gated like any other. A conflict anywhere
+# else refuses as before. Every repository path REGENERATE_COMMAND names is a gate-config path, so
+# changing it needs an owner approval.
+# REGENERATE_ON_CONFLICT="contract/openapi.json web/api/generated/"
+# REGENERATE_COMMAND="just contract-dump && just client-gen"
+
+# Where integrate and mutate gate: host (a temporary worktree of the merge, seeded from SEED_PATHS)
+# or sandbox (a fresh sandbox of the merge commit, removed after). Use sandbox when the checks need
+# the sandbox image's toolchain, browser or pixel baselines. `mutate --where host|sandbox` overrides
+# this for one run, so an inconclusive verdict is re-run on the other route without a config edit
+# (which would invalidate the owner's gate-definition approval).
+# INTEGRATE_GATE_WHERE=host
+
+# Gitignored inputs the gate needs (an env file, a seeded database, model weights): integrate
+# copies them into its temporary worktree. Mirror agent-sandbox's worktree_seed.
+# SEED_PATHS=".env data/app.db"
+
+# integrate refuses on any other branch; unset means the current branch.
+# INTEGRATION_BRANCH=main
+
+# Milestones that deploy; each needs --deploy, given with the owner's yes.
+# DEPLOY_MILESTONES="7"
+
+TIMEOUT=12h   # per-milestone wall clock (12h, 90m, 3600)
+
+# Who gives the approvals a delivery needs (weakening hits, gate-config changes, the gate definition,
+# an exhausted budget). supervisor, the default, runs the whole spec unattended: the supervisor
+# records each approval itself, marked by=supervisor with its reason in .milestones/approvals/N.md
+# and in the events ledger, for the owner to read afterwards. owner makes every one of them a typed
+# confirmation at an interactive terminal, so an unattended run stops until the owner is there.
+# A criterion waiver is the owner's either way: no evidence, no self-approval.
+# APPROVAL_MODE=supervisor
+
+# Attempt budgets per milestone, with _<n> overrides (MAX_FAILED_GATES_7=5). Exhausting one refuses
+# every further launch, --continue, --gate, integrate and mutate of that milestone and writes
+# ESCALATED into STATUS.md; an approval allows one more attempt (the supervisor grants it itself
+# under APPROVAL_MODE=supervisor, and the ledger records that it did).
+# MAX_FAILED_GATES=3
+# MAX_FINISHING_TURNS=3
+# MAX_HOURS=24
+
+# Container resources for every milestone (agent-sandbox --memory/--cpus); MEMORY_<n> and CPUS_<n>
+# override one milestone. Unset falls back to agent-sandbox's own config. Size from the memory log:
+# a milestone running a full test suite or a browser wants more than a docs milestone.
+# MEMORY=8g
+# CPUS=6
+# MEMORY_3=12g   # write the reason next to each override
+
+# The agent's model and effort (claude --model/--effort); MODEL_<n> and EFFORT_<n> override one milestone.
+MODEL=opus   # the cap for every milestone agent: Opus at most, never the supervisor's own model; unset means the sandbox account's default
+# EFFORT=high
+# EFFORT_4=max   # a new subsystem, an external boundary or a deploy runs at full strength
+
+# Lanes: milestones in different lanes may run at the same time. Milestones that share a mutable
+# dataset or rewrite the same modules share a lane. Unset means main.
+# LANE_5=import
+
+# Independent evaluation before integrate: the supervisor dispatches an evaluator against the
+# target and commits .milestones/evaluation-<n>.md, which integrate requires.
+# EVALUATE_6=1
+# EVALUATE_TARGET_6="make dev"   # a local run command or a deployed URL
+
+# The weakening scan's patterns and globs have cross-framework defaults in the driver; override
+# them only when this project's test layout differs. GATE_DEFINITION_GLOBS names the files that
+# define what the gate runs: a change to one needs an owner approval, as does a change to any
+# repository file a step, GATE_SETUP or GATE_ENV names.
+# TEST_WEAKENING_PATTERN=... TEST_ASSERT_PATTERN=... TEST_GLOBS="tests/" SNAPSHOT_GLOBS="__snapshots__/"
+# GATE_DEFINITION_GLOBS="justfile package.json pyproject.toml .github/"

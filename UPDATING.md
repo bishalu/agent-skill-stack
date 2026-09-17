@@ -8,6 +8,16 @@ git diff               # read what upstream changed underneath you
 
 Then restart Claude Code.
 
+## A new machine
+
+Run `scripts/bootstrap.sh` instead of the three steps above; it ends by running
+`install.sh`. Rerun it after pulling this repo on a machine that is already set up: it
+skips what is in place, and while a sandbox container runs it holds back the agent-sandbox
+pull, the image build and the plugin reinstall, and applies only `install.sh
+--config-only`. To change a pinned host tool, edit `src/host-tools.txt`; a tool already
+installed is never upgraded, so remove the old one first. `bash
+scripts/bootstrap.test.sh` covers the settings merge and the dry run.
+
 ## What each step does
 
 `sync.sh` pulls every clone in `upstream/`, re-runs `build.py`, and re-renders the

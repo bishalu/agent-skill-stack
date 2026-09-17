@@ -16,3 +16,4 @@ eval/results/raw/
 eval/fixture/.git
 
 .DS_Store
+__pycache__/

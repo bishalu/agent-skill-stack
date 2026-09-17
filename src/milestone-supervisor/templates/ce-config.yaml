@@ -1,0 +1,6 @@
+# Compound Engineering repo defaults, written by run-milestones.sh init.
+# docs_root is unset: plans land in docs/plans/ and learnings in docs/solutions/, and every
+# milestone's ce-plan reads the learnings of the ones before it. Set docs_root only when
+# docs/ is owned by something else.
+packs:
+  - source: compound-packs/milestones

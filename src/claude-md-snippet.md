@@ -6,4 +6,9 @@
 - Methodology, frontend, security, and infrastructure skills augment that owner; they do not replace it.
 - A reference or knowledge skill firing is not a phase being owned. If one is the only skill that fired on non-trivial work, an owner is still missing.
 - For non-trivial engineering work, consult the `engineering-router` skill first. Trivial edits need no orchestration.
+
+## Milestone runs
+
+- Agents and subagents the milestone supervisor launches run on Opus at most. Never give them a stronger model than Opus, even when the supervising session runs on one.
+- Never run a host `/login` while a milestone sandbox is running. It revokes the token the agent inside is using.
 <!-- agent-skill-stack:end -->

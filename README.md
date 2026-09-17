@@ -140,6 +140,28 @@ arrangement: if upstream has already narrowed a description this repo was narrow
 diff is where you see it, and the right move is to delete the override rather than keep
 carrying it.
 
+### A new machine
+
+```bash
+git clone https://github.com/bishalu/agent-skill-stack.git ~/projects/agent-skill-stack
+~/projects/agent-skill-stack/scripts/bootstrap.sh --dry-run   # what it would do
+~/projects/agent-skill-stack/scripts/bootstrap.sh
+```
+
+`bootstrap.sh` takes a fresh Linux or WSL machine to the whole stack in six phases:
+the host tools pinned in `src/host-tools.txt`, agent-sandbox, rootless Docker, the
+sandbox image with admission and the memory log, this repo's skills, plugins and
+managed config, then `agent-sandbox doctor` and a checklist of the logins only you can
+do. Every step checks first, so a rerun changes nothing that is already in place. Steps
+that need sudo are printed rather than run, unless you pass `--with-sudo` and sudo
+needs no password. `--phase N` runs one phase.
+
+The managed config is two blocks. `install.sh` replaces its delimited block in
+`CLAUDE.md` and merges `src/settings-snippet.json` into `settings.json`: permission
+rules are added only when missing and the `autoMode` environment lines appended once,
+so your other settings survive. `install.sh --config-only` does just that merge, with
+no relinking and no plugin reinstall, which is safe while a sandbox runs.
+
 ## How it is built
 
 ```
