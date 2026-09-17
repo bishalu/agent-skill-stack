@@ -26,7 +26,7 @@
 #   MEMORY=8g CPUS=6                             container resources for every milestone
 #   MEMORY_6=12g CPUS_6=8                        overrides for one milestone; unset keys fall back
 #   MODEL=opus EFFORT=high                         the model and effort the agent runs at (claude --model/--effort)
-#   MODEL_7=fable EFFORT_7=max                     per-milestone overrides; unset keys mean the session default
+#   MODEL_7=opus EFFORT_7=max                      per-milestone overrides; unset keys mean the session default (Opus at most)
 #                                                to MEMORY/CPUS, then to agent-sandbox's config
 # <repo>/.milestones/standing-rules.md          rules every milestone gets; "milestone-N" is substituted
 # <repo>/.milestones/milestone-N.md             optional extra paragraph for milestone N
