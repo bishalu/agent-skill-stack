@@ -20,7 +20,9 @@ event TYPE --change ID [key=value ...] [--json OBJECT]
     validation error, with nothing written.
 report [--last N] [--json]
     Answer the R17 decisions over the last N changes, and log a summary run tagged
-    window=last:N to MLflow.
+    window=last:N to MLflow. A driver-written finding (stage gate, title "gate FAIL ...")
+    counts as a gate failure, not a catch; stage events finishing-turn, budget and push
+    are bookkeeping and stay out of the per-stage statistics.
 Every subcommand takes --project ROOT (default: cwd) and --no-mlflow.
 
 Inputs (read only): <root>/logs/milestones/chain.log, <root>/.milestones/config and
@@ -1076,6 +1078,16 @@ def _latest(*times) -> dt.datetime:
     return max(parsed) if parsed else dt.datetime.min.replace(tzinfo=dt.timezone.utc)
 
 
+# Stage names the driver writes for bookkeeping (a --continue launch, a budget, a push): not
+# review stages, so they never enter the per-stage catch statistics.
+BOOKKEEPING_STAGES = ("finishing-turn", "budget", "push")
+
+
+def is_driver_gate_failure(e: dict) -> bool:
+    return (e.get("type") == "finding" and e.get("stage") == "gate"
+            and str(e.get("title") or "").startswith("gate FAIL"))
+
+
 def build_report(root: Path, last: int = 20) -> dict:
     grades = read_ledger(milestones_dir(root) / "grades.jsonl", "grades")
     events = [e for e in read_ledger(milestones_dir(root) / "events.jsonl", "events")
@@ -1093,10 +1105,16 @@ def build_report(root: Path, last: int = 20) -> dict:
     grades = [g for g in grades if g.get("change_id") in win]
     events = sorted((e for e in events if e["change_id"] in win), key=lambda e: _latest(e.get("at")))
 
-    # Findings: one issue per (change, title); the earliest event raises it.
+    # Findings: one issue per (change, title); the earliest event raises it. A "gate FAIL ..."
+    # finding at stage gate is the driver's own record of a failed sandbox gate (it feeds the
+    # failed_gates budget): a gate failure, counted apart, never a catch of a named defect.
     issues: dict[tuple, dict] = {}
+    gate_failures: dict[str, int] = defaultdict(int)
     for e in events:
         if e.get("type") != "finding" or not e.get("title"):
+            continue
+        if is_driver_gate_failure(e):
+            gate_failures[e["change_id"]] += 1
             continue
         key = (e["change_id"], re.sub(r"\s+", " ", str(e["title"]).strip().lower()))
         it = issues.setdefault(key, {"stage": e.get("raised_stage") or e.get("stage"), "confirmations": set()})
@@ -1119,6 +1137,8 @@ def build_report(root: Path, last: int = 20) -> dict:
         else:
             row["reviewer_only"] += 1
     for e in events:
+        if is_driver_gate_failure(e) or e.get("stage") in BOOKKEEPING_STAGES:
+            continue
         if e.get("type") in ("stage", "finding") and e.get("stage"):
             row = stage_row(e["stage"]) if e.get("type") == "stage" else stages.get(e["stage"])
             if row is None:
@@ -1194,6 +1214,7 @@ def build_report(root: Path, last: int = 20) -> dict:
         "window": {"last": last, "changes": window},
         "stages": stages,
         "no_confirmed_catch": no_catch,
+        "gate_failures": dict(gate_failures),
         "stages_not_observed": not_observed,
         "escapes": escapes,
         "integration": {"failure_classes": dict(classes), "recovery_minutes": recovery},
@@ -1215,6 +1236,9 @@ def format_report(rep: dict) -> str:
             for s in rep["no_confirmed_catch"]] or ["  (none)"]
     if rep["stages_not_observed"]:
         out.append(f"  not observed (no events): {', '.join(rep['stages_not_observed'])}")
+    out.append("")
+    out.append("Gate failures (driver-written, not findings):")
+    out += [f"  {cid}: {k}" for cid, k in sorted(rep.get("gate_failures", {}).items())] or ["  (none)"]
     out.append("")
     out.append("Escapes by the stage that should have caught them:")
     out += [f"  {s}: {r['missed_at_completion']} missed at completion, {r['regressions_later']} regressions later"
@@ -1334,6 +1358,7 @@ def mlflow_log_report(rep: dict, project: str, last: int) -> None:
         metrics = [Metric("changes", float(len(rep["window"]["changes"])), ts, 0)]
         for s, r in rep["stages"].items():
             metrics.append(Metric(_metric_key(f"caught.{s}"), float(r["caught"]), ts, 0))
+        metrics.append(Metric("gate_failures", float(sum(rep.get("gate_failures", {}).values())), ts, 0))
         for c, v in rep["integration"]["failure_classes"].items():
             metrics.append(Metric(_metric_key(f"integrate_failures.{c}"), float(v), ts, 0))
         rec = [m for m in rep["integration"]["recovery_minutes"].values() if isinstance(m, (int, float))]

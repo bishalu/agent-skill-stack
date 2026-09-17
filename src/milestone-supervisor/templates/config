@@ -1,18 +1,42 @@
 # Read by run-milestones.sh (the milestone-supervisor skill). Shell assignments, sourced by bash.
 # Host-only values (a PATH prefix for this machine's toolchain) go in the gitignored
 # .milestones/config.local, sourced after this file. The driver's header comment documents every key.
+#
+# This file, config.local, the step list, GATE_SETUP, GATE_ENV, the driver and the MAX_* keys are
+# hashed into the gate definition. After changing any of them the owner approves the new definition
+# (run-milestones.sh approve N gate-definition) before the next delivery, and evidence accepted under
+# the old definition has to be taken again.
 
 # The file whose "## Milestone N" sections are the briefs, and where each milestone's report goes.
 MILESTONES_FILE=docs/milestones.md   # fill in: the path of this project's milestones file
 REPORT_DIR=docs/reports
 
-# The gate: runs in the sandbox after each milestone, and on the host in integrate's temporary
-# worktree. There is no default, and an empty GATE makes every launch, --gate and integrate
-# refuse naming GATE. Fill in: this project's full check (tests, lint, type-check, build).
+# The gate: runs in the sandbox after each milestone, and again over the merge when integrate ships
+# it. There is no default, and an empty gate makes every launch, --gate, integrate and mutate refuse.
+# Fill in one of the two forms below: GATE as the whole check, or GATE_STEPS as labeled steps.
 GATE=""
-# GATE_SETUP="make fixtures"          # runs first, in the same shell: rebuild derived state from committed recordings
+# Steps run in order, each as its own process sharing the worktree (not a shell, so a step cannot
+# export anything to the next one). Entries are kind|name|command[|sandbox-only]; kind is
+# integration (real services, stores or a browser), replay (recorded external calls) or static
+# (lint, types, drift). The kinds show up in the evidence line, so a milestone that touches a store
+# or the browser can be seen to have been exercised. A sandbox-only step is recorded
+# "not run: sandbox-only" on the host, and a host gate run that skipped one never delivers: with
+# such steps, set INTEGRATE_GATE_WHERE=sandbox.
+# GATE_STEPS=(
+#   "static|lint|just lint"
+#   "replay|engine|just test-engine"
+#   "integration|api|just test-api"
+#   "integration|both-backends|just test-all-backends|sandbox-only"
+# )
+# GATE_SETUP="make fixtures"          # runs first as the step `setup`: rebuild derived state from committed recordings
 # GATE_ENV="sha256sum data/app.db | cut -c1-12"   # a probe; its first stdout line goes into the gate's evidence line
-# GATE_TIMEOUT=30m                    # bound on each gate run, sandbox and host
+# GATE_TIMEOUT=30m                    # bound on a whole gate run, sandbox and host; each step gets what is left
+# GATE_PORT_RANGE=20000-29999         # where a host gate run's GATE_PORT_1..4 come from, so two runs never collide
+
+# Where integrate and mutate gate: host (a temporary worktree of the merge, seeded from SEED_PATHS)
+# or sandbox (a fresh sandbox of the merge commit, removed after). Use sandbox when the checks need
+# the sandbox image's toolchain, browser or pixel baselines.
+# INTEGRATE_GATE_WHERE=host
 
 # Gitignored inputs the gate needs (an env file, a seeded database, model weights): integrate
 # copies them into its temporary worktree. Mirror agent-sandbox's worktree_seed.
@@ -25,6 +49,13 @@ GATE=""
 # DEPLOY_MILESTONES="7"
 
 TIMEOUT=12h   # per-milestone wall clock (12h, 90m, 3600)
+
+# Attempt budgets per milestone, with _<n> overrides (MAX_FAILED_GATES_7=5). Exhausting one refuses
+# every further launch, --continue, --gate, integrate and mutate of that milestone and writes
+# ESCALATED into STATUS.md; only an owner approval allows one more attempt.
+# MAX_FAILED_GATES=3
+# MAX_FINISHING_TURNS=3
+# MAX_HOURS=24
 
 # Container resources for every milestone (agent-sandbox --memory/--cpus); MEMORY_<n> and CPUS_<n>
 # override one milestone. Unset falls back to agent-sandbox's own config. Size from the memory log:
@@ -48,5 +79,8 @@ MODEL=opus   # the cap for every milestone agent: Opus at most, never the superv
 # EVALUATE_TARGET_6="make dev"   # a local run command or a deployed URL
 
 # The weakening scan's patterns and globs have cross-framework defaults in the driver; override
-# them only when this project's test layout differs.
+# them only when this project's test layout differs. GATE_DEFINITION_GLOBS names the files that
+# define what the gate runs: a change to one needs an owner approval, as does a change to any
+# repository file a step, GATE_SETUP or GATE_ENV names.
 # TEST_WEAKENING_PATTERN=... TEST_ASSERT_PATTERN=... TEST_GLOBS="tests/" SNAPSHOT_GLOBS="__snapshots__/"
+# GATE_DEFINITION_GLOBS="justfile package.json pyproject.toml .github/"

@@ -516,3 +516,31 @@ def test_report_logs_summary_run_tagged_window(tmp_path, monkeypatch):
     runs = client.search_runs([exp.experiment_id], filter_string="tags.window = 'last:20'")
     assert len(runs) == 1
     assert runs[0].data.metrics["integrate_failures.environment"] == 2
+
+
+def test_driver_bookkeeping_events_are_not_review_stages(tmp_path, capsys):
+    root = make_project(tmp_path, "")
+    # Written by the driver: a sandbox gate failure and a --continue launch.
+    ev(root, "finding", "--change", "milestone:7", "stage=gate", "confirmation=executable", "step=engine",
+       "title=gate FAIL milestone 7 at engine (logs/milestones/evidence/7-sandbox-x)", "at=2026-09-17T10:00:00-05:00")
+    ev(root, "finding", "--change", "milestone:7", "stage=gate", "confirmation=executable", "step=api",
+       "title=gate FAIL milestone 7 at api (logs/milestones/evidence/7-sandbox-y)", "at=2026-09-17T10:30:00-05:00")
+    ev(root, "stage", "--change", "milestone:7", "stage=finishing-turn", "applied=1", "note=--continue launched")
+    ev(root, "budget", "--change", "milestone:7", "budget=failed_gates", "limit=3", "count=2", "action=warning")
+    ev(root, "push", "--change", "milestone:7", "sha=abc")
+    ev(root, "stage", "--change", "milestone:7", "stage=push")
+    ev(root, "stage", "--change", "milestone:7", "stage=budget")
+    # A real defect the gate caught stays a catch.
+    ev(root, "finding", "--change", "milestone:7", "stage=gate", "confirmation=executable", "step=engine",
+       "title=limit ignored on empty page", "at=2026-09-17T11:00:00-05:00")
+    rep = grade.build_report(root, last=20)
+    st = rep["stages"]
+    assert st["gate"]["caught"] == 1 and st["gate"]["findings"] == 1
+    assert rep["gate_failures"] == {"milestone:7": 2}
+    for s in ("finishing-turn", "budget", "push"):
+        assert s not in st
+        assert s not in rep["no_confirmed_catch"]
+    assert run(["report", "--last", "20", "--project", str(root), "--no-mlflow"]) == 0
+    out = capsys.readouterr().out
+    assert "Gate failures (driver-written, not findings):" in out
+    assert "milestone:7: 2" in out
