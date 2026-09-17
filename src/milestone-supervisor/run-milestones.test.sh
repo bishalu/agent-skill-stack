@@ -121,7 +121,7 @@ fail() { echo "FAIL: $*" >&2; [[ -n "${KEEP_GOING:-}" ]] || exit 1; FAILS=$((FAI
 assert_grep() { grep -Eq -- "$1" "$2" && pass "$3" || { echo "--- $2:" >&2; cat "$2" >&2 || true; fail "$3 (no match for '$1')"; }; }
 assert_not_grep() { grep -Eq -- "$1" "$2" && { echo "--- $2:" >&2; cat "$2" >&2 || true; fail "$3 (unexpected match for '$1')"; } || pass "$3"; }
 assert_eq() { [[ "$1" == "$2" ]] && pass "$3" || fail "$3 (got '$1', want '$2')"; }
-reset() { rm -rf "$FAKE_DIR"/systemd-run.* "$FAKE_DIR/agent-sandbox.calls" "$FAKE_DIR/docker.calls" "$FAKE_DIR/units" "$FAKE_DIR/runs" "$CHAIN" "$PROJ/logs/milestones"/*.log "$PROJ/.milestones/STATUS.md" "$PROJ/.milestones/config.local"; }
+reset() { rm -rf "$FAKE_DIR"/systemd-run.* "$FAKE_DIR/agent-sandbox.calls" "$FAKE_DIR/docker.calls" "$FAKE_DIR/units" "$FAKE_DIR/runs" "$CHAIN" "$PROJ/logs/milestones"/*.log "$PROJ/.milestones/STATUS.md" "$PROJ/.milestones/config.local" "$PROJ/.milestones/events.jsonl"; }
 argv_line() { tr '\n' ' ' < "$FAKE_DIR/systemd-run.argv" > "$FAKE_DIR/argv.line"; echo "$FAKE_DIR/argv.line"; }
 run_driver() { (cd "$PROJ" && "$DRIVER" "$@"); }
 
@@ -539,7 +539,14 @@ IR="$T/irepo"; BARE="$T/iremote.git"; ITMP="$T/itmp"
 ICHAIN="$IR/logs/milestones/chain.log"
 REAL_GIT="$(command -v git)"
 g() { git -C "$IR" "$@"; }
-iconfig() { printf '%s\n' 'REPORT_DIR=docs/reports' 'GATE="true"' "$@" > "$IR/.milestones/config"; }
+# iconfig writes the config, then the owner approves that gate definition at a terminal (approve_def), as
+# an owner does when configuring the gate: the delivery guard pushes only under an approved definition.
+iconfig() { printf '%s\n' 'REPORT_DIR=docs/reports' 'GATE="true"' "$@" > "$IR/.milestones/config"; approve_def "$IR"; }
+approve_def() {  # <checkout> [tmpdir]: approve 1 gate-definition typed at a pty in <checkout>
+  local out rc=0
+  out="$( (cd "$1" && TMPDIR="${2:-$ITMP}" pty_run "approve 1 gate-definition"$'\n' "$DRIVER" approve 1 gate-definition) 2>&1 )" || rc=$?
+  [[ "$rc" == 0 ]] || fail "approve_def in $1 exited $rc: $out"
+}
 # pty_run <input> <command...>: the command with a pseudo-terminal on stdin and stdout (how an
 # owner's terminal looks to it), <input> typed into it; output on stdout, the command's exit code.
 pty_run() {
@@ -629,8 +636,14 @@ sb_report() {  # id milestone [extra markdown]
   REPORT_BODY="$(printf '# Milestone %s report\n\nDone.\n%s' "$2" "${3:-}")" \
     sb_do "$1" "mkdir -p docs/reports && printf '%s\n' \"\$REPORT_BODY\" > docs/reports/milestone-$2.md" "milestone $2 report"
 }
-run_int() {  # integrate <args>; exit code in IRC; asserts no temporary worktree is left
+run_int() {  # integrate <args>; exit code in IRC; asserts no temporary worktree is left, and that a push was guarded
+  local r0; r0="$(git --git-dir="$BARE" rev-parse -q --verify main 2>/dev/null || true)"
   set +e; (cd "$IR" && TMPDIR="$ITMP" "$DRIVER" integrate "$@") > "$T/int.out" 2>&1; IRC=$?; set -e
+  local r1; r1="$(git --git-dir="$BARE" rev-parse -q --verify main 2>/dev/null || true)"
+  if [[ "$r1" != "$r0" ]]; then
+    grep -Eq "^delivery milestone=[0-9]+ push=$r1 evidence_sha=[0-9a-f]{40} tree=[0-9a-f]{40} gate_hash=[0-9a-f]{64} approved_gate_hash=[0-9a-f]{64} seal=[0-9a-f]{64} bundle=logs/milestones/evidence/[^ ]+ where=(host-integrate|sandbox-integration) produced_by=integrate at=" "$ICHAIN" \
+      && pass "the push of ${r1:0:12} was preceded by a seal and identity check in chain.log" || fail "a push of ${r1:0:12} with no delivery line in chain.log"
+  fi
   [[ "$(g worktree list | wc -l)" == 1 ]] && [[ -z "$(ls -A "$ITMP")" ]] && pass "no temporary worktree left" \
     || { g worktree list >&2; ls -A "$ITMP" >&2; fail "a temporary worktree or directory was left"; }
 }
@@ -654,7 +667,7 @@ assert_grep "irepo-0000000a" <(g log -1 --format=%B "$MERGE") "the merge message
 assert_grep "milestone 7" <(g log -1 --format=%B "$MERGE") "the merge message names the milestone"
 assert_grep "^gate pass exit=0 milestone=7 sha=$M12 $EVLINE dirty=no where=host-integrate setup=none steps=integration:0/0 replay:0/0 static:1/1 skipped:sandbox-only:0 env=\"-\" evidence=logs/milestones/evidence/7-host-integrate-[0-9T.]+ at=" "$ICHAIN" "host evidence line for the merge"
 assert_grep "^gate pass exit=0 milestone=7 sha=$M12 $EVLINE dirty=no where=host-integrate " "$IR/logs/milestones/milestone-7.gate.log" "evidence in the gate log"
-assert_eq "$(g show --name-only --format= HEAD)" ".milestones/STATUS.md" "the last commit touches only STATUS.md"
+assert_eq "$(g show --name-only --format= HEAD | tr '\n' ' ')" ".milestones/STATUS.md .milestones/acceptance/7.json .milestones/events.jsonl " "the last commit touches only STATUS.md, the acceptance record and the events ledger"
 g show HEAD:.milestones/STATUS.md > "$T/st" 2>/dev/null || : > "$T/st"
 assert_grep '^\| Milestone \| Lane \| Sandbox \| Merged \| Gate \| Unmet criteria \| Open blockers \| Next action \|$' "$T/st" "STATUS.md created with its header"
 assert_grep "^\| 7 \| main \| irepo-0000000a \| $M12 \| pass $M12 $EVLINE integration:0/0 replay:0/0 static:1/1 skipped:sandbox-only:0 [0-9]{4}-[0-9]{2}-[0-9]{2} \| - \| - \| - \|$" "$T/st" "row for milestone 7"
@@ -807,7 +820,7 @@ sb_do irepo-0000000a "echo 'app v2' > app.txt" "milestone 7 work"; sb_report ire
 sb_do irepo-0000000b "echo 'other' > other.txt" "milestone 8 work"; sb_report irepo-0000000b 8
 run_int irepo-0000000a
 [[ "$IRC" != 0 ]] && pass "milestone 7 fails its gate" || fail "milestone 7 passed"
-HEADA="$(g rev-parse HEAD)"; iconfig 'GATE="true"'
+iconfig 'GATE="true"'; HEADA="$(g rev-parse HEAD)"
 run_int irepo-0000000b
 assert_eq "$IRC" 2 "milestone 8 refused with 2"
 assert_eq "$(g rev-parse HEAD)" "$HEADA" "HEAD unchanged"
@@ -937,10 +950,10 @@ PRE="$(g rev-parse HEAD)"
 run_int irepo-0000000a
 assert_eq "$IRC" 2 "no GATE refused"; assert_grep '\bGATE\b' "$T/int.out" "names GATE"
 assert_eq "$(g rev-parse HEAD)" "$PRE" "nothing merged"
-iconfig; g branch -q --unset-upstream
+iconfig; g branch -q --unset-upstream; PRE="$(g rev-parse HEAD)"
 run_int irepo-0000000a
 assert_eq "$IRC" 2 "no upstream refused"; assert_grep 'upstream' "$T/int.out" "names the upstream"
-g branch -q -u origin/main
+g branch -q -u origin/main; g push -q 2>/dev/null   # the owner's gate-definition approval is pushed first
 git clone -q "$BARE" "$T/other" && git -C "$T/other" -c user.name=t -c user.email=t@t commit -q --allow-empty -m elsewhere && git -C "$T/other" push -q 2>/dev/null
 g fetch -q; rm -rf "$T/other"
 run_int irepo-0000000a
@@ -1167,7 +1180,7 @@ assert_eq "$IRC" 0 "a second project with the same definition exits 0"
 assert_eq "$(sed -n 's/^gate pass .* def=\([0-9a-f]*\) .*/\1/p' "$ICHAIN" 2>/dev/null | tail -n 1)" "${DEF:0:12}" "the same definition gives the same hash on a different tree"
 mk_irepo; istatus irepo-0000000a:7; iconfig 'GATE=""' "$U21_STEPS"
 sb_do irepo-0000000a "echo 'app v2' > app.txt" "milestone 7 work"; sb_report irepo-0000000a 7
-echo 'MAX_GATE_FAILURES=3' > "$IR/.milestones/config.local"
+echo 'MAX_GATE_FAILURES=3' > "$IR/.milestones/config.local"; approve_def "$IR"
 run_int irepo-0000000a
 assert_eq "$IRC" 0 "a run with a budget key exits 0"
 [[ "$(sed -n 's/^gate pass .* def=\([0-9a-f]*\) .*/\1/p' "$ICHAIN" 2>/dev/null | tail -n 1)" != "${DEF:0:12}" ]] && pass "config.local and a budget key change the definition hash" || fail "definition hash unchanged"
@@ -1196,8 +1209,9 @@ mk_irepo; istatus irepo-0000000a:7; rm -f "$T/pg-ran"
 iconfig 'GATE=""' "GATE_STEPS=(\"static|a|true\" \"integration|pg|touch $T/pg-ran|sandbox-only\")"
 sb_do irepo-0000000a "echo 'app v2' > app.txt" "milestone 7 work"; sb_report irepo-0000000a 7
 run_int irepo-0000000a
-assert_eq "$IRC" 0 "the host gate passes on the other steps ($(tail -n 2 "$T/int.out" | tr '\n' ' '))"
+assert_eq "$IRC" 2 "the host gate passes on the other steps, and the delivery guard refuses a bundle with a step not run ($(tail -n 2 "$T/int.out" | tr '\n' ' '))"
 assert_grep "^gate pass exit=0 milestone=7 .* steps=integration:0/1 replay:0/0 static:1/1 skipped:sandbox-only:1 " "$ICHAIN" "the skip is counted, not passed"
+assert_grep 'delivery guard: .*step pg was not run \(not run: sandbox-only\)' "$T/int.out" "the refusal names the step not run"
 EJ="$IR/$(bundle_of "$ICHAIN")/evidence.json"
 assert_eq "$(jq -r '.steps[1] | "\(.name):\(.status):\(.exit):\(.sandbox_only)"' "$EJ" 2>/dev/null)" "pg:not run: sandbox-only:null:true" "recorded not run: sandbox-only"
 [[ -e "$T/pg-ran" ]] && fail "the sandbox-only step ran on the host" || pass "the sandbox-only step did not run on the host"
@@ -1373,6 +1387,7 @@ EOF
 PB0="$(port_block 40)"; PB9=$(( PB0 + 39 ))
 iconfig "GATE=\"bash $T/portstep.sh a b\"" "GATE_PORT_RANGE=$PB0-$PB9"
 printf '%s\n' 'REPORT_DIR=docs/reports' "GATE=\"bash $T/portstep.sh b a\"" "GATE_PORT_RANGE=$PB0-$PB9" > "$IR2/.milestones/config"
+approve_def "$IR2" "$ITMP2"
 set +e
 (cd "$IR" && TMPDIR="$ITMP" "$DRIVER" integrate irepo-0000000a) > "$T/pa.out" 2>&1 & PA=$!
 (cd "$IR2" && TMPDIR="$ITMP2" "$DRIVER" integrate irepo-0000000a) > "$T/pb.out" 2>&1 & PB=$!
@@ -1739,8 +1754,9 @@ assert_not_grep 'unmet 7\.c1' "$T/int.out" "7.c1 is met by its bundle"
 assert_not_grep 'tracked changes|tree changed' "$T/int.out" "edits under .milestones/acceptance/ and .milestones/mutations/ do not trip the clean-tree checks"
 idrv accept 7 --criterion 7.c2 --evidence "bundle:$REL#rec:tests/test_app.py::test_report"
 assert_eq "$DRC" 0 "7.c2 accepted"
+g commit -q -m "acceptance evidence" -- .milestones/acceptance/7.json   # a metadata commit: the next gate's tree differs from the evidence tree only there
 run_int irepo-0000000a
-assert_eq "$IRC" 0 "every criterion has evidence on the gated tree: pushed ($(tail -n 2 "$T/int.out" | tr '\n' ' '))"
+assert_eq "$IRC" 0 "every criterion has evidence on the gated tree modulo metadata: pushed ($(tail -n 2 "$T/int.out" | tr '\n' ' '))"
 assert_eq "$(remote_head)" "$(g rev-parse HEAD)" "the remote has the STATUS commit"
 
 scenario "accept: a caught mutation citing the criterion is evidence; a missed one, one citing another criterion or one with a broken seal is not"
@@ -1802,13 +1818,16 @@ assert_eq "$(grep -c '^- approved ' "$APPR")" 2 "one entry per criterion"
 assert_eq "$(grep -Ec "$APPROVAL_RE" "$APPR")" 2 "entries in the documented line format"
 assert_grep '^- approved .* kind=criterion-waiver hit=- path=- blob=- hash=- criterion=7\.c2 budget=- confirm="approve 7 criterion-waiver"$' "$APPR" "the waiver entry names the criterion and the typed confirmation"
 echo "- approved by hand" >> "$APPR"
-iapprove 7 budget gate-failures
+iapprove 7 gate-definition
 assert_eq "$ARC" 2 "approve refuses while the approvals file has uncommitted edits"
 assert_grep "uncommitted edits" "$T/approve.out" "  because of the edits"
 g checkout -q -- .milestones/approvals/7.md
 iapprove 7 budget gate-failures
-assert_eq "$ARC" 0 "a budget approval"
-assert_grep '^- approved .* kind=budget hit=- path=- blob=- hash=- criterion=- budget=gate-failures confirm="approve 7 budget"$' "$APPR" "names the budget"
+assert_eq "$ARC" 2 "a budget approval names a budget"
+assert_grep "not a budget" "$T/approve.out" "  because gate-failures is no budget"
+iapprove 7 budget failed_gates
+assert_eq "$ARC" 2 "a budget approval is refused while the budget is not exhausted"
+assert_grep "not exhausted" "$T/approve.out" "  because nothing is exhausted"
 iapprove 7 gate-definition
 assert_eq "$ARC" 0 "a gate-definition approval"
 assert_grep '^- approved .* kind=gate-definition hit=- path=- blob=- hash=[0-9a-f]{64} criterion=- budget=- confirm="approve 7 gate-definition"$' "$APPR" "carries the definition hash"
@@ -1881,6 +1900,295 @@ for variant in base namestatus blob; do
   assert_not_grep '^gate ' "$ICHAIN" "($variant) no gate ran"
   assert_eq "$(remote_head)" "$RPRE" "($variant) nothing pushed"
 done
+
+# ================================================================ U8 evidence identity, the delivery guard and audit
+EVJ="$IR/.milestones/events.jsonl"
+STATUS_HDR='| Milestone | Lane | Sandbox | Merged | Gate | Unmet criteria | Open blockers | Next action |'
+ev() { jq -c "select($1)" "$EVJ" 2>/dev/null || true; }   # events matching a jq condition, one per line
+forge_bundle() {  # src-rel name jq-filter [unsealed]: a copy of a bundle, rewritten, sealed in chain.log unless "unsealed"
+  local s="$IR/$1" d="$IR/logs/milestones/evidence/$2"
+  rm -rf "$d"; cp -a "$s" "$d"
+  jq "$3" "$s/evidence.json" > "$d/evidence.json"
+  [[ "${4:-}" == unsealed ]] || echo "seal $(sha_of "$d/evidence.json") logs/milestones/evidence/$2" >> "$ICHAIN"
+  echo "logs/milestones/evidence/$2"
+}
+u8_repo() {  # milestone 7 merged, its host gate passed and sealed, acceptance not recorded: B1 is the bundle, MERGE the commit
+  mk_irepo nowaive; istatus irepo-0000000a:7; iconfig
+  sb_do irepo-0000000a "echo 'app v2' > app.txt" "milestone 7 work"; sb_report irepo-0000000a 7
+  run_int irepo-0000000a
+  [[ "$IRC" == 2 ]] || fail "u8_repo: the first integrate stops at acceptance (got $IRC: $(tail -n 3 "$T/int.out" | tr '\n' ' '))"
+  B1="$(bundle_of "$ICHAIN")"; MERGE="$(g rev-parse HEAD)"
+}
+u8_waive() { idrv accept 7 --init; iapprove 7 criterion-waiver 7.c1 7.c2; [[ "$DRC $ARC" == "0 0" ]] || fail "u8_waive: accept $DRC, approve $ARC"; }
+status_file() {  # a STATUS.md with milestone 7's row
+  printf '# Milestone status\n\n%s\n|---|---|---|---|---|---|---|---|\n| 7 | main | irepo-0000000a | - | - | - | - | %s |\n' "$STATUS_HDR" "$1" > "$IR/.milestones/STATUS.md"
+}
+
+scenario "delivery: --evidence with an empty criterion refuses; evidence on tree A with HEAD at tree B refuses; a justfile diff refuses; a metadata-only diff pushes with its seal and identity logged"
+u8_repo
+RPRE="$(remote_head)"; NGATE="$(grep -c '^gate ' "$ICHAIN")"
+run_int irepo-0000000a --evidence "$B1"
+assert_eq "$IRC" 2 "--evidence with a matching bundle and empty criteria refuses"
+assert_grep 'refused: acceptance incomplete' "$T/int.out" "  because acceptance is incomplete"
+echo 'MAX_FAILED_GATES_7=0' > "$IR/.milestones/config.local"
+run_int irepo-0000000a --evidence "$B1"
+assert_eq "$IRC" 2 "--evidence with a matching bundle and an exhausted budget refuses"
+assert_grep 'refused: budget failed_gates exhausted for milestone 7 \(0/0\)' "$T/int.out" "  naming the budget"
+rm -f "$IR/.milestones/config.local" "$IR/.milestones/STATUS.md"
+u8_waive; BASE="$(g rev-parse HEAD)"
+echo 'app v2, edited after the gate' > "$IR/app.txt"; g commit -q -am "code after the gate"
+run_int irepo-0000000a --evidence "$B1"
+assert_eq "$IRC" 2 "evidence from tree A with HEAD at tree B refuses"
+assert_grep 'delivery guard: .*outside the metadata allowlist: app\.txt' "$T/int.out" "  naming app.txt"
+assert_eq "$(remote_head)" "$RPRE" "  nothing pushed"
+assert_eq "$(ev '.type == "integrate"' | tail -n 1 | jq -r '[.result, .failure_class, .bundle] | join(" ")')" "fail report $B1" "  an integrate event records the refused attempt"
+g reset -q --hard "$BASE"
+status_file review; printf 'check:\n\ttrue\n' > "$IR/justfile"
+g add .milestones/STATUS.md justfile; g commit -q -m "status, and a justfile"
+iapprove 7 gate-config justfile   # the scan's approval: what refuses next is the delivery guard
+assert_eq "$ARC" 0 "  the justfile's gate-config approval"
+run_int irepo-0000000a --evidence "$B1"
+assert_eq "$IRC" 2 "a diff that also touches justfile refuses"
+assert_grep 'delivery guard: .*outside the metadata allowlist: justfile$' "$T/int.out" "  naming justfile and not STATUS.md"
+assert_eq "$(remote_head)" "$RPRE" "  nothing pushed"
+g reset -q --hard "$BASE"
+status_file review; printf '{"type": "stage", "change_id": "milestone:7", "stage": "supervisor-review", "at": "2026-09-17T00:00:00+00:00"}\n' >> "$EVJ"
+g add -f .milestones/STATUS.md .milestones/events.jsonl; g commit -q -m "review metadata after the gate"
+run_int irepo-0000000a --evidence "$B1"
+assert_eq "$IRC" 0 "HEAD differing from the evidence commit only in STATUS.md and events.jsonl pushes ($(tail -n 3 "$T/int.out" | tr '\n' ' '))"
+assert_eq "$(remote_head)" "$(g rev-parse HEAD)" "  the remote has the STATUS commit"
+assert_eq "$(grep -c '^gate ' "$ICHAIN")" "$NGATE" "  --evidence ran no gate"
+EJ="$IR/$B1/evidence.json"; TREE1="$(jq -r .tree "$EJ")"; DEF1="$(jq -r .definition_hash "$EJ")"; SEAL1="$(seal_in "$ICHAIN" "$B1")"
+assert_grep "^delivery milestone=7 push=$(g rev-parse HEAD) evidence_sha=$MERGE tree=$TREE1 gate_hash=$DEF1 approved_gate_hash=$DEF1 seal=$SEAL1 bundle=$B1 where=host-integrate produced_by=integrate at=" "$ICHAIN" "  chain.log names the seal and identity it checked"
+assert_eq "$(ev '.type == "push"' | tail -n 1 | jq -r '[.sha, .tree, .gate_hash, .approved_gate_hash, .seal, .bundle, .where, .produced_by, .evidence_sha] | join(" ")')" "$(g rev-parse HEAD) $TREE1 $DEF1 $DEF1 $SEAL1 $B1 host-integrate integrate $MERGE" "  a push event carries the identity"
+assert_eq "$(ev '.type == "integrate" and .result == "pass"' | tail -n 1 | jq -r '[.where, .bundle, .seal, .tree, .gate_hash, .sha] | join(" ")')" "host-integrate $B1 $SEAL1 $TREE1 $DEF1 $MERGE" "  an integrate pass event, committed with the STATUS row"
+g show HEAD:.milestones/events.jsonl 2>/dev/null | grep -q '"result": "pass"' && pass "  the pass event is in the STATUS commit" || fail "  the pass event is not committed"
+g show HEAD:.milestones/STATUS.md > "$T/st" 2>/dev/null || : > "$T/st"
+assert_grep "^\| 7 \| main \| irepo-0000000a \| ${MERGE:0:12} \| pass ${MERGE:0:12} tree=${TREE1:0:12} def=${DEF1:0:12} " "$T/st" "  the Merged cell is the evidence commit"
+
+scenario "audit: verified, unverified and pre-evidence rows; a broken seal is stale; nothing is written"
+INIT12="$(g rev-list --max-parents=0 HEAD | cut -c1-12)"
+cat >> "$IR/.milestones/STATUS.md" <<ROWS
+| 5 | main | irepo-00000005 | $INIT12 | pass $INIT12 2026-09-01 | - | - | - |
+| 8 | main | irepo-00000008 | $INIT12 | pre-evidence (backfilled) | - | - | - |
+| 9 | main | irepo-00000009 | - | - | - | - | launch |
+ROWS
+CSUM="$(sha_of "$ICHAIN")"; GST="$(g status --porcelain | sha256sum)"
+idrv audit
+assert_eq "$DRC" 0 "audit exits 0 ($(tail -n 3 "$T/drv.out" | tr '\n' ' '))"
+assert_grep "^milestone=7 merged=${MERGE:0:12} verdict=verified bundle=$B1 " "$T/drv.out" "the delivered row is verified"
+assert_grep "^milestone=5 merged=$INIT12 verdict=unverified bundle=- " "$T/drv.out" "a Merged commit with no evidence is unverified"
+assert_grep "^milestone=8 merged=$INIT12 verdict=pre-evidence " "$T/drv.out" "a backfilled row is pre-evidence"
+assert_eq "$(grep -c '^milestone=' "$T/drv.out")" 3 "one line per row that names a merged commit"
+assert_eq "$(sha_of "$ICHAIN") $(g status --porcelain | sha256sum)" "$CSUM $GST" "audit wrote nothing"
+echo ' ' >> "$IR/$B1/evidence.json"
+idrv audit
+assert_eq "$DRC" 0 "audit still exits 0"
+assert_grep "^milestone=7 merged=${MERGE:0:12} verdict=stale bundle=$B1 .*seal" "$T/drv.out" "a bundle that no longer matches its seal is stale"
+mv "$IR/.milestones/STATUS.md" "$T/status.away"
+idrv audit
+assert_eq "$DRC" 2 "audit with no STATUS.md cannot read and exits 2"
+mv "$T/status.away" "$IR/.milestones/STATUS.md"
+
+scenario "delivery: builder --gate, dirty check, mutate, sandbox-only-skip, dirty, failed, other-milestone and forged bundles are refused by --evidence; the genuine one pushes"
+u8_waive_repo() { u8_repo; u8_waive; }
+u8_waive_repo
+RPRE="$(remote_head)"
+for v in gate check mutate skip dirty failed other forged; do
+  case "$v" in
+    gate)   R="$(forge_bundle "$B1" f-gate '.produced_by = "gate" | .where = "sandbox"')"; want='produced by gate at sandbox' ;;
+    check)  R="$(forge_bundle "$B1" f-check '.produced_by = "check" | .where = "local" | .dirty = true')"; want='produced by check at local' ;;
+    mutate) R="$(forge_bundle "$B1" f-mutate '.produced_by = "mutate" | .where = "host-mutate"')"; want='produced by mutate at host-mutate' ;;
+    skip)   R="$(forge_bundle "$B1" f-skip '.steps += [{"index": 2, "name": "pg", "kind": "integration", "command": "true", "sandbox_only": true, "status": "not run: sandbox-only", "exit": null, "duration_ms": null, "log": null, "log_sha256": null}]')"; want='step pg was not run \(not run: sandbox-only\)' ;;
+    dirty)  R="$(forge_bundle "$B1" f-dirty '.dirty = true')"; want='is dirty' ;;
+    failed) R="$(forge_bundle "$B1" f-failed '.verdict = "fail" | .exit = 1')"; want='verdict fail' ;;
+    other)  R="$(forge_bundle "$B1" f-other '.milestone = "8"')"; want="milestone 8's bundle" ;;
+    forged) R="$(forge_bundle "$B1" f-forged .)"; jq '.verdict = "pass" | .dirty = false | .note = "edited after sealing"' "$IR/$R/evidence.json" > "$T/forged.json"; cp "$T/forged.json" "$IR/$R/evidence.json"; want='does not match its seal' ;;
+  esac
+  run_int irepo-0000000a --evidence "$R"
+  assert_eq "$IRC" 2 "($v) refused with 2"
+  assert_grep "delivery guard: .*$want" "$T/int.out" "($v) for the stated reason"
+  assert_eq "$(remote_head)" "$RPRE" "($v) nothing pushed"
+done
+run_int irepo-0000000a --evidence "logs/milestones/evidence/../evidence/$(basename "$B1")"
+assert_eq "$IRC" 2 "a bundle path outside the evidence directory is refused"
+run_int irepo-0000000a --evidence "$B1"
+assert_eq "$IRC" 0 "the genuine bundle pushes ($(tail -n 3 "$T/int.out" | tr '\n' ' '))"
+
+scenario "delivery: a stale gate definition refuses: config.local changed after the gate, a newer approved definition, a config change during the gate, a step dropped through config.local, no approval at all"
+u8_repo; u8_waive
+RPRE="$(remote_head)"
+echo 'MAX_HOURS=48' > "$IR/.milestones/config.local"
+run_int irepo-0000000a --evidence "$B1"
+assert_eq "$IRC" 2 "a config.local change after the gate refuses"
+assert_grep 'delivery guard: stale evidence: .*not the current definition' "$T/int.out" "  as stale against the live definition"
+rm -f "$IR/.milestones/config.local"
+iconfig 'SEED_PATHS="data/seed.txt"'
+run_int irepo-0000000a --evidence "$B1"
+assert_eq "$IRC" 2 "a newer approved definition refuses the older bundle"
+assert_grep 'delivery guard: stale evidence: .*not the latest owner-approved' "$T/int.out" "  as stale against the latest approval"
+assert_eq "$(remote_head)" "$RPRE" "  nothing pushed"
+mk_irepo; istatus irepo-0000000a:7
+printf 'echo "# edited by a step" >> %s/.milestones/config\n' "$IR" > "$T/chcfg.sh"
+iconfig "GATE=\"bash $T/chcfg.sh\""
+sb_do irepo-0000000a "echo 'app v2' > app.txt" "milestone 7 work"; sb_report irepo-0000000a 7
+RPRE="$(remote_head)"
+run_int irepo-0000000a
+assert_eq "$IRC" 2 "a config change during the gate refuses before any STATUS commit"
+assert_grep 'delivery guard: stale evidence: .*not the current definition' "$T/int.out" "  as stale"
+assert_eq "$(g log -1 --format=%s)" "Merge agent-sandbox/irepo-0000000a: milestone 7 (sandbox irepo-0000000a)" "  no STATUS commit"
+assert_eq "$(remote_head)" "$RPRE" "  nothing pushed"
+mk_irepo; istatus irepo-0000000a:7
+iconfig 'GATE=""' 'GATE_STEPS=("static|lint|true" "replay|rec|true")'
+sb_do irepo-0000000a "echo 'app v2' > app.txt" "milestone 7 work"; sb_report irepo-0000000a 7
+printf '%s\n' 'GATE_STEPS=("static|lint|true")' > "$IR/.milestones/config.local"
+RPRE="$(remote_head)"
+run_int irepo-0000000a
+assert_eq "$IRC" 2 "config.local dropping a step gives a definition hash with no approval, and the push refuses"
+assert_grep '^gate pass exit=0 milestone=7 .* steps=integration:0/0 replay:0/0 static:1/1 ' "$ICHAIN" "  the gate ran one step"
+assert_grep 'delivery guard: .*not the latest owner-approved' "$T/int.out" "  the refusal names the approval"
+assert_grep "approve 7 gate-definition" "$T/int.out" "  and prints the approve command"
+assert_eq "$(remote_head)" "$RPRE" "  nothing pushed"
+rm -f "$IR/.milestones/config.local"
+g rm -q .milestones/approvals/1.md; g commit -q -m "no gate-definition approval"
+run_int irepo-0000000a
+assert_eq "$IRC" 2 "with no gate-definition approval at all the push refuses"
+assert_grep 'delivery guard: no owner approval of a gate definition' "$T/int.out" "  saying none exists"
+assert_grep "approve 7 gate-definition" "$T/int.out" "  with the exact approve command"
+iapprove 7 gate-definition
+assert_eq "$ARC" 0 "  the owner approves it"
+run_int irepo-0000000a
+assert_eq "$IRC" 0 "  and the push proceeds ($(tail -n 3 "$T/int.out" | tr '\n' ' '))"
+
+scenario "delivery: integrate --evidence with a matching sandbox-integration bundle pushes without a new gate; a stale one refuses"
+mk_irepo nowaive; istatus irepo-0000000a:7; iconfig 'INTEGRATE_GATE_WHERE=sandbox'
+sb_do irepo-0000000a "echo 'app v2' > app.txt" "milestone 7 work"; sb_report irepo-0000000a 7
+export FAKE_RUN_CLONE=1 FAKE_RUN_ID=irepo-5b5b5b5b FAKE_ENTER_EXEC=1
+run_int irepo-0000000a
+unset FAKE_RUN_CLONE FAKE_RUN_ID FAKE_ENTER_EXEC
+assert_eq "$IRC" 2 "the sandbox-integration gate passes and acceptance stops the push"
+SB1="$(bundle_of "$ICHAIN")"; MERGE="$(g rev-parse HEAD)"
+assert_eq "$(jq -r '[.where, .produced_by, .sha] | join(" ")' "$IR/$SB1/evidence.json" 2>/dev/null)" "sandbox-integration integrate $MERGE" "  its bundle"
+u8_waive
+RPRE="$(remote_head)"; rm -f "$FAKE_DIR/agent-sandbox.calls"
+echo 'MAX_FINISHING_TURNS=5' > "$IR/.milestones/config.local"
+run_int irepo-0000000a --evidence "$SB1"
+assert_eq "$IRC" 2 "a stale sandbox-integration bundle refuses"
+assert_grep 'stale evidence' "$T/int.out" "  as stale"
+rm -f "$IR/.milestones/config.local"
+run_int irepo-0000000a --evidence "$SB1"
+assert_eq "$IRC" 0 "the matching bundle pushes ($(tail -n 3 "$T/int.out" | tr '\n' ' '))"
+assert_eq "$(remote_head)" "$(g rev-parse HEAD)" "  pushed"
+assert_not_grep '^(run|enter) ' "$FAKE_DIR/agent-sandbox.calls" "  no sandbox was created or entered"
+assert_grep "^delivery milestone=7 push=$(g rev-parse HEAD) evidence_sha=$MERGE .* seal=$(seal_in "$ICHAIN" "$SB1") bundle=$SB1 where=sandbox-integration produced_by=integrate " "$ICHAIN" "  the delivery line names the sandbox-integration bundle"
+
+scenario "delivery: an events.jsonl append during the gate does not trip the clean-tree check and is committed with the STATUS row"
+mk_irepo; istatus irepo-0000000a:7
+: > "$EVJ"; g add -f .milestones/events.jsonl; g commit -q -m "the events ledger"; g push -q 2>/dev/null
+printf 'printf "%%s\\n" %s >> %s\n' "'{\"type\": \"stage\", \"change_id\": \"milestone:7\", \"stage\": \"gate-probe\", \"at\": \"2026-09-17T00:00:00+00:00\"}'" "$EVJ" > "$T/evstep.sh"
+iconfig "GATE=\"bash $T/evstep.sh\""
+sb_do irepo-0000000a "echo 'app v2' > app.txt" "milestone 7 work"; sb_report irepo-0000000a 7
+run_int irepo-0000000a
+assert_eq "$IRC" 0 "integrate pushes ($(tail -n 3 "$T/int.out" | tr '\n' ' '))"
+assert_not_grep 'tracked changes|tree changed' "$T/int.out" "the append did not trip the clean-tree checks"
+assert_eq "$(g show --name-only --format= HEAD | tr '\n' ' ')" ".milestones/STATUS.md .milestones/acceptance/7.json .milestones/events.jsonl " "the STATUS commit holds only STATUS.md, the acceptance record and the events ledger"
+g show HEAD:.milestones/events.jsonl > "$T/evc" 2>/dev/null || : > "$T/evc"
+assert_grep '"stage": "gate-probe"' "$T/evc" "the line the step appended is committed"
+assert_grep '"type": "integrate".*"result": "pass"' "$T/evc" "with the integrate pass event"
+
+# ================================================================ U9 attempt budgets and escalation
+esc_row() { grep -E "^\| $1 \|" "$IR/.milestones/STATUS.md" 2>/dev/null || true; }
+
+scenario "budgets: a third failed gate, then a fourth attempt refuses, names the budget, keeps sandbox and bundles, escalates; every guarded verb refuses; exhaustion never passes"
+mk_irepo; istatus irepo-0000000a:7; iconfig 'GATE="false"'
+sb_do irepo-0000000a "echo 'app v2' > app.txt" "milestone 7 work"; sb_report irepo-0000000a 7
+for i in 1 2 3; do
+  run_int irepo-0000000a
+  assert_eq "$IRC" 1 "failed gate $i exits 1"
+  [[ "$i" != 2 ]] || { iapprove 7 budget failed_gates; assert_eq "$ARC" 2 "  a budget approval before exhaustion is refused"; }
+done
+assert_eq "$(ev '.type == "integrate" and .result == "fail"' | wc -l)" 3 "three integrate fail events"
+assert_eq "$(ev '.type == "integrate"' | tail -n 1 | jq -r '[.where, .failure_class, .failure_class_source, .failed_step, (.bundle | test("^logs/milestones/evidence/")), (.seal | length), (.tree | length), (.gate_hash | length)] | map(tostring) | join(" ")')" "host-integrate code rule gate true 64 40 64" "each names where, the rule's class, the failed step, the bundle, seal, tree and gate hash"
+NB="$(find "$IR/logs/milestones/evidence" -mindepth 1 -maxdepth 1 | wc -l)"; RPRE="$(remote_head)"; rm -f "$FAKE_DIR/agent-sandbox.calls" "$FAKE_DIR/systemd-run.count"
+run_int irepo-0000000a
+assert_eq "$IRC" 2 "the fourth attempt refuses"
+assert_grep 'refused: budget failed_gates exhausted for milestone 7 \(3/3\)' "$T/int.out" "  naming the budget, count and limit"
+assert_grep "approve 7 budget failed_gates" "$T/int.out" "  and the owner's approve command"
+assert_eq "$(grep -c '^gate ' "$ICHAIN")" 3 "  no fourth gate ran"
+assert_eq "$(find "$IR/logs/milestones/evidence" -mindepth 1 -maxdepth 1 | wc -l)" "$NB" "  the bundles are kept"
+g rev-parse -q --verify refs/heads/agent-sandbox/irepo-0000000a > /dev/null && pass "  the sandbox branch is kept" || fail "  the sandbox branch is gone"
+assert_not_grep '^(rm|run) ' "$FAKE_DIR/agent-sandbox.calls" "  no sandbox removed or created"
+assert_eq "$(esc_row 7)" "| 7 | main | irepo-0000000a | - | - | - | - | ESCALATED: failed_gates exhausted (3/3); owner approval needed: approve 7 budget failed_gates |" "  STATUS.md escalates in Next action"
+assert_eq "$(ev '.type == "budget" and .action == "exhausted"' | tail -n 1 | jq -r '[.budget, .count, .limit] | map(tostring) | join(" ")')" "failed_gates 3 3" "  a budget exhausted event"
+for v in continue gate launch mutate; do
+  case "$v" in
+    continue) idrv 7 --sandbox irepo-0000000a --continue "fix the gate" ;;
+    gate)     idrv 7 --sandbox irepo-0000000a --gate ;;
+    launch)   idrv 7 ;;
+    mutate)   idrv mutate 7 "$(mk_patch b9 app.txt 'app v2' 'app v3')" --sandbox irepo-0000000a ;;
+  esac
+  assert_eq "$DRC" 2 "  $v refuses too"
+  assert_grep 'budget failed_gates exhausted' "$T/drv.out" "  $v names the budget"
+done
+[[ -f "$FAKE_DIR/systemd-run.count" ]] && fail "  a unit was launched" || pass "  no unit launched"
+iconfig 'GATE="true"'
+run_int irepo-0000000a
+assert_eq "$IRC" 2 "a gate that would now pass is still refused"
+assert_not_grep '^gate pass' "$ICHAIN" "  exhaustion never produces a pass verdict"
+assert_eq "$(esc_row 7 | cut -d'|' -f5 | tr -d ' ')" "-" "  nor a STATUS Merged cell"
+assert_eq "$(remote_head)" "$RPRE" "  nothing pushed"
+
+scenario "budgets: an owner budget approval allows exactly one more attempt, and the event references the approval"
+iconfig 'GATE="false"'
+iapprove 7 budget failed_gates
+assert_eq "$ARC" 0 "the owner approves one more failed gate ($(tail -n 2 "$T/approve.out" | tr '\n' ' '))"
+assert_grep '^- approved .* milestone=7 kind=budget hit=- path=- blob=- hash=- criterion=- budget=failed_gates confirm="approve 7 budget"$' "$APPR" "  in the documented line format"
+run_int irepo-0000000a
+assert_eq "$IRC" 1 "the one more attempt runs its gate (and fails)"
+assert_eq "$(ev '.type == "budget" and .action == "extra-attempt"' | tail -n 1 | jq -r '[.budget, (.approval | test("approvals/7\\.md"))] | map(tostring) | join(" ")')" "failed_gates true" "  a budget extra-attempt event references the approval"
+run_int irepo-0000000a
+assert_eq "$IRC" 2 "the attempt after it refuses again"
+assert_grep 'budget failed_gates exhausted for milestone 7 \(4/4\)' "$T/int.out" "  at 4 of 4"
+
+scenario "budgets: a failure event removed by git reset --hard does not reset the count"
+mk_irepo; istatus irepo-0000000a:7; iconfig 'GATE="false"'
+sb_do irepo-0000000a "echo 'app v2' > app.txt" "milestone 7 work"; sb_report irepo-0000000a 7
+run_int irepo-0000000a; run_int irepo-0000000a
+g add -f .milestones/events.jsonl; g commit -q -m "events so far"
+run_int irepo-0000000a
+assert_eq "$IRC" 1 "the third gate fails"
+g reset -q --hard HEAD
+assert_eq "$(ev '.type == "integrate" and .result == "fail"' | wc -l)" 2 "the reset dropped the third failure event"
+run_int irepo-0000000a
+assert_eq "$IRC" 2 "chain.log still counts three: refused"
+assert_grep 'budget failed_gates exhausted for milestone 7 \(3/3\)' "$T/int.out" "  at 3 of 3"
+assert_eq "$(ev '.type == "budget" and .action == "warning"' | tail -n 1 | jq -r '[.budget, .events_count, .chain_count] | map(tostring) | join(" ")')" "failed_gates 2 3" "  a warning event records the disagreement"
+
+scenario "budgets: finishing turns and wall hours; _N overrides; the budget keys are in config"
+mk_irepo; istatus irepo-0000000a:7
+for i in 1 2 3; do idrv 7 --sandbox irepo-0000000a --continue "turn $i"; assert_eq "$DRC" 0 "continue $i launches"; done
+assert_eq "$(ev '.type == "stage" and .stage == "finishing-turn"' | wc -l)" 3 "three finishing-turn events"
+idrv 7 --sandbox irepo-0000000a --continue "turn 4"
+assert_eq "$DRC" 2 "a fourth continue refuses"
+assert_grep 'budget finishing_turns exhausted for milestone 7 \(3/3\)' "$T/drv.out" "  naming finishing_turns"
+echo 'MAX_FINISHING_TURNS_7=4' > "$IR/.milestones/config.local"
+idrv config 7
+assert_grep '^MAX_FINISHING_TURNS=4$' "$T/drv.out" "config 7 prints the _7 override"
+assert_grep '^MAX_FAILED_GATES=3$' "$T/drv.out" "  and the defaults"
+assert_grep '^MAX_HOURS=24$' "$T/drv.out" "  for every budget"
+idrv 7 --sandbox irepo-0000000a --continue "turn 4"
+assert_eq "$DRC" 0 "MAX_FINISHING_TURNS_7=4 allows a fourth"
+rm -f "$IR/.milestones/config.local"
+echo "=== launch milestone 5 as milestone-irepo-5-20260915T000000: $(date -Is -d '-30 hours') ===" >> "$ICHAIN"
+idrv 5 --sandbox irepo-0000000b --continue "late"
+assert_eq "$DRC" 2 "30 hours after its first launch milestone 5 refuses"
+assert_grep 'budget wall_hours exhausted for milestone 5 \(30\.[0-9]/24\)' "$T/drv.out" "  naming wall_hours"
+iapprove 5 budget wall_hours
+assert_eq "$ARC" 0 "the owner approves more time"
+idrv 5 --sandbox irepo-0000000b --continue "late, approved"
+assert_eq "$DRC" 0 "  one more attempt launches"
+idrv 5 --sandbox irepo-0000000b --continue "late again"
+assert_eq "$DRC" 2 "  the next refuses"
 
 # ================================================================ U8 init
 NR_="$T/newrepo"
