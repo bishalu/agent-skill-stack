@@ -92,8 +92,8 @@ pass() { echo "PASS: $*"; }
 FAILS=0
 # KEEP_GOING=1 records a failure and carries on, to see every red scenario in one run.
 fail() { echo "FAIL: $*" >&2; [[ -n "${KEEP_GOING:-}" ]] || exit 1; FAILS=$((FAILS + 1)); }
-assert_grep() { grep -Eq -- "$1" "$2" && pass "$3" || { echo "--- $2:" >&2; cat "$2" >&2; fail "$3 (no match for '$1')"; }; }
-assert_not_grep() { grep -Eq -- "$1" "$2" && { echo "--- $2:" >&2; cat "$2" >&2; fail "$3 (unexpected match for '$1')"; } || pass "$3"; }
+assert_grep() { grep -Eq -- "$1" "$2" && pass "$3" || { echo "--- $2:" >&2; cat "$2" >&2 || true; fail "$3 (no match for '$1')"; }; }
+assert_not_grep() { grep -Eq -- "$1" "$2" && { echo "--- $2:" >&2; cat "$2" >&2 || true; fail "$3 (unexpected match for '$1')"; } || pass "$3"; }
 assert_eq() { [[ "$1" == "$2" ]] && pass "$3" || fail "$3 (got '$1', want '$2')"; }
 reset() { rm -rf "$FAKE_DIR"/systemd-run.* "$FAKE_DIR/agent-sandbox.calls" "$FAKE_DIR/docker.calls" "$FAKE_DIR/units" "$FAKE_DIR/runs" "$CHAIN" "$PROJ/logs/milestones"/*.log "$PROJ/.milestones/STATUS.md" "$PROJ/.milestones/config.local"; }
 argv_line() { tr '\n' ' ' < "$FAKE_DIR/systemd-run.argv" > "$FAKE_DIR/argv.line"; echo "$FAKE_DIR/argv.line"; }
@@ -464,6 +464,367 @@ run_driver config 5 > "$T/cfg19" 2>&1 || fail "config 5 exited $?"
 assert_grep '^MEMORY=16g$' "$T/cfg19" "config.local's MEMORY wins"
 cp "$T/config.base" "$PROJ/.milestones/config"; rm -f "$PROJ/.milestones/config.local"
 
+
+# ================================================================ U3 fixtures: integrate
+# A real repository with a bare remote. Sandbox branches are made with `git switch` in
+# the host checkout, so the only worktree an integrate may add is its temporary one.
+IR="$T/irepo"; BARE="$T/iremote.git"; ITMP="$T/itmp"
+ICHAIN="$IR/logs/milestones/chain.log"
+REAL_GIT="$(command -v git)"
+g() { git -C "$IR" "$@"; }
+iconfig() { printf '%s\n' 'REPORT_DIR=docs/reports' 'GATE="true"' "$@" > "$IR/.milestones/config"; }
+mk_irepo() {
+  rm -rf "$IR" "$BARE" "$ITMP"; mkdir -p "$ITMP"
+  git init -q --bare -b main "$BARE"
+  git init -q -b main "$IR"
+  g config user.name t; g config user.email t@t
+  mkdir -p "$IR/.milestones" "$IR/docs/reports" "$IR/tests" "$IR/web/__snapshots__" "$IR/data"
+  printf 'logs/\n.milestones/config\n.milestones/config.local\ndata/\n' > "$IR/.gitignore"
+  printf 'def test_a():\n    x = 3\n    assert x == 3\n' > "$IR/tests/test_a.py"
+  printf 'exports[`x`] = `one`;\n' > "$IR/web/__snapshots__/x.snap"
+  printf 'app v1\n' > "$IR/app.txt"
+  g add -A; g commit -q -m init
+  g remote add origin "$BARE"; g push -q -u origin main 2>/dev/null
+  echo seed > "$IR/data/seed.txt"
+  iconfig
+}
+istatus() {  # id:milestone ... (an empty milestone leaves the record untagged)
+  local rows=() e
+  for e in "$@"; do
+    if [[ -n "${e#*:}" ]]; then rows+=("{\"sandbox_id\": \"${e%%:*}\", \"tags\": {\"milestone\": \"${e#*:}\", \"lane\": \"main\"}}")
+    else rows+=("{\"sandbox_id\": \"${e%%:*}\", \"tags\": {}}"); fi
+  done
+  (IFS=,; echo "[${rows[*]}]") > "$FAKE_DIR/status.json"
+}
+sb_branch() { g rev-parse -q --verify "refs/heads/agent-sandbox/$1" > /dev/null || g branch -q "agent-sandbox/$1" origin/main; }
+sb_do() {  # id "shell in the checkout" message: one commit on agent-sandbox/<id>
+  sb_branch "$1"; g switch -q "agent-sandbox/$1"
+  (cd "$IR" && bash -c "$2") && g add -A && g commit -q -m "$3"
+  g switch -q main
+}
+sb_report() {  # id milestone [extra markdown]
+  REPORT_BODY="$(printf '# Milestone %s report\n\nDone.\n%s' "$2" "${3:-}")" \
+    sb_do "$1" "printf '%s\n' \"\$REPORT_BODY\" > docs/reports/milestone-$2.md" "milestone $2 report"
+}
+run_int() {  # integrate <args>; exit code in IRC; asserts no temporary worktree is left
+  set +e; (cd "$IR" && TMPDIR="$ITMP" "$DRIVER" integrate "$@") > "$T/int.out" 2>&1; IRC=$?; set -e
+  [[ "$(g worktree list | wc -l)" == 1 ]] && [[ -z "$(ls -A "$ITMP")" ]] && pass "no temporary worktree left" \
+    || { g worktree list >&2; ls -A "$ITMP" >&2; fail "a temporary worktree or directory was left"; }
+}
+remote_head() { git --git-dir="$BARE" rev-parse main; }
+int_out() { cat "$T/int.out" "$ICHAIN" 2>/dev/null > "$T/int.all"; echo "$T/int.all"; }
+
+# ================================================================ U3.1 happy path
+scenario "integrate: a passing host gate merges, records STATUS.md and pushes"
+mk_irepo; istatus irepo-0000000a:7
+sb_do irepo-0000000a "echo 'app v2' > app.txt" "milestone 7 work"
+sb_report irepo-0000000a 7
+echo scratch > "$IR/notes.tmp"   # untracked, not ignored: allowed
+PRE="$(g rev-parse HEAD)"
+run_int irepo-0000000a
+assert_eq "$IRC" 0 "integrate exits 0 ($(tail -n 3 "$T/int.out" | tr '\n' ' '))"
+MERGE="$(g rev-list --merges -n 1 HEAD)"; M12="${MERGE:0:12}"
+[[ -n "$MERGE" ]] && pass "a merge commit exists" || fail "no merge commit"
+assert_eq "$(g rev-parse HEAD^)" "$MERGE" "the STATUS commit sits directly on the merge"
+assert_eq "$(g rev-parse "$MERGE^1")" "$PRE" "the merge's first parent is the pre-merge head"
+assert_grep "irepo-0000000a" <(g log -1 --format=%B "$MERGE") "the merge message names the sandbox"
+assert_grep "milestone 7" <(g log -1 --format=%B "$MERGE") "the merge message names the milestone"
+assert_grep "^gate pass exit=0 milestone=7 sha=$M12 where=host setup=none env=\"-\" at=" "$ICHAIN" "host evidence line for the merge"
+assert_grep "^gate pass exit=0 milestone=7 sha=$M12 where=host " "$IR/logs/milestones/milestone-7.gate.log" "evidence in the gate log"
+assert_eq "$(g show --name-only --format= HEAD)" ".milestones/STATUS.md" "the last commit touches only STATUS.md"
+g show HEAD:.milestones/STATUS.md > "$T/st" 2>/dev/null || : > "$T/st"
+assert_grep '^\| Milestone \| Lane \| Sandbox \| Merged \| Gate \| Unmet criteria \| Open blockers \| Next action \|$' "$T/st" "STATUS.md created with its header"
+assert_grep "^\| 7 \| main \| irepo-0000000a \| $M12 \| pass $M12 [0-9]{4}-[0-9]{2}-[0-9]{2} \| - \| - \| - \|$" "$T/st" "row for milestone 7"
+assert_eq "$(remote_head)" "$(g rev-parse HEAD)" "the remote's main equals the local head"
+assert_grep "pushed .*$(g rev-parse --short=12 HEAD)" "$ICHAIN" "the pushed sha is logged"
+assert_grep "pre-merge $PRE" "$ICHAIN" "the pre-merge sha is logged"
+
+# ================================================================ U3.2 gate failure
+scenario "integrate: a failing gate keeps the merge local and pushes nothing"
+mk_irepo; istatus irepo-0000000a:7; iconfig 'GATE="false"'
+sb_do irepo-0000000a "echo 'app v2' > app.txt" "milestone 7 work"
+PRE="$(g rev-parse HEAD)"; RPRE="$(remote_head)"
+run_int irepo-0000000a
+[[ "$IRC" != 0 ]] && pass "integrate exits non-zero ($IRC)" || fail "failed gate exited 0"
+assert_eq "$(remote_head)" "$RPRE" "the remote is unchanged"
+assert_grep '^gate FAIL exit=1 milestone=7 sha=[0-9a-f]{12} where=host setup=none ' "$ICHAIN" "gate FAIL evidence"
+assert_grep "pre-merge $PRE" "$ICHAIN" "the pre-merge sha is logged"
+assert_grep "git reset --hard $PRE" "$ICHAIN" "the reset hint is logged"
+assert_eq "$(g rev-list --merges --count origin/main..HEAD)" 1 "the merge commit stays local"
+[[ -f "$IR/.milestones/STATUS.md" ]] && fail "STATUS.md written on a failed gate" || pass "no STATUS.md on a failed gate"
+
+# ================================================================ U3.3 setup failure
+scenario "integrate: a failing GATE_SETUP refuses the push and names setup"
+mk_irepo; istatus irepo-0000000a:7; iconfig 'GATE_SETUP="false"' 'GATE="touch gate-ran"'
+sb_do irepo-0000000a "echo 'app v2' > app.txt" "milestone 7 work"
+RPRE="$(remote_head)"
+run_int irepo-0000000a
+[[ "$IRC" != 0 ]] && pass "integrate exits non-zero ($IRC)" || fail "setup failure exited 0"
+assert_eq "$(remote_head)" "$RPRE" "the remote is unchanged"
+assert_grep '^gate FAIL exit=1 milestone=7 .* where=host setup=yes ' "$ICHAIN" "FAIL evidence with setup=yes"
+assert_grep 'milestone 7: host gate FAILED .*setup' "$ICHAIN" "the log names setup"
+
+# ================================================================ U3.4 re-run after a fix
+scenario "integrate: a re-run on the already-merged branch pushes without a second merge"
+mk_irepo; istatus irepo-0000000a:7; iconfig 'GATE="false"'
+sb_do irepo-0000000a "echo 'app v2' > app.txt" "milestone 7 work"
+run_int irepo-0000000a
+[[ "$IRC" != 0 ]] && pass "first run fails its gate" || fail "first run passed"
+echo "fix" >> "$IR/app.txt"; g commit -q -am "fix forward on the integration branch"
+iconfig 'GATE="true"'
+run_int irepo-0000000a
+assert_eq "$IRC" 0 "the re-run exits 0 ($(tail -n 3 "$T/int.out" | tr '\n' ' '))"
+assert_eq "$(git --git-dir="$BARE" rev-list --merges --count main)" 1 "exactly one merge commit reached the remote"
+assert_eq "$(remote_head)" "$(g rev-parse HEAD)" "the remote's main equals the local head"
+assert_grep 'already merged' "$ICHAIN" "the re-run says the branch is already merged"
+assert_grep "^gate pass exit=0 milestone=7 sha=$(g rev-parse --short=12 HEAD^) where=host " "$ICHAIN" "the gated sha is the fix commit under the STATUS commit"
+
+# ================================================================ U3.5 merge conflict
+scenario "integrate: a merge conflict aborts, leaves a clean tree, pushes nothing"
+mk_irepo; istatus irepo-0000000a:7
+sb_do irepo-0000000a "echo 'app sandbox' > app.txt" "milestone 7 work"
+echo 'app host' > "$IR/app.txt"; g commit -q -am "host change"; g push -q 2>/dev/null
+PRE="$(g rev-parse HEAD)"; RPRE="$(remote_head)"
+run_int irepo-0000000a
+assert_eq "$IRC" 2 "integrate refuses with 2"
+assert_eq "$(g status --porcelain --untracked-files=no)" "" "the working tree is clean"
+[[ -e "$IR/.git/MERGE_HEAD" ]] && fail "a merge is still in progress" || pass "no merge in progress"
+assert_eq "$(g rev-parse HEAD)" "$PRE" "HEAD is the pre-merge head"
+assert_eq "$(remote_head)" "$RPRE" "the remote is unchanged"
+assert_grep 'conflict' "$(int_out)" "the refusal names the conflict"
+
+# ================================================================ U3.6 dirty host tree
+scenario "integrate: a modified tracked file refuses before merging"
+mk_irepo; istatus irepo-0000000a:7
+sb_do irepo-0000000a "echo 'app v2' > app.txt" "milestone 7 work"
+PRE="$(g rev-parse HEAD)"; echo "local edit" >> "$IR/tests/test_a.py"
+run_int irepo-0000000a
+assert_eq "$IRC" 2 "integrate refuses with 2"
+assert_eq "$(g rev-parse HEAD)" "$PRE" "nothing merged"
+assert_grep 'tracked changes' "$(int_out)" "the refusal names tracked changes"
+
+# ================================================================ U3.7 wrong branch
+scenario "integrate: INTEGRATION_BRANCH=main while on another branch refuses"
+mk_irepo; istatus irepo-0000000a:7; iconfig 'INTEGRATION_BRANCH=main'
+sb_do irepo-0000000a "echo 'app v2' > app.txt" "milestone 7 work"
+g switch -q -c feature; g push -q -u origin feature 2>/dev/null
+PRE="$(g rev-parse HEAD)"
+run_int irepo-0000000a
+assert_eq "$IRC" 2 "integrate refuses with 2"
+assert_eq "$(g rev-parse HEAD)" "$PRE" "nothing merged"
+assert_grep "INTEGRATION_BRANCH.*main" "$(int_out)" "the refusal names the integration branch"
+
+# ================================================================ U3.8 weakening: skip marker
+scenario "integrate: an added skip marker needs its path in the report's expectation-changes section"
+for variant in none other listed; do
+  mk_irepo; istatus irepo-0000000a:7
+  sb_do irepo-0000000a "sed -i '1i import pytest\n@pytest.mark.skip' tests/test_a.py" "skip a test"
+  case "$variant" in
+    none)   sb_report irepo-0000000a 7 ;;
+    other)  sb_report irepo-0000000a 7 $'\n## Notes\n\ntests/test_a.py was touched.\n\n## Test expectation changes\n\n- tests/test_b.py: reason\n\n## After\n\nnothing\n' ;;
+    listed) sb_report irepo-0000000a 7 $'\n## Test expectation changes\n\n- tests/test_a.py: skipped because the fixture moved\n' ;;
+  esac
+  RPRE="$(remote_head)"
+  run_int irepo-0000000a
+  if [[ "$variant" == listed ]]; then
+    assert_eq "$IRC" 0 "($variant) the listed path proceeds ($(tail -n 3 "$T/int.out" | tr '\n' ' '))"
+    assert_eq "$(remote_head)" "$(g rev-parse HEAD)" "($variant) pushed"
+  else
+    assert_eq "$IRC" 2 "($variant) refused with 2"
+    assert_grep '^    skip-marker tests/test_a\.py$' "$T/int.out" "($variant) the refusal names the skip marker's file"
+    assert_eq "$(remote_head)" "$RPRE" "($variant) nothing pushed"
+    assert_grep "pre-merge [0-9a-f]{40}" "$ICHAIN" "($variant) the pre-merge sha is logged"
+  fi
+done
+
+# ================================================================ U3.9 loosened assertion
+scenario "integrate: rewriting assert x == 3 to assert x >= 3 is a hit through the removed line"
+mk_irepo; istatus irepo-0000000a:7
+sb_do irepo-0000000a "sed -i 's/assert x == 3/assert x >= 3/' tests/test_a.py" "loosen"
+sb_report irepo-0000000a 7
+run_int irepo-0000000a
+assert_eq "$IRC" 2 "refused with 2"
+assert_grep '^    removed-assert tests/test_a\.py$' "$T/int.out" "the refusal names the file as a removed assertion"
+
+# ================================================================ U3.10 deleted test
+scenario "integrate: deleting tests/test_a.py is a hit"
+mk_irepo; istatus irepo-0000000a:7
+sb_do irepo-0000000a "git rm -q tests/test_a.py" "drop a test"
+sb_report irepo-0000000a 7
+run_int irepo-0000000a
+assert_eq "$IRC" 2 "refused with 2"
+assert_grep '^    deleted-test tests/test_a\.py$' "$T/int.out" "the refusal names the deleted test"
+
+# ================================================================ U3.11 re-run scan
+scenario "integrate: a re-run scans the whole unpushed range, fix commits included"
+mk_irepo; istatus irepo-0000000a:7; iconfig 'GATE="false"'
+sb_do irepo-0000000a "echo 'app v2' > app.txt" "milestone 7 work"
+sb_report irepo-0000000a 7
+run_int irepo-0000000a
+[[ "$IRC" != 0 ]] && pass "first run fails its gate" || fail "first run passed"
+sed -i '1i import pytest\n@pytest.mark.skip' "$IR/tests/test_a.py"; g commit -q -am "fix: skip the flaky test"
+iconfig 'GATE="true"'; RPRE="$(remote_head)"
+run_int irepo-0000000a
+assert_eq "$IRC" 2 "the re-run refuses"
+assert_grep '^    skip-marker tests/test_a\.py$' "$T/int.out" "the refusal names the fix commit's skip marker"
+assert_eq "$(remote_head)" "$RPRE" "nothing pushed"
+
+# ================================================================ U3.12 another milestone's kept merge
+scenario "integrate: milestone 8 refuses while milestone 7's failed merge is kept"
+mk_irepo; istatus irepo-0000000a:7 irepo-0000000b:8; iconfig 'GATE="false"'
+sb_do irepo-0000000a "echo 'app v2' > app.txt" "milestone 7 work"
+sb_do irepo-0000000b "echo 'other' > other.txt" "milestone 8 work"
+run_int irepo-0000000a
+[[ "$IRC" != 0 ]] && pass "milestone 7 fails its gate" || fail "milestone 7 passed"
+HEADA="$(g rev-parse HEAD)"; iconfig 'GATE="true"'
+run_int irepo-0000000b
+assert_eq "$IRC" 2 "milestone 8 refused with 2"
+assert_eq "$(g rev-parse HEAD)" "$HEADA" "HEAD unchanged"
+g merge-base --is-ancestor agent-sandbox/irepo-0000000b HEAD && fail "milestone 8 was merged" || pass "milestone 8 not merged"
+assert_grep 'ahead of' "$(int_out)" "the refusal says the branch is ahead of its upstream"
+
+# ================================================================ U3.13 seed isolation
+scenario "integrate: GATE_SETUP writes only the temporary worktree's seed copy"
+mk_irepo; istatus irepo-0000000a:7
+iconfig 'SEED_PATHS="data/seed.txt data/missing"' 'GATE_SETUP="echo more >> data/seed.txt"' 'GATE="grep -q more data/seed.txt"' 'GATE_ENV="head -c 4 data/seed.txt; echo"'
+sb_do irepo-0000000a "echo 'app v2' > app.txt" "milestone 7 work"
+cp "$IR/data/seed.txt" "$T/seed.before"
+run_int irepo-0000000a
+assert_eq "$IRC" 0 "integrate exits 0 ($(tail -n 3 "$T/int.out" | tr '\n' ' '))"
+cmp -s "$T/seed.before" "$IR/data/seed.txt" && pass "the host's seed file is byte-identical" || fail "the host's seed file changed"
+assert_grep '^gate pass exit=0 milestone=7 .* where=host setup=yes env="seed" ' "$ICHAIN" "setup ran on the copy and GATE_ENV was probed there"
+
+# ================================================================ U3.14 snapshot
+scenario "integrate: a changed snapshot baseline is a hit"
+mk_irepo; istatus irepo-0000000a:7
+sb_do irepo-0000000a "echo 'exports[\`x\`] = \`two\`;' > web/__snapshots__/x.snap" "rebaseline"
+sb_report irepo-0000000a 7
+run_int irepo-0000000a
+assert_eq "$IRC" 2 "refused with 2"
+assert_grep '^    snapshot web/__snapshots__/x\.snap$' "$T/int.out" "the refusal names the snapshot"
+
+# ================================================================ U3.15 evaluation record
+scenario "integrate: EVALUATE_7=1 needs a committed evaluation-7.md with no owner action left"
+for variant in missing owner present; do
+  mk_irepo; istatus irepo-0000000a:7; iconfig 'EVALUATE_7=1'
+  sb_do irepo-0000000a "echo 'app v2' > app.txt" "milestone 7 work"
+  case "$variant" in
+    owner)   sb_do irepo-0000000a "printf '# Evaluation 7\n\n- criterion 3: Owner Action Required (Spotify sign-in)\n' > .milestones/evaluation-7.md" "evaluation" ;;
+    present) # the supervisor's record committed on the integration branch: a .milestones/-only commit
+             printf '# Evaluation 7\n\n- criterion 3: reproduced, passes\n' > "$IR/.milestones/evaluation-7.md"
+             g add .milestones/evaluation-7.md; g commit -q -m "evaluation 7" ;;
+  esac
+  RPRE="$(remote_head)"
+  run_int irepo-0000000a
+  if [[ "$variant" == present ]]; then
+    assert_eq "$IRC" 0 "($variant) proceeds ($(tail -n 3 "$T/int.out" | tr '\n' ' '))"
+    assert_eq "$(remote_head)" "$(g rev-parse HEAD)" "($variant) pushed"
+  else
+    assert_eq "$IRC" 2 "($variant) refused with 2"
+    assert_grep 'evaluation-7\.md' "$T/int.out" "($variant) the refusal names the evaluation record"
+    assert_eq "$(remote_head)" "$RPRE" "($variant) nothing pushed"
+  fi
+done
+
+# ================================================================ U3.16 STATUS upsert
+scenario "integrate: an existing row keeps the supervisor's cells while the gate cells update"
+mk_irepo; istatus irepo-0000000a:7
+cat > "$IR/.milestones/STATUS.md" <<'EOF'
+# Milestone status
+
+| Milestone | Lane | Sandbox | Merged | Gate | Unmet criteria | Open blockers | Next action |
+|---|---|---|---|---|---|---|---|
+| 6 | main | irepo-00000006 | 0123456789ab | pass 0123456789ab 2026-09-01 | - | - | - |
+| 7 | main | irepo-old00007 | - | - | criterion 2 | owner: sign in to Spotify | review report |
+EOF
+g add .milestones/STATUS.md; g commit -q -m "supervisor review of 7"
+sb_do irepo-0000000a "echo 'app v2' > app.txt" "milestone 7 work"
+run_int irepo-0000000a
+assert_eq "$IRC" 0 "integrate exits 0 ($(tail -n 3 "$T/int.out" | tr '\n' ' '))"
+M12="$(g rev-parse --short=12 HEAD^)"
+g show HEAD:.milestones/STATUS.md > "$T/st" 2>/dev/null || : > "$T/st"
+assert_grep "^\| 7 \| main \| irepo-0000000a \| $M12 \| pass $M12 [0-9-]{10} \| criterion 2 \| owner: sign in to Spotify \| review report \|$" "$T/st" "row 7 updated, supervisor cells kept"
+assert_grep '^\| 6 \| main \| irepo-00000006 \| 0123456789ab \| pass 0123456789ab 2026-09-01 \| - \| - \| - \|$' "$T/st" "row 6 untouched"
+assert_eq "$(grep -c '^| 7 ' "$T/st")" 1 "one row for milestone 7"
+assert_eq "$(remote_head)" "$(g rev-parse HEAD)" "pushed"
+
+# ================================================================ U3.17 id checks before git
+scenario "integrate: a missing, empty or malformed id is refused before any git command"
+mk_irepo; istatus irepo-0000000a:7
+mkdir -p "$T/gitspy"
+printf '#!/usr/bin/env bash\necho "$*" >> "%s/gitspy.calls"\nexec "%s" "$@"\n' "$T" "$REAL_GIT" > "$T/gitspy/git"; chmod +x "$T/gitspy/git"
+for bad in NONE "" "../x" "a..b" "a;b" "-x" "$(printf 'a%.0s' {1..129})"; do
+  rm -f "$T/gitspy.calls"
+  set +e
+  if [[ "$bad" == NONE ]]; then (cd "$IR" && PATH="$T/gitspy:$PATH" "$DRIVER" integrate) > "$T/int.out" 2>&1; rc=$?
+  else (cd "$IR" && PATH="$T/gitspy:$PATH" "$DRIVER" integrate "$bad") > "$T/int.out" 2>&1; rc=$?; fi
+  set -e
+  assert_eq "$rc" 2 "id '${bad:0:12}' refused with 2"
+  assert_grep 'sandbox id' "$T/int.out" "id '${bad:0:12}': the refusal names the sandbox id"
+  [[ -f "$T/gitspy.calls" ]] && fail "id '${bad:0:12}': git ran: $(cat "$T/gitspy.calls")" || pass "id '${bad:0:12}': no git command ran"
+done
+
+# ================================================================ U3.18 milestone number source
+scenario "integrate: the milestone comes from the sandbox tag, else the positional number, else refuse"
+mk_irepo; istatus irepo-0000000a: irepo-0000000c:9
+sb_do irepo-0000000a "echo 'app v2' > app.txt" "milestone work"
+run_int irepo-0000000a
+assert_eq "$IRC" 2 "no tag and no number: refused"
+assert_grep 'milestone' "$T/int.out" "the refusal asks for the milestone"
+run_int irepo-0000000c 8
+assert_eq "$IRC" 2 "a positional number that contradicts the tag is refused"
+set +e; (cd "$IR" && RUN_MILESTONES_NO_JQ=1 TMPDIR="$ITMP" "$DRIVER" integrate irepo-0000000a 5) > "$T/int.out" 2>&1; IRC=$?; set -e
+assert_eq "$IRC" 0 "untagged with a positional 5 proceeds (python path) ($(tail -n 3 "$T/int.out" | tr '\n' ' '))"
+assert_grep '^gate pass exit=0 milestone=5 .* where=host ' "$ICHAIN" "evidence names milestone 5"
+
+# ================================================================ U3.19 missing host tool
+scenario "integrate: a gate calling a tool the host lacks fails with exit 127"
+mk_irepo; istatus irepo-0000000a:7; iconfig 'GATE="no-such-tool-u3 check"'
+sb_do irepo-0000000a "echo 'app v2' > app.txt" "milestone 7 work"
+run_int irepo-0000000a
+[[ "$IRC" != 0 ]] && pass "integrate exits non-zero" || fail "exited 0"
+assert_grep '^gate FAIL exit=127 milestone=7 .* where=host ' "$ICHAIN" "FAIL exit=127"
+
+# ================================================================ U3.20 gate timeout
+scenario "integrate: GATE_TIMEOUT bounds the host gate"
+mk_irepo; istatus irepo-0000000a:7; iconfig 'GATE_TIMEOUT=1s' 'GATE="sleep 10"'
+sb_do irepo-0000000a "echo 'app v2' > app.txt" "milestone 7 work"
+run_int irepo-0000000a
+[[ "$IRC" != 0 ]] && pass "integrate exits non-zero" || fail "exited 0"
+assert_grep '^gate FAIL exit=124 milestone=7 .* where=host ' "$ICHAIN" "FAIL exit=124"
+
+# ================================================================ U3.21 other preconditions
+scenario "integrate: no GATE, no upstream, behind upstream and an unknown branch refuse before merging"
+mk_irepo; istatus irepo-0000000a:7
+sb_do irepo-0000000a "echo 'app v2' > app.txt" "milestone 7 work"
+printf '%s\n' 'REPORT_DIR=docs/reports' > "$IR/.milestones/config"
+PRE="$(g rev-parse HEAD)"
+run_int irepo-0000000a
+assert_eq "$IRC" 2 "no GATE refused"; assert_grep '\bGATE\b' "$T/int.out" "names GATE"
+assert_eq "$(g rev-parse HEAD)" "$PRE" "nothing merged"
+iconfig; g branch -q --unset-upstream
+run_int irepo-0000000a
+assert_eq "$IRC" 2 "no upstream refused"; assert_grep 'upstream' "$T/int.out" "names the upstream"
+g branch -q -u origin/main
+git clone -q "$BARE" "$T/other" && git -C "$T/other" -c user.name=t -c user.email=t@t commit -q --allow-empty -m elsewhere && git -C "$T/other" push -q 2>/dev/null
+g fetch -q; rm -rf "$T/other"
+run_int irepo-0000000a
+assert_eq "$IRC" 2 "behind upstream refused"; assert_grep 'behind' "$T/int.out" "says behind"
+assert_eq "$(g rev-parse HEAD)" "$PRE" "nothing merged"
+g merge -q --ff-only origin/main
+run_int irepo-0000000z 7
+assert_eq "$IRC" 2 "a sandbox with no branch refused"; assert_grep 'agent-sandbox/irepo-0000000z' "$T/int.out" "names the branch"
+
+# ================================================================ U3.22 push failure
+scenario "integrate: a rejected push exits non-zero and says so"
+mk_irepo; istatus irepo-0000000a:7
+printf '#!/bin/sh\necho denied >&2\nexit 1\n' > "$BARE/hooks/pre-receive"; chmod +x "$BARE/hooks/pre-receive"
+sb_do irepo-0000000a "echo 'app v2' > app.txt" "milestone 7 work"
+RPRE="$(remote_head)"
+run_int irepo-0000000a
+[[ "$IRC" != 0 ]] && pass "integrate exits non-zero ($IRC)" || fail "a rejected push exited 0"
+assert_eq "$(remote_head)" "$RPRE" "the remote is unchanged"
+assert_grep 'push failed' "$ICHAIN" "chain.log says the push failed"
 echo
 (( FAILS == 0 )) || { echo "$FAILS ASSERTIONS FAILED" >&2; exit 1; }
 echo "ALL $N SCENARIOS PASSED"

@@ -13,6 +13,7 @@
 #   run-milestones.sh status                     # this project's sandboxes, with the milestone meaning
 #   run-milestones.sh resume [--issue]           # the finishing command per unfinished sandbox
 #   run-milestones.sh config 6                   # the keys milestone 6 resolves to, KEY=value per line
+#   run-milestones.sh integrate app-1a2b3c4d [6]  # merge, check, gate on the host, record STATUS.md, push
 #
 # One milestone per invocation: the supervisor reviews between milestones, so the
 # driver refuses `run-milestones.sh 5 6`. The launch returns as soon as systemd accepts
@@ -42,6 +43,12 @@
 #   LANE_12=library                              the lane milestone 12 runs in (default main); every
 #                                                agent-sandbox call is tagged lane=<lane>
 #   EVALUATE_16=1 EVALUATE_TARGET_16="pnpm dev"  milestone 16 gets an independent evaluation
+#   INTEGRATION_BRANCH=main                      integrate refuses on any other branch (unset: any branch)
+#   SEED_PATHS="data/catalog.db .env"            gitignored paths copied into integrate's temporary worktree
+#   GATE_TIMEOUT=30m                             bound on each gate run, sandbox and host
+#   TEST_WEAKENING_PATTERN / TEST_ASSERT_PATTERN  grep -E patterns for integrate's weakening scan
+#   TEST_GLOBS / SNAPSHOT_GLOBS                  space-separated globs of test and snapshot files
+#                                                (defaults and matching rules at the integrate section)
 # <repo>/.milestones/config.local  gitignored, sourced after config: this host's values
 #                                                (a PATH prefix for its toolchain, say)
 # <repo>/.milestones/standing-rules.md          rules every milestone gets; "milestone-N" is substituted
@@ -57,6 +64,24 @@
 #
 # A failed gate stops the unit and leaves the sandbox for inspection. Nothing is merged
 # or pushed: the work stays on the sandbox branch, and push is denied inside the container.
+#
+# integrate <id> [N], run from the host checkout on the integration branch. N is the
+# sandbox record's milestone tag, else the positional number; the two must agree. In order:
+#   1. refuse on tracked changes, a detached HEAD, a branch other than INTEGRATION_BRANCH,
+#      no agent-sandbox/<id> branch, no upstream, a branch behind its upstream, or a branch
+#      ahead of its upstream with a commit that is not (a) reachable from agent-sandbox/<id>,
+#      (b) an earlier merge of that branch or a descendant of one, or (c) a non-merge commit
+#      changing only .milestones/ (the supervisor's STATUS.md cells, evaluation-N.md);
+#   2. merge --no-ff agent-sandbox/<id> (skipped when already merged; a conflict aborts);
+#   3. the weakening scan over @{upstream}..HEAD: every hit's path must appear in the
+#      "Test expectation changes" section of REPORT_DIR/milestone-N.md at HEAD;
+#   4. EVALUATE_N=1: .milestones/evaluation-N.md committed, no "owner action required" line;
+#   5. GATE_SETUP, GATE_ENV and GATE on the host in a temporary detached worktree of HEAD
+#      seeded with SEED_PATHS, under timeout GATE_TIMEOUT; evidence line where=host;
+#   6. upsert the STATUS.md row (Lane, Sandbox, Merged = gated sha, Gate), commit only that
+#      file, push to the upstream.
+# A refusal or failure after step 2 keeps the merge local, pushes nothing, and logs the
+# pre-merge sha with the `git reset --hard` that drops it. Exit 2 refused, 1 gate or push failed.
 set -euo pipefail
 
 SELF="$(readlink -f "${BASH_SOURCE[0]}")"
@@ -218,11 +243,12 @@ sandbox_call() {
 }
 
 # ---------------------------------------------------------------- arguments
-VERB=""; SANDBOX=""; DEPLOY=0; NOTE=""; CONTINUE=""; INSIDE=""; UNIT=""; GATE_ONLY=0; ISSUE=0
+VERB=""; INTEGRATE_ID=""; SANDBOX=""; DEPLOY=0; NOTE=""; CONTINUE=""; INSIDE=""; UNIT=""; GATE_ONLY=0; ISSUE=0
 MILESTONES=(); RES=(); TAGS=(); AGENT_OPTS=()
 while (($#)); do
   case "$1" in
     status|resume|config) VERB="$1"; shift ;;
+    integrate) VERB=integrate; shift; INTEGRATE_ID="${1-}"; if (($#)); then shift; fi ;;   # the next argument is the id
     --sandbox) SANDBOX="$2"; shift 2 ;;
     --deploy) DEPLOY=1; shift ;;
     --note) NOTE="$2"; shift 2 ;;
@@ -263,20 +289,15 @@ milestone_prompt() {
 }
 
 # ---------------------------------------------------------------- the unit's body
-run_gate() {
-  # Setup, the env probe, the gate and the report check run in one `bash -lc`, so the
-  # state setup rebuilds is the state the gate reads. With --json, agent-sandbox sends
-  # the container's stdout only to the sandbox's stdout.log, so the script prints marker
-  # lines carrying a per-run nonce, and the driver reads them back from that log.
-  local n="$1"
-  local rc=0 gatelog="$LOGS/milestone-$n.gate.log" nonce setup=none script
-  require_gate
-  nonce="rm-gate-$(date +%s)-$$-$RANDOM"
-  # An EXIT trap names the failing step, so a setup or gate that calls `exit` itself is
-  # still attributed; `|| exit` keeps a failing step from falling through to the next.
+gate_script() {
+  # The shell script one gate run executes: GATE_SETUP, the GATE_ENV probe, GATE, then an
+  # optional final check, as marker lines "@@<nonce> env=..." and "@@<nonce> step=<step>"
+  # (the step that failed). An EXIT trap names the failing step, so a setup or gate that
+  # calls `exit` itself is still attributed; `|| exit` keeps a failing step from falling
+  # through to the next.
+  local nonce="$1" final="${2:-}" script
   script="set +e"$'\n'"trap '__gate_rc=\$?; [ \$__gate_rc -eq 0 ] || echo \"@@$nonce step=\$__gate_step\"' EXIT"
   if [[ -n "$GATE_SETUP" ]]; then
-    setup=yes
     script+=$'\n'"__gate_step=setup"$'\n'"{
 $GATE_SETUP
 } || exit \$?"
@@ -289,7 +310,21 @@ $GATE_ENV
   script+=$'\n'"__gate_step=gate"$'\n'"{
 $GATE
 } || exit \$?"
-  script+=$'\n'"__gate_step=report"$'\n'"test -s $REPORT_DIR/milestone-$n.md"
+  [[ -n "$final" ]] && script+=$'\n'"__gate_step=report"$'\n'"$final"
+  printf '%s\n' "$script"
+}
+
+run_gate() {
+  # Setup, the env probe, the gate and the report check run in one `bash -lc`, so the
+  # state setup rebuilds is the state the gate reads. With --json, agent-sandbox sends
+  # the container's stdout only to the sandbox's stdout.log, so the script prints marker
+  # lines carrying a per-run nonce, and the driver reads them back from that log.
+  local n="$1"
+  local rc=0 gatelog="$LOGS/milestone-$n.gate.log" nonce setup=none script
+  require_gate
+  nonce="rm-gate-$(date +%s)-$$-$RANDOM"
+  [[ -n "$GATE_SETUP" ]] && setup=yes
+  script="$(gate_script "$nonce" "test -s $REPORT_DIR/milestone-$n.md")"
   sandbox_call "$gatelog" enter "$SANDBOX" --timeout "$GATE_TIMEOUT" "${RES[@]}" "${TAGS[@]}" --json -- \
     bash -lc "$script" || rc=$?
   if (( rc == 3 )); then
@@ -561,6 +596,304 @@ do_resume() {
   (( ISSUE )) || (( ! any )) || echo "(printed only; add --issue to run them)"
 }
 
+# ---------------------------------------------------------------- integrate
+# `integrate <sandbox-id> [N]` merges agent-sandbox/<id> into the current branch, checks
+# the unpushed range, gates it on the host in a temporary worktree, records STATUS.md and
+# pushes. Every refusal and failure pushes nothing; after the merge it keeps the merge
+# local and logs the pre-merge sha for a manual reset.
+SANDBOX_ID_RE='^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$'   # agent-sandbox's own id rule
+
+# Defaults for the weakening scan, overridable in config. A glob with no "/" matches the
+# file name; one ending in "/" matches that directory anywhere in the path; any other
+# glob matches the path from the root or from any directory ("*" and "**" cross "/").
+TEST_WEAKENING_PATTERN="${TEST_WEAKENING_PATTERN:-pytest\.mark\.(skip|skipif|xfail)|pytest\.(skip|xfail)\(|unittest\.(skip|expectedFailure)|\.skip\(|\.only\(|(^|[^A-Za-z0-9_.])(xit|xdescribe|xtest)\(|\.fixme\(|t\.Skip(Now|f)?\(|@Disabled|@Ignore}"
+TEST_ASSERT_PATTERN="${TEST_ASSERT_PATTERN:-(^|[^A-Za-z0-9_])assert|expect\(|\.should|(^|[^A-Za-z0-9_])t\.(Error|Errorf|Fatal|Fatalf)\(|require\.[A-Z]}"
+TEST_GLOBS="${TEST_GLOBS:-tests/ test/ __tests__/ e2e/ test_*.py *_test.py conftest.py *.test.* *.spec.* *_test.go *Test.java *Tests.java}"
+SNAPSHOT_GLOBS="${SNAPSHOT_GLOBS:-__snapshots__/ *.snap *-snapshots/}"
+
+path_matches() {
+  # path_matches <path> <space-separated globs>
+  local path="$1" glob
+  local -
+  set -f   # the globs are patterns, not file names to expand
+  for glob in $2; do
+    glob="${glob//\*\*/*}"
+    if [[ "$glob" == */ ]]; then
+      # shellcheck disable=SC2053
+      [[ "/$path" == */$glob* ]] && return 0
+    elif [[ "$glob" == */* ]]; then
+      # shellcheck disable=SC2053
+      [[ "$path" == $glob || "$path" == */$glob ]] && return 0
+    else
+      # shellcheck disable=SC2053
+      [[ "${path##*/}" == $glob ]] && return 0
+    fi
+  done
+  return 1
+}
+
+sandbox_milestone_tag() {
+  # The `milestone` tag of sandbox <id>'s record in agent-sandbox status --json; empty
+  # when the record, the tag or agent-sandbox itself is missing.
+  local js
+  js="$(agent-sandbox status --json 2>/dev/null)" || return 0
+  if have_jq; then
+    printf '%s' "$js" | jq -r --arg id "$1" '.[]? | select(.sandbox_id == $id) | .tags.milestone // empty' 2>/dev/null | head -n 1 || true
+  else
+    printf '%s' "$js" | python3 -c '
+import json, sys
+try:
+    for r in json.load(sys.stdin):
+        if r.get("sandbox_id") == sys.argv[1]:
+            m = (r.get("tags") or {}).get("milestone")
+            if m not in (None, ""): print(m)
+            break
+except Exception: pass' "$1" 2>/dev/null || true
+  fi
+}
+
+report_expectation_section() {
+  # The body of every heading containing "Test expectation changes" (any level, case
+  # insensitive) in <text on stdin>, up to the next heading of the same or a higher level.
+  awk '
+    match($0, /^#+[ \t]/) {
+      lvl = RLENGTH - 1
+      if (on && lvl <= onl) on = 0
+      if (tolower($0) ~ /test expectation changes/) { on = 1; onl = lvl; next }
+    }
+    on'
+}
+
+weakening_hits() {
+  # "<kind> <path>" per hit in the diff <base>..HEAD:
+  #   skip-marker     an added line matching TEST_WEAKENING_PATTERN in a TEST_GLOBS file
+  #   removed-assert  a removed line matching TEST_ASSERT_PATTERN in a TEST_GLOBS file
+  #   deleted-test    a deleted TEST_GLOBS file
+  #   snapshot        a modified or deleted SNAPSHOT_GLOBS file (a new baseline is not a change)
+  # The line checks are limited to test files so application code (an iterator's .skip(,
+  # a production assert) and the report quoting a marker are not hits.
+  local base="$1" status path body
+  while IFS= read -r -d '' status && IFS= read -r -d '' path; do
+    if path_matches "$path" "$SNAPSHOT_GLOBS" && [[ "$status" != A ]]; then
+      echo "snapshot $path"
+    fi
+    path_matches "$path" "$TEST_GLOBS" || continue
+    if [[ "$status" == D ]]; then echo "deleted-test $path"; continue; fi
+    body="$(git -c core.quotePath=false diff --no-color --no-ext-diff --no-renames --unified=0 "$base" HEAD -- "$path" \
+      | awk '/^@@/ { b = 1; next } /^diff --git / { b = 0 } b')"
+    if sed -n 's/^+//p' <<< "$body" | grep -Eq -- "$TEST_WEAKENING_PATTERN"; then echo "skip-marker $path"; fi
+    if sed -n 's/^-//p' <<< "$body" | grep -Eq -- "$TEST_ASSERT_PATTERN"; then echo "removed-assert $path"; fi
+  done < <(git -c core.quotePath=false diff --no-renames --name-status -z "$base" HEAD)
+}
+
+status_upsert() {
+  # Upsert milestone <n>'s row in .milestones/STATUS.md: Lane, Sandbox, Merged and Gate are
+  # set; Unmet criteria, Open blockers and Next action of an existing row are kept.
+  local sfile="$REPO/.milestones/STATUS.md" n="$1" lane="$2" id="$3" merged="$4" gate="$5" tmp
+  if [[ ! -f "$sfile" ]]; then
+    printf '# Milestone status\n\n| Milestone | Lane | Sandbox | Merged | Gate | Unmet criteria | Open blockers | Next action |\n|---|---|---|---|---|---|---|---|\n' > "$sfile"
+  fi
+  tmp="$(mktemp "$sfile.XXXXXX")"
+  awk -F'|' -v n="$n" -v lane="$lane" -v id="$id" -v merged="$merged" -v gate="$gate" '
+    function t(s) { gsub(/^[ \t]+|[ \t]+$/, "", s); return s }
+    function c(s) { s = t(s); return s == "" ? "-" : s }
+    { line[NR] = $0 }
+    /^[ \t]*\|/ {
+      last = NR
+      if (t($2) == n && !done) {
+        line[NR] = "| " n " | " lane " | " id " | " merged " | " gate " | " c($7) " | " c($8) " | " c($9) " |"
+        done = 1
+      }
+    }
+    END {
+      for (i = 1; i <= NR; i++) {
+        print line[i]
+        if (i == last && !done) print "| " n " | " lane " | " id " | " merged " | " gate " | - | - | - |"
+      }
+      if (!last) {
+        print "| Milestone | Lane | Sandbox | Merged | Gate | Unmet criteria | Open blockers | Next action |"
+        print "|---|---|---|---|---|---|---|---|"
+        print "| " n " | " lane " | " id " | " merged " | " gate " | - | - | - |"
+      }
+    }' "$sfile" > "$tmp"
+  cat "$tmp" > "$sfile"; rm -f "$tmp"   # keep the file's own mode
+}
+
+INTEGRATE_TREE=""
+integrate_cleanup() {
+  # Remove the temporary worktree on every exit path.
+  [[ -n "$INTEGRATE_TREE" ]] || return 0
+  git -C "$REPO" worktree remove --force "$INTEGRATE_TREE/tree" >/dev/null 2>&1 || true
+  rm -rf "$INTEGRATE_TREE"
+  git -C "$REPO" worktree prune >/dev/null 2>&1 || true
+  INTEGRATE_TREE=""
+}
+
+host_gate() {
+  # Gate HEAD on the host in a temporary detached worktree seeded with SEED_PATHS copies,
+  # so GATE_SETUP never writes the host files every sandbox is seeded from. Writes the
+  # evidence line (where=host); returns the gate's exit code. Sets GATE_STEP on failure.
+  local n="$1" sha="$2" rc=0 nonce script out setup=none env="-" p marks
+  local gatelog="$LOGS/milestone-$n.gate.log"
+  INTEGRATE_TREE="$(mktemp -d "${TMPDIR:-/tmp}/integrate-$PROJECT-$n.XXXXXX")"
+  trap integrate_cleanup EXIT
+  trap 'exit 130' INT TERM
+  git worktree add -q --detach "$INTEGRATE_TREE/tree" "$sha" >/dev/null
+  local -
+  set -f
+  for p in ${SEED_PATHS:-}; do
+    if [[ "$p" == /* || "/$p/" == */../* ]]; then log "  seed path '$p' skipped: not a path inside the repository"; continue; fi
+    [[ -e "$REPO/$p" ]] || { log "  seed path $p absent on the host; skipped"; continue; }
+    if [[ -d "$REPO/$p" ]]; then mkdir -p "$INTEGRATE_TREE/tree/$p"; cp -a "$REPO/$p/." "$INTEGRATE_TREE/tree/$p/"
+    else mkdir -p "$(dirname "$INTEGRATE_TREE/tree/$p")"; cp -a "$REPO/$p" "$INTEGRATE_TREE/tree/$p"; fi
+    log "  seeded $p"
+  done
+  set +f
+  nonce="rm-gate-$(date +%s)-$$-$RANDOM"
+  [[ -n "$GATE_SETUP" ]] && setup=yes
+  script="$(gate_script "$nonce")"
+  out="$LOGS/integrate-$n-$(date +%Y%m%dT%H%M%S).out"
+  log "  host gate in $INTEGRATE_TREE/tree (timeout $GATE_TIMEOUT), output: $out"
+  (cd "$INTEGRATE_TREE/tree" && timeout "$GATE_TIMEOUT" bash -c "$script") > "$out" 2>&1 < /dev/null || rc=$?
+  marks="$(grep -a "^@@$nonce " "$out" || true)"
+  GATE_STEP="$(sed -n "s/^@@$nonce step=//p" <<< "$marks" | tail -n 1)"
+  (( rc == 124 )) && GATE_STEP="timeout $GATE_TIMEOUT"
+  if [[ -n "$GATE_ENV" ]]; then
+    if grep -q "^@@$nonce env=" <<< "$marks"; then env="$(sed -n "s/^@@$nonce env=//p" <<< "$marks" | tail -n 1)"
+    else env="unavailable"; fi
+  fi
+  gate_evidence "$rc" "$n" "${sha:0:12}" host "$setup" "$env" "$gatelog"
+  integrate_cleanup
+  return "$rc"
+}
+
+do_integrate() {
+  local id="$INTEGRATE_ID" n="" tag branch upstream remote mref pre base sbranch c m ok
+  # The id reaches git as a ref name: check it before any git command runs.
+  [[ -n "$id" ]] || die "integrate needs a sandbox id: integrate <sandbox-id> [milestone]"
+  [[ "$id" =~ $SANDBOX_ID_RE && "$id" != *..* ]] || die "integrate: '$id' is not a sandbox id (letters, digits, . _ -, at most 128, no '..')"
+  (( ${#MILESTONES[@]} <= 1 )) || die "integrate takes one sandbox id and at most one milestone"
+
+  tag="$(sandbox_milestone_tag "$id")"
+  if [[ -n "$tag" ]]; then
+    [[ "$tag" =~ ^[0-9]+$ ]] || die "integrate: sandbox $id has milestone tag '$tag', not a number"
+    [[ -z "${MILESTONES[0]:-}" || "${MILESTONES[0]}" == "$tag" ]] \
+      || die "integrate: sandbox $id is tagged milestone $tag, not ${MILESTONES[0]}; drop the number or name the right sandbox"
+    n="$tag"
+  else
+    n="${MILESTONES[0]:-}"
+    [[ -n "$n" ]] || die "integrate: sandbox $id has no milestone tag; name the milestone: integrate $id <N>"
+  fi
+  require_gate
+  sbranch="agent-sandbox/$id"
+  log "=== integrate milestone $n from $sbranch: $(date -Is) ==="
+  refuse() { log "integrate milestone $n refused: $*"; exit 2; }
+
+  # ---- preconditions: nothing below merges until all hold
+  [[ -z "$(git status --porcelain --untracked-files=no)" ]] || refuse "the host checkout has tracked changes; commit or stash them first"
+  branch="$(git symbolic-ref --quiet --short HEAD)" || refuse "HEAD is detached; check out the integration branch"
+  if [[ -n "${INTEGRATION_BRANCH:-}" && "$branch" != "$INTEGRATION_BRANCH" ]]; then
+    refuse "on branch $branch, but INTEGRATION_BRANCH=$INTEGRATION_BRANCH"
+  fi
+  git rev-parse --quiet --verify "refs/heads/$sbranch^{commit}" > /dev/null || refuse "no branch $sbranch in $REPO"
+  upstream="$(git rev-parse --quiet --verify "$branch@{upstream}")" || refuse "branch $branch has no upstream; set one with git branch -u <remote>/<branch>"
+  remote="$(git config "branch.$branch.remote")"; mref="$(git config "branch.$branch.merge")"
+  [[ -z "$(git rev-list "HEAD..$upstream")" ]] || refuse "branch $branch is behind its upstream; pull first"
+  # The ahead rule (KTD5). Every commit on the branch that its upstream lacks must be
+  #   a) reachable from agent-sandbox/<id> (this sandbox's own work),
+  #   b) an earlier merge of agent-sandbox/<id> (its second parent is an ancestor of that
+  #      branch) or a descendant of one (fix-forward and STATUS commits on top of it), or
+  #   c) a non-merge commit that changes only .milestones/ (the supervisor's STATUS.md
+  #      review cells, an evaluation record).
+  # Anything else is another milestone's kept merge or unrelated work, which must not be
+  # pushed under this milestone's gate evidence.
+  local own=()
+  for m in $(git rev-list --merges "$upstream..HEAD"); do
+    git merge-base --is-ancestor "$m^2" "$sbranch" && own+=("$m")
+  done
+  for c in $(git rev-list "$upstream..HEAD"); do
+    ok=0
+    if git merge-base --is-ancestor "$c" "$sbranch"; then ok=1
+    else
+      for m in "${own[@]}"; do git merge-base --is-ancestor "$m" "$c" && { ok=1; break; }; done
+      if (( ! ok )) && [[ -z "$(git rev-list --merges -n 1 "$c^!")" ]] \
+        && [[ -z "$(git diff-tree --no-commit-id --name-only -r "$c" | grep -v '^\.milestones/' || true)" ]]; then ok=1; fi
+    fi
+    (( ok )) || refuse "branch $branch is ahead of its upstream with $(git log -1 --format='%h %s' "$c"), which is neither $sbranch's work nor on top of its earlier merge; push or reset that first"
+  done
+
+  # ---- merge
+  if git merge-base --is-ancestor "$sbranch" HEAD; then
+    pre="$upstream"
+    log "  $sbranch already merged; re-checking and re-gating HEAD (pre-merge $pre = the upstream)"
+  else
+    pre="$(git rev-parse HEAD)"
+    log "  pre-merge $pre"
+    if ! git merge --no-ff -q -m "Merge $sbranch: milestone $n (sandbox $id)" "$sbranch" > "$LOGS/integrate-$n.merge.log" 2>&1; then
+      git merge --abort > /dev/null 2>&1 || true
+      refuse "merging $sbranch hit a conflict or failed (see $LOGS/integrate-$n.merge.log); merge aborted, HEAD back at $pre"
+    fi
+    log "  merged $sbranch as $(git rev-parse --short=12 HEAD)"
+  fi
+  local head; head="$(git rev-parse HEAD)"
+  kept() {  # after the merge: a refusal or failure keeps the merge local
+    log "integrate milestone $n: $*"
+    log "  nothing pushed; the merge stays local. pre-merge $pre; to drop it: git reset --hard $pre"
+  }
+
+  # ---- weakening scan over everything about to be pushed
+  local hits unlisted=() section="" report="$REPORT_DIR/milestone-$n.md" kind path
+  hits="$(weakening_hits "$upstream" | sort -u)"
+  if [[ -n "$hits" ]]; then
+    section="$(git show "HEAD:$report" 2>/dev/null | report_expectation_section || true)"
+    while read -r kind path; do
+      grep -Fq -- "$path" <<< "$section" || unlisted+=("$kind $path")
+    done <<< "$hits"
+    if (( ${#unlisted[@]} )); then
+      kept "refused: test weakening not listed in the 'Test expectation changes' section of $report:"
+      for c in "${unlisted[@]}"; do log "    $c"; done
+      exit 2
+    fi
+    log "  weakening hits all listed in $report: $(tr '\n' ';' <<< "$hits")"
+  else
+    log "  weakening scan: no hits in $upstream..HEAD"
+  fi
+
+  # ---- evaluation record
+  local ev="EVALUATE_$n" evf=".milestones/evaluation-$n.md"
+  if [[ "${!ev:-}" == 1 ]]; then
+    git cat-file -e "HEAD:$evf" 2>/dev/null || { kept "refused: EVALUATE_$n=1 and $evf is not committed"; exit 2; }
+    if git show "HEAD:$evf" | grep -qi 'owner action required'; then
+      kept "refused: $evf still has a line marked owner action required"; exit 2
+    fi
+    log "  evaluation record $evf present, no owner action left"
+  fi
+
+  # ---- host gate
+  GATE_STEP=""
+  if ! host_gate "$n" "$head"; then
+    kept "host gate FAILED${GATE_STEP:+ at $GATE_STEP}; output under $LOGS/integrate-$n-*.out"
+    exit 1
+  fi
+
+  # ---- STATUS.md, then push
+  local sha12="${head:0:12}" lane
+  lane="$(resolve_lane "$n")"
+  status_upsert "$n" "$lane" "$id" "$sha12" "pass $sha12 $(date +%Y-%m-%d)"
+  git add -- .milestones/STATUS.md
+  if git diff --cached --quiet -- .milestones/STATUS.md; then
+    log "  STATUS.md row for milestone $n unchanged"
+  else
+    git commit -q -m "milestone $n: STATUS.md after a passing host gate on $sha12" -- .milestones/STATUS.md
+    log "  STATUS.md row for milestone $n committed as $(git rev-parse --short=12 HEAD)"
+  fi
+  if ! git push -q "$remote" "HEAD:$mref" > "$LOGS/integrate-$n.push.log" 2>&1; then
+    log "integrate milestone $n: push failed to $remote $mref (see $LOGS/integrate-$n.push.log); the gated merge and STATUS commit stay local. pre-merge $pre"
+    exit 1
+  fi
+  log "integrate milestone $n: pushed $branch to $remote as $(git rev-parse --short=12 HEAD) ($(git rev-parse HEAD)) $(date -Is)"
+}
+
 # ---------------------------------------------------------------- config
 do_config() {
   # What milestone <n> resolves to, one KEY=value per line, so a launch can be checked
@@ -580,6 +913,10 @@ do_config() {
 }
 
 # ---------------------------------------------------------------- dispatch
+if [[ "$VERB" == integrate ]]; then
+  [[ -z "$INSIDE" && -z "$CONTINUE" && -z "$SANDBOX" ]] || die "integrate takes a sandbox id and an optional milestone, nothing else"
+  do_integrate; exit 0
+fi
 if [[ "$VERB" == config ]]; then
   [[ -z "$INSIDE" && -z "$CONTINUE" && ${#MILESTONES[@]} -eq 1 ]] || die "config takes one milestone, e.g. config 6"
   do_config "${MILESTONES[0]}"; exit 0
