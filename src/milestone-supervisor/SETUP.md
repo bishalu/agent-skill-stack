@@ -2,16 +2,18 @@
 
 Done once per project. When every item below holds, return to `SKILL.md` and start at step 1.
 
+Start with `run-milestones.sh init` from the repository's top level. It writes the files sections 2 and 6 describe from the templates next to the driver (`.milestones/config`, `.milestones/standing-rules.md`, `.milestones/STATUS.md`, `.compound-engineering/config.yaml`, `compound-packs/milestones/README.md`), never overwriting one that exists, adds `logs/` and `.milestones/config.local` to `.gitignore`, and prints what is still yours to fill in. The sections below say what each file must end up holding.
+
 ## 1. The spec has gates
 
 The milestones file has one `## Milestone N` section per milestone, each with a build list and exit criteria that are measurable: a number, a count, a pass or fail. A principles or thresholds file is the single place a threshold lives. An exit criterion without a measurement is not a gate; write the measurement before starting, or the review in step 4 has nothing to check.
 
 ## 2. Compound Engineering is configured in the repo
 
-CE keeps repo defaults in `.compound-engineering/config.yaml`; `/ce-setup` creates it interactively, or write it by hand. Two things belong there for milestone work:
+CE keeps repo defaults in `.compound-engineering/config.yaml`; `init` writes one naming the milestones pack, `/ce-setup` creates it interactively, or write it by hand. Two things belong there for milestone work:
 
 - `docs_root`, only when `docs/` is owned by something else. Unset, plans go to `docs/plans/` and learnings to `docs/solutions/`, and every milestone's `ce-plan` reads the learnings of the ones before it. That return arrow is the point of the loop; keep one artifact tree across sandboxes by committing it.
-- `packs:` naming a repo-local Compound Pack, for example `compound-packs/milestones/`, one markdown rule file per invariant with `title` and `applies_when` frontmatter. `ce-plan` quotes a matching rule into the plan as a constraint and `ce-code-review` flags a diff that contradicts it. The invariants `SKILL.md` lists go here in the project's words; `/ce-setup pack:milestones` scaffolds the folder.
+- `packs:` naming a repo-local Compound Pack, for example `compound-packs/milestones/`, one markdown rule file per invariant with `title` and `applies_when` frontmatter. `ce-plan` quotes a matching rule into the plan as a constraint and `ce-code-review` flags a diff that contradicts it. The invariants `SKILL.md` lists go here in the project's words; `init` writes the folder's README, and `/ce-setup pack:milestones` scaffolds it too. The rule files are the owner's to write.
 
 A rule reads like this:
 
@@ -41,7 +43,14 @@ Every paid model call in the project has a record-and-replay path, so the test s
 
 ## 6. The driver and the `.milestones/` folder
 
-The driver is `run-milestones.sh` next to this file. Run from the project root, it builds one prompt per milestone and runs it as one `claude -p` turn inside the sandbox with the permission prompts off, gates after each, and refuses a deploy milestone without `--deploy`. Its header comment is the usage. Create in the project:
+The driver is `run-milestones.sh` next to this file. Run from the project root, it builds one prompt per milestone and runs it as one `claude -p` turn inside the sandbox with the permission prompts off, gates after each, and refuses a deploy milestone without `--deploy`. Its header comment is the usage. `init` creates the `.milestones/` files below from templates; fill in what it prints:
+
+- `MILESTONES_FILE` and `GATE` in `.milestones/config`. The template leaves `GATE` empty, so every launch, `--gate` and `integrate` refuses naming `GATE` until it is set. `MODEL=opus` is already set, as the cap.
+- `SEED_PATHS` when the gate reads gitignored inputs.
+- The project facts in `.milestones/standing-rules.md`; the template already carries the CE sequence, the report contract, the evidence-line and test-integrity rules and the inline-work rule.
+- `.milestones/config.local` and the per-milestone files by hand, when needed.
+
+The files:
 
 | file | holds |
 |---|---|
@@ -52,7 +61,7 @@ The driver is `run-milestones.sh` next to this file. Run from the project root, 
 | `.milestones/milestone-N.md` | optional paragraph for one milestone: what to merge first, which files to extend rather than rewrite |
 | `.milestones/notes-N.md` | the supervisor's notes for milestone N, written at step 1 of the loop |
 
-The prompt the driver assembles, in order: pointer to the spec section and its appendices, standing rules, the spec section verbatim, the milestone paragraph, the notes, and the stop rule "when the exit criteria are met, or you have measured why one is not, stop". Read `logs/milestones/milestone-N.prompt` after a dry run to see the result before spending a run on it.
+The prompt the driver assembles, in order: pointer to the spec section and its appendices, standing rules, the spec section verbatim, the milestone paragraph, the notes, and the stop rule "when the exit criteria are met, or you have measured why one is not, stop". `run-milestones.sh prompt N` builds that prompt without launching, prints it and writes `logs/milestones/milestone-N.prompt`; read it before spending a run on it.
 
 ## 7. Permission rules for the supervising session
 

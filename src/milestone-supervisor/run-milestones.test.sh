@@ -825,6 +825,109 @@ run_int irepo-0000000a
 [[ "$IRC" != 0 ]] && pass "integrate exits non-zero ($IRC)" || fail "a rejected push exited 0"
 assert_eq "$(remote_head)" "$RPRE" "the remote is unchanged"
 assert_grep 'push failed' "$ICHAIN" "chain.log says the push failed"
+
+# ================================================================ U8 init
+NR_="$T/newrepo"
+mk_newrepo() { rm -rf "$NR_" "$FAKE_DIR"/systemd-run.*; git init -q -b main "$NR_"; }
+run_init() {  # init <args> from <dir>; output in $T/init.out, exit code in INRC
+  local dir="$1"; shift
+  set +e; (cd "$dir" && "$DRIVER" init "$@") > "$T/init.out" 2>&1; INRC=$?; set -e
+}
+INIT_TARGETS=(.milestones/config .milestones/standing-rules.md .milestones/STATUS.md .compound-engineering/config.yaml compound-packs/milestones/README.md .gitignore)
+
+scenario "init in an empty git repo writes every target, and config 1 reads the template"
+mk_newrepo
+run_init "$NR_"
+assert_eq "$INRC" 0 "init exits 0"
+for f in "${INIT_TARGETS[@]}"; do
+  [[ -s "$NR_/$f" ]] && pass "$f written" || fail "$f missing or empty"
+done
+assert_grep '^wrote \.milestones/config$' "$T/init.out" "reports config as wrote"
+assert_grep '^wrote compound-packs/milestones/README\.md$' "$T/init.out" "reports the pack README as wrote"
+assert_grep 'MILESTONES_FILE' "$T/init.out" "the owner is told to fill MILESTONES_FILE"
+assert_grep '\bGATE\b' "$T/init.out" "the owner is told to fill GATE"
+assert_grep 'SEED_PATHS' "$T/init.out" "the owner is told about SEED_PATHS"
+assert_grep 'compound-packs/milestones' "$T/init.out" "the owner is told to write the pack's rules"
+assert_eq "$(grep -cx 'logs/' "$NR_/.gitignore")" 1 "logs/ ignored once"
+assert_eq "$(grep -cx '.milestones/config.local' "$NR_/.gitignore")" 1 ".milestones/config.local ignored once"
+assert_grep '^packs:' "$NR_/.compound-engineering/config.yaml" "CE config names packs"
+assert_grep 'source: compound-packs/milestones' "$NR_/.compound-engineering/config.yaml" "CE config points at the milestones pack"
+HDR="$(sed -n 's/^#   \(| Milestone | Lane .*|\)$/\1/p' "$DRIVER")"
+[[ -n "$HDR" ]] && grep -Fqx -- "$HDR" "$NR_/.milestones/STATUS.md" && pass "STATUS.md header matches the driver's" || fail "STATUS.md header differs from the driver's ('$HDR')"
+assert_grep 'Test expectation changes' "$NR_/.milestones/standing-rules.md" "standing rules carry the test-integrity rule"
+assert_grep 'gate pass' "$NR_/.milestones/standing-rules.md" "standing rules carry the evidence-line rule"
+assert_grep 'ce-work mode:return-to-caller' "$NR_/.milestones/standing-rules.md" "standing rules carry the CE sequence with headless tokens"
+assert_grep 'nobody to ask' "$NR_/.milestones/standing-rules.md" "standing rules say there is nobody to ask"
+assert_grep 'Owner actions needed' "$NR_/.milestones/standing-rules.md" "standing rules carry the report contract"
+assert_grep '[Ii]nline' "$NR_/.milestones/standing-rules.md" "standing rules carry the inline-work rule"
+set +e; (cd "$NR_" && "$DRIVER" config 1) > "$T/init.cfg" 2>&1; rc=$?; set -e
+assert_eq "$rc" 0 "config 1 exits 0 after init"
+assert_grep '^MODEL=opus$' "$T/init.cfg" "config 1 prints MODEL=opus from the template"
+assert_grep '^LANE=main$' "$T/init.cfg" "config 1 prints LANE=main"
+assert_grep '^GATE=$' "$T/init.cfg" "the template's GATE is empty until the owner sets it"
+set +e; (cd "$NR_" && "$DRIVER" 1 --sandbox "$(basename "$NR_")-00000000" --gate) > "$T/init.gate" 2>&1; rc=$?; set -e
+assert_eq "$rc" 2 "an un-edited template GATE refuses --gate"
+assert_grep '\bGATE\b' "$T/init.gate" "and names GATE"
+
+scenario "init keeps an existing .milestones/config byte-identical"
+mk_newrepo; mkdir -p "$NR_/.milestones"
+printf 'GATE="make check"\n# mine\n' > "$NR_/.milestones/config"
+SUM="$(sha256sum < "$NR_/.milestones/config")"
+run_init "$NR_"
+assert_eq "$INRC" 0 "init exits 0"
+assert_eq "$(sha256sum < "$NR_/.milestones/config")" "$SUM" "config byte-identical"
+assert_grep '^kept \.milestones/config$' "$T/init.out" "reports config as kept"
+assert_grep '^wrote \.milestones/standing-rules\.md$' "$T/init.out" "the absent targets are still written"
+
+scenario "init twice adds no duplicate ignore lines and keeps everything"
+mk_newrepo; printf 'node_modules' > "$NR_/.gitignore"   # no trailing newline
+run_init "$NR_"; run_init "$NR_"
+assert_eq "$INRC" 0 "second init exits 0"
+assert_eq "$(grep -cx 'logs/' "$NR_/.gitignore")" 1 "logs/ once"
+assert_eq "$(grep -cx '.milestones/config.local' "$NR_/.gitignore")" 1 ".milestones/config.local once"
+assert_eq "$(grep -cx 'node_modules' "$NR_/.gitignore")" 1 "the existing last line stays whole"
+assert_not_grep '^wrote ' "$T/init.out" "the second run writes nothing"
+assert_grep '^kept \.compound-engineering/config\.yaml$' "$T/init.out" "the second run reports kept"
+
+scenario "init outside a git top-level refuses"
+mk_newrepo; mkdir -p "$NR_/sub"
+run_init "$NR_/sub"
+assert_eq "$INRC" 2 "a subdirectory of a repo refuses"
+assert_grep 'top level|top-level' "$T/init.out" "the message names the top level"
+[[ -e "$NR_/sub/.milestones" || -e "$NR_/.milestones" ]] && fail "init wrote .milestones outside the top level" || pass "nothing written"
+mkdir -p "$T/notgit"
+run_init "$T/notgit"
+assert_eq "$INRC" 2 "a directory outside any repo refuses"
+[[ -e "$T/notgit/.milestones" ]] && fail "init wrote into a non-repo" || pass "nothing written"
+set +e; (cd "$NR_/sub" && "$DRIVER" status) > "$T/init.nom" 2>&1; rc=$?; set -e
+assert_eq "$rc" 2 "other verbs still need .milestones/"
+assert_grep 'no \.milestones/' "$T/init.nom" "with the old message"
+
+scenario "after init, a one-milestone spec and a GATE: prompt 1 prints the assembled prompt; --gate without --sandbox still dies"
+mk_newrepo; run_init "$NR_"
+mkdir -p "$NR_/docs"
+printf '# Milestones\n\n## Milestone 1\n\nBuild the first thing. Exit: one count.\n\n## Milestone 2\n\nsecond.\n' > "$NR_/docs/milestones.md"
+sed -i 's#^MILESTONES_FILE=.*#MILESTONES_FILE=docs/milestones.md#; s#^GATE=.*#GATE="true"#' "$NR_/.milestones/config"
+set +e; (cd "$NR_" && "$DRIVER" prompt 1) > "$T/init.prompt" 2> "$T/init.prompt.err"; rc=$?; set -e
+assert_eq "$rc" 0 "prompt 1 exits 0"
+assert_grep '^Milestone 1 of docs/milestones\.md\.' "$T/init.prompt" "pointer to the spec section"
+assert_grep '^## Milestone 1$' "$T/init.prompt" "the spec section, verbatim"
+assert_grep 'Build the first thing' "$T/init.prompt" "the section's body"
+assert_not_grep 'second\.' "$T/init.prompt" "only milestone 1's section"
+assert_grep 'ce-work mode:return-to-caller' "$T/init.prompt" "the standing rules"
+assert_grep 'docs/reports/milestone-1\.md' "$T/init.prompt" "REPORT_DIR and milestone-N substituted"
+assert_not_grep 'milestone-N' "$T/init.prompt" "no unsubstituted milestone-N"
+assert_grep '^When the exit criteria are met, or you have measured why one is not, stop\.$' "$T/init.prompt" "the stop rule last"
+assert_eq "$(tail -n 1 "$T/init.prompt")" "When the exit criteria are met, or you have measured why one is not, stop." "stop rule is the last line"
+cmp -s "$T/init.prompt" "$NR_/logs/milestones/milestone-1.prompt" && pass "the same prompt written to logs/milestones/milestone-1.prompt" || fail "logs/milestones/milestone-1.prompt differs or is missing"
+[[ -f "$FAKE_DIR/systemd-run.count" ]] && fail "prompt launched a unit" || pass "prompt launches nothing"
+set +e; (cd "$NR_" && "$DRIVER" prompt 3) > "$T/init.p3" 2>&1; rc=$?; set -e
+assert_eq "$rc" 2 "prompt for a milestone with no section refuses"
+assert_grep '## Milestone 3' "$T/init.p3" "and names the missing section"
+set +e; (cd "$NR_" && "$DRIVER" 1 --gate) > "$T/init.g" 2>&1; rc=$?; set -e
+assert_eq "$rc" 2 "--gate without --sandbox dies"
+assert_grep '--gate needs --sandbox' "$T/init.g" "with the existing message"
+[[ -f "$FAKE_DIR/systemd-run.count" ]] && fail "a unit was created" || pass "no unit created"
 echo
 (( FAILS == 0 )) || { echo "$FAILS ASSERTIONS FAILED" >&2; exit 1; }
 echo "ALL $N SCENARIOS PASSED"

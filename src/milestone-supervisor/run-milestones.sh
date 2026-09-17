@@ -13,6 +13,9 @@
 #   run-milestones.sh status                     # this project's sandboxes, with the milestone meaning
 #   run-milestones.sh resume [--issue]           # the finishing command per unfinished sandbox
 #   run-milestones.sh config 6                   # the keys milestone 6 resolves to, KEY=value per line
+#   run-milestones.sh prompt 6                   # build milestone 6's prompt without launching: print it and
+#                                                # write logs/milestones/milestone-6.prompt
+#   run-milestones.sh init                       # set up a repository: .milestones/, CE config, a starter pack
 #   run-milestones.sh integrate app-1a2b3c4d [6]  # merge, check, gate on the host, record STATUS.md, push
 #
 # One milestone per invocation: the supervisor reviews between milestones, so the
@@ -23,6 +26,17 @@
 # in the same lane whose Merged cell is empty or "-": that milestone's work is not pushed
 # yet, and a lane says "these share a dataset or modules". The table's header:
 #   | Milestone | Lane | Sandbox | Merged | Gate | Unmet criteria | Open blockers | Next action |
+#
+# init, from a git repository's top level (the one verb that runs without .milestones/),
+# copies each file under templates/ next to this script to its target only when the target
+# is absent, printing "wrote <path>" or "kept <path>":
+#   templates/config             -> .milestones/config (GATE left empty, so gating refuses until set)
+#   templates/standing-rules.md  -> .milestones/standing-rules.md
+#   templates/STATUS.md          -> .milestones/STATUS.md
+#   templates/ce-config.yaml     -> .compound-engineering/config.yaml
+#   templates/pack-README.md     -> compound-packs/milestones/README.md
+# and appends each line of templates/gitignore-lines missing from .gitignore. It ends with
+# what the owner still fills in.
 #
 # <repo>/.milestones/config      shell assignments, all optional:
 #   MILESTONES_FILE=docs/spec/11-milestones.md   file whose "## Milestone N" sections are the briefs
@@ -86,6 +100,45 @@ set -euo pipefail
 
 SELF="$(readlink -f "${BASH_SOURCE[0]}")"
 REPO="$(pwd -P)"
+
+do_init() {
+  # Everything the supervisor needs to run a first milestone, never overwriting a file.
+  local tpl top src dst line
+  tpl="$(dirname "$SELF")/templates"
+  (( $# == 0 )) || { echo "init takes no arguments: run-milestones.sh init" >&2; exit 2; }
+  [[ -d "$tpl" ]] || { echo "init: no templates/ next to $SELF" >&2; exit 2; }
+  top="$(git rev-parse --show-toplevel 2>/dev/null)" || top=""
+  [[ -n "$top" && "$(cd "$top" && pwd -P)" == "$REPO" ]] \
+    || { echo "init: $REPO is not the top level of a git repository; run init from the repository's top level" >&2; exit 2; }
+  for line in config:.milestones/config standing-rules.md:.milestones/standing-rules.md STATUS.md:.milestones/STATUS.md \
+              ce-config.yaml:.compound-engineering/config.yaml pack-README.md:compound-packs/milestones/README.md; do
+    src="$tpl/${line%%:*}"; dst="${line#*:}"
+    if [[ -e "$REPO/$dst" ]]; then echo "kept $dst"; continue; fi
+    mkdir -p "$(dirname "$REPO/$dst")"
+    cp "$src" "$REPO/$dst"
+    echo "wrote $dst"
+  done
+  local gi="$REPO/.gitignore" added=0
+  if [[ -s "$gi" && -n "$(tail -c 1 "$gi")" ]]; then echo >> "$gi"; fi   # a last line without a newline stays whole
+  while IFS= read -r line; do
+    [[ -n "$line" ]] || continue
+    grep -qxF -- "$line" "$gi" 2>/dev/null && continue
+    echo "$line" >> "$gi"; added=1
+  done < "$tpl/gitignore-lines"
+  if (( added )); then echo "wrote .gitignore lines"; else echo "kept .gitignore"; fi
+  cat <<'EOF'
+
+Still to fill in before the first launch:
+  .milestones/config   MILESTONES_FILE: the path of the file whose "## Milestone N" sections are the briefs
+  .milestones/config   GATE: the project's full check; empty, every launch, --gate and integrate refuse
+  .milestones/config   SEED_PATHS: the gitignored inputs the gate needs (env file, seeded data), if any
+  .milestones/standing-rules.md   the project facts no learning holds yet
+  compound-packs/milestones/      one rule file per invariant (see its README)
+Then: run-milestones.sh config 1, and run-milestones.sh prompt 1 to read the assembled prompt.
+EOF
+}
+if [[ "${1-}" == init ]]; then shift; do_init "$@"; exit 0; fi
+
 [[ -d "$REPO/.milestones" ]] || { echo "no .milestones/ in $REPO; run from the project root" >&2; exit 2; }
 PROJECT="$(basename "$REPO")"
 MILESTONES_FILE="docs/spec/11-milestones.md"; REPORT_DIR="docs/reports"   # defaults; .milestones/config overrides
@@ -247,7 +300,8 @@ VERB=""; INTEGRATE_ID=""; SANDBOX=""; DEPLOY=0; NOTE=""; CONTINUE=""; INSIDE="";
 MILESTONES=(); RES=(); TAGS=(); AGENT_OPTS=()
 while (($#)); do
   case "$1" in
-    status|resume|config) VERB="$1"; shift ;;
+    status|resume|config|prompt) VERB="$1"; shift ;;
+    init) die "init takes no other arguments: run-milestones.sh init" ;;
     integrate) VERB=integrate; shift; INTEGRATE_ID="${1-}"; if (($#)); then shift; fi ;;   # the next argument is the id
     --sandbox) SANDBOX="$2"; shift 2 ;;
     --deploy) DEPLOY=1; shift ;;
@@ -912,6 +966,17 @@ do_config() {
   echo "GATE_ENV=$GATE_ENV"
 }
 
+# ---------------------------------------------------------------- prompt verb
+do_prompt() {
+  # The prompt a launch of milestone <n> would send, built without launching: written to
+  # logs/milestones/milestone-<n>.prompt and printed.
+  local n="$1"
+  [[ -f "$REPO/$MILESTONES_FILE" ]] || die "no milestones file $MILESTONES_FILE: set MILESTONES_FILE in .milestones/config"
+  [[ -n "$(milestone_section "$n")" ]] || die "no '## Milestone $n' section in $MILESTONES_FILE"
+  milestone_prompt "$n" > "$LOGS/milestone-$n.prompt"
+  cat "$LOGS/milestone-$n.prompt"
+}
+
 # ---------------------------------------------------------------- dispatch
 if [[ "$VERB" == integrate ]]; then
   [[ -z "$INSIDE" && -z "$CONTINUE" && -z "$SANDBOX" ]] || die "integrate takes a sandbox id and an optional milestone, nothing else"
@@ -920,6 +985,10 @@ fi
 if [[ "$VERB" == config ]]; then
   [[ -z "$INSIDE" && -z "$CONTINUE" && ${#MILESTONES[@]} -eq 1 ]] || die "config takes one milestone, e.g. config 6"
   do_config "${MILESTONES[0]}"; exit 0
+fi
+if [[ "$VERB" == prompt ]]; then
+  [[ -z "$INSIDE" && -z "$CONTINUE" && -z "$SANDBOX" && ${#MILESTONES[@]} -eq 1 ]] || die "prompt takes one milestone, e.g. prompt 6"
+  do_prompt "${MILESTONES[0]}"; exit 0
 fi
 if [[ -n "$VERB" ]]; then
   [[ -z "$INSIDE" && -z "$CONTINUE" && ${#MILESTONES[@]} -eq 0 ]] || die "$VERB takes no milestone or --continue"

@@ -1,0 +1,52 @@
+# Read by run-milestones.sh (the milestone-supervisor skill). Shell assignments, sourced by bash.
+# Host-only values (a PATH prefix for this machine's toolchain) go in the gitignored
+# .milestones/config.local, sourced after this file. The driver's header comment documents every key.
+
+# The file whose "## Milestone N" sections are the briefs, and where each milestone's report goes.
+MILESTONES_FILE=docs/milestones.md   # fill in: the path of this project's milestones file
+REPORT_DIR=docs/reports
+
+# The gate: runs in the sandbox after each milestone, and on the host in integrate's temporary
+# worktree. There is no default, and an empty GATE makes every launch, --gate and integrate
+# refuse naming GATE. Fill in: this project's full check (tests, lint, type-check, build).
+GATE=""
+# GATE_SETUP="make fixtures"          # runs first, in the same shell: rebuild derived state from committed recordings
+# GATE_ENV="sha256sum data/app.db | cut -c1-12"   # a probe; its first stdout line goes into the gate's evidence line
+# GATE_TIMEOUT=30m                    # bound on each gate run, sandbox and host
+
+# Gitignored inputs the gate needs (an env file, a seeded database, model weights): integrate
+# copies them into its temporary worktree. Mirror agent-sandbox's worktree_seed.
+# SEED_PATHS=".env data/app.db"
+
+# integrate refuses on any other branch; unset means the current branch.
+# INTEGRATION_BRANCH=main
+
+# Milestones that deploy; each needs --deploy, given with the owner's yes.
+# DEPLOY_MILESTONES="7"
+
+TIMEOUT=12h   # per-milestone wall clock (12h, 90m, 3600)
+
+# Container resources for every milestone (agent-sandbox --memory/--cpus); MEMORY_<n> and CPUS_<n>
+# override one milestone. Unset falls back to agent-sandbox's own config. Size from the memory log:
+# a milestone running a full test suite or a browser wants more than a docs milestone.
+# MEMORY=8g
+# CPUS=6
+# MEMORY_3=12g   # write the reason next to each override
+
+# The agent's model and effort (claude --model/--effort); MODEL_<n> and EFFORT_<n> override one milestone.
+MODEL=opus   # the cap for every milestone agent: Opus at most, never the supervisor's own model; unset means the sandbox account's default
+# EFFORT=high
+# EFFORT_4=max   # a new subsystem, an external boundary or a deploy runs at full strength
+
+# Lanes: milestones in different lanes may run at the same time. Milestones that share a mutable
+# dataset or rewrite the same modules share a lane. Unset means main.
+# LANE_5=import
+
+# Independent evaluation before integrate: the supervisor dispatches an evaluator against the
+# target and commits .milestones/evaluation-<n>.md, which integrate requires.
+# EVALUATE_6=1
+# EVALUATE_TARGET_6="make dev"   # a local run command or a deployed URL
+
+# The weakening scan's patterns and globs have cross-framework defaults in the driver; override
+# them only when this project's test layout differs.
+# TEST_WEAKENING_PATTERN=... TEST_ASSERT_PATTERN=... TEST_GLOBS="tests/" SNAPSHOT_GLOBS="__snapshots__/"
