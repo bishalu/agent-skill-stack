@@ -82,6 +82,9 @@ TIMEOUT=12h   # per-milestone wall clock (12h, 90m, 3600)
 # MAX_FAILED_GATES=3
 # MAX_FINISHING_TURNS=3
 # MAX_HOURS=24
+# How many times the supervisor may extend one exhausted budget by itself under
+# APPROVAL_MODE=supervisor before the milestone stops and waits for the owner.
+# MAX_SELF_EXTENSIONS=2
 
 # Container resources for every milestone (agent-sandbox --memory/--cpus); MEMORY_<n> and CPUS_<n>
 # override one milestone. Unset falls back to agent-sandbox's own config. Size from the memory log:

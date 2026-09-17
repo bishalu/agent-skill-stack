@@ -352,6 +352,11 @@ SANDBOX_GATE_STEPS=""; REGENERATE_ON_CONFLICT=""; REGENERATE_COMMAND=""
 APPROVAL_MODE="supervisor"
 # shellcheck disable=SC2034  # read through resolve_override and hashed through compgen -v MAX_
 MAX_FAILED_GATES=3 MAX_FINISHING_TURNS=3 MAX_HOURS=24   # attempt budgets (see budget_state); _N overrides
+# How many times the supervisor may extend one exhausted budget of one milestone by itself under
+# APPROVAL_MODE=supervisor. Past this the milestone stops and waits for the owner, whatever the
+# mode: an unattended run that always granted itself one more attempt would turn every budget into
+# a slower loop, and exhaustion would never mean anything. _N overrides.
+MAX_SELF_EXTENSIONS=2
 # shellcheck disable=SC1091
 [[ -f "$REPO/.milestones/config" ]] && source "$REPO/.milestones/config"
 # A host's own values (its toolchain's PATH) stay out of the committed config.
@@ -3634,7 +3639,7 @@ status_set_next() {
 budget_guard() {
   # budget_guard <n> <verb> [sandbox]: returns when no budget of milestone <n> is exhausted; otherwise
   # refuses the verb with exit 2 as described above. Budgets that cannot be read refuse too.
-  local n="$1" verb="$2" sb="${3:--}" out name state count limit evc chc display warn extra ref hit=""
+  local n="$1" verb="$2" sb="${3:--}" out name state count limit evc chc display warn extra ref hit="" why_self=""
   out="$(budget_state "$n" 2>&1)" || { log "refused: the attempt budgets of milestone $n cannot be read: $out"; exit 2; }
   while IFS=$'\t' read -r name state count limit evc chc display warn extra ref; do
     [[ -n "$name" ]] || continue
@@ -3653,21 +3658,35 @@ budget_guard() {
   [[ -n "$hit" ]] || return 0
   IFS=$'\t' read -r name count limit evc chc display <<< "$hit"
   if [[ "$APPROVAL_MODE" == supervisor ]]; then
-    # The owner chose an unattended run: the supervisor grants the extension itself and says so.
-    # The escalation and the counts are still written, so the ledger shows every extension.
-    if APPROVE_REASON="budget $name exhausted ($display) before $verb, $(date -Is)" \
+    # The owner chose an unattended run, so the supervisor grants the extension itself and says so.
+    # Bounded, though: past MAX_SELF_EXTENSIONS this milestone stops and waits for the owner. A
+    # supervisor that always granted itself one more attempt would make the budget a slower loop
+    # rather than a stop, and an exhausted budget would never mean anything.
+    local selfmax used appr_all
+    selfmax="$(resolve_override MAX_SELF_EXTENSIONS "$n")"
+    [[ "$selfmax" =~ ^[0-9]+$ ]] || selfmax=2
+    appr_all="$(approval_entries "$n" HEAD 2> /dev/null)" || appr_all=""
+    used="$(awk -F'\t' -v b="$name" '$1 == "budget" && $7 == b && $9 == "supervisor" { c++ } END { print c+0 }' <<< "$appr_all")"
+    if (( used >= selfmax )); then
+      log "  budget $name of milestone $n exhausted ($display) and the supervisor has already extended it $used time(s), the limit MAX_SELF_EXTENSIONS allows"
+      log "  this is a stop, not a retry: an unattended run does not extend its own budget without end"
+      # One exhausted event, written by the refusal below; this only says why the mode did not save it.
+      why_self="the supervisor's $used self-granted extension(s) reached MAX_SELF_EXTENSIONS=$selfmax; only the owner can allow another"
+    elif APPROVE_REASON="budget $name exhausted ($display) before $verb, $(date -Is)" \
          "$SELF" approve "$n" budget "$name" --as supervisor > /dev/null 2>&1; then
-      log "  budget $name of milestone $n exhausted ($display); the supervisor granted one more attempt (APPROVAL_MODE=supervisor)"
+      log "  budget $name of milestone $n exhausted ($display); the supervisor granted one more attempt, $((used + 1)) of $selfmax (APPROVAL_MODE=supervisor)"
       emit_event budget "$n" "$(json_obj budget="$name" action=extra-attempt limit:="$limit" count:="$count" \
-        granted_by=supervisor detail="granted by the supervisor under APPROVAL_MODE=supervisor before $verb")"
+        granted_by=supervisor detail="the supervisor's extension $((used + 1)) of $selfmax before $verb")"
       return 0
+    else
+      log "  could not record the supervisor's budget approval; refusing as in owner mode"
     fi
-    log "  could not record the supervisor's budget approval; refusing as in owner mode"
   fi
   log "refused: budget $name exhausted for milestone $n ($display): $verb refused; sandboxes and bundles are kept; owner approval needed: $SELF approve $n budget $name"
   log "budget exhausted milestone=$n budget=$name count=$count limit=$limit verb=$verb at=$(date -Is)"
   status_set_next "$n" "$(resolve_lane "$n")" "$sb" "ESCALATED: $name exhausted ($display); owner approval needed: approve $n budget $name"
-  emit_event budget "$n" "$(json_obj budget="$name" action=exhausted limit:="$limit" count:="$count" events_count:="$evc" chain_count:="$chc" detail="$verb refused")"
+  emit_event budget "$n" "$(json_obj budget="$name" action=exhausted limit:="$limit" count:="$count" events_count:="$evc" chain_count:="$chc" \
+    detail="$verb refused${why_self:+; $why_self}")"
   exit 2
 }
 

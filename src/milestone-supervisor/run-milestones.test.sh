@@ -2545,3 +2545,19 @@ iconfig
 out="$(cd "$IR" && TMPDIR="$ITMP" "$DRIVER" approve 7 gate-config justfile --as supervisor 2>&1)" && rc=0 || rc=$?
 assert_eq "$rc" 2 "approve --as supervisor refuses under APPROVAL_MODE=owner"
 assert_grep "APPROVAL_MODE is 'owner'" <(printf '%s\n' "$out") "and names the mode"
+
+scenario "budgets: the supervisor's self-granted extensions are bounded, then the milestone waits for the owner"
+mk_irepo; istatus irepo-0000000a:7
+iconfig2b() { printf '%s\n' 'REPORT_DIR=docs/reports' 'GATE="false"' 'APPROVAL_MODE=supervisor' 'MAX_SELF_EXTENSIONS=1' > "$IR/.milestones/config"; }
+iconfig2b
+sb_do irepo-0000000a "echo 'app v2' > app.txt" "milestone 7 work"; sb_report irepo-0000000a 7
+run_int irepo-0000000a; run_int irepo-0000000a; run_int irepo-0000000a   # three failed gates: the budget is spent
+run_int irepo-0000000a
+assert_eq "$IRC" 1 "the supervisor grants its one extension and the gate runs (and fails)"
+assert_grep 'the supervisor granted one more attempt, 1 of 1' "$T/int.out" "  the log counts the extension against the limit"
+run_int irepo-0000000a
+assert_eq "$IRC" 2 "the next attempt is refused although the mode is supervisor"
+assert_grep 'already extended it 1 time\(s\), the limit MAX_SELF_EXTENSIONS allows' "$T/int.out" "  and says the supervisor is out of extensions"
+assert_grep 'this is a stop, not a retry' "$T/int.out" "  exhaustion is never converted into another attempt"
+assert_eq "$(ev '.type == "budget" and .action == "exhausted"' | tail -n 1 | jq -r '.detail | test("MAX_SELF_EXTENSIONS=1")')" "true" "  an exhausted event records the reason"
+assert_eq "$(ev '.type == "budget" and .action == "extra-attempt" and .granted_by == "supervisor"' | wc -l)" 1 "  exactly one self-granted extension is in the ledger"
