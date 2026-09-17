@@ -18,11 +18,19 @@ record --change ID --started ISO --accepted ISO [--range A..B | --merge REF] [--
 event TYPE --change ID [key=value ...] [--json OBJECT]
     Validate and append one typed event to .milestones/events.jsonl. Exit 2 on a
     validation error, with nothing written.
+plan-review N --commit SHA [--plan PATH] [--minutes M] [--tokens T]
+    One plan-doc-review finding (confirmation reviewer) per changed section of the plan
+    file that commit modifies, plus a stage event carrying its minutes and tokens. It
+    refuses a commit that adds the plan rather than modifying it: the standing rules have
+    the plan committed before ce-doc-review, with the corrections in their own commit.
 report [--last N] [--json]
     Answer the R17 decisions over the last N changes, and log a summary run tagged
     window=last:N to MLflow. A driver-written finding (stage gate, title "gate FAIL ...")
     counts as a gate failure, not a catch; stage events finishing-turn, budget and push
-    are bookkeeping and stay out of the per-stage statistics.
+    are bookkeeping and stay out of the per-stage statistics. spec-clarification findings
+    are counted by kind in their own section and stay out of those statistics too, and
+    plan-doc-review is reported as corrections applied and escapes attributed to it,
+    never as a drop candidate.
 Every subcommand takes --project ROOT (default: cwd) and --no-mlflow.
 
 Inputs (read only): <root>/logs/milestones/chain.log, <root>/.milestones/config and
@@ -68,14 +76,18 @@ events.jsonl line (append only; aligned with the seeded ledger)
 ---------------------------------------------------------------
 Every event: type, change_id, at (filled with now when absent). Per type, see EVENT_SPECS:
 finding        stage (one of STAGES), title, confirmation (executable|reviewer|owner);
-               optional reviewer, severity, outcome, raised_stage, step, bundle, detail, minutes, tokens.
+               optional reviewer, severity, outcome, raised_stage, step, bundle, detail, minutes, tokens,
+               and kind (conflict|reinterpretation|uncovered-appendix) on a spec-clarification
+               finding only.
                Findings with the same change_id and title are one issue: its raising stage
                is the earliest event's (or raised_stage), and it is executable only when
                some event says executable. Reviewer agreement never upgrades it.
 integrate      where, result (pass|fail); failure_class (code|report|environment|parity|conflict)
                required on a fail unless the rule table can derive it from failed_step /
-               signal (setup-failed|missing-tool|screenshot|scan-refusal|merge-abort) /
-               sandbox_gate_passed_sha. A given failure_class is the supervisor's override.
+               signal (setup-failed|missing-tool|screenshot|scan-refusal|merge-abort|
+               regenerated) / sandbox_gate_passed_sha. A given failure_class is the
+               supervisor's override. signal=regenerated carries `regenerated`, the paths
+               integrate rebuilt after a conflict.
 intervention   actor (supervisor|owner|agent), intervention_class (environment|context|
                reconciliation|spec), detail, minutes (required unless actor=owner).
 push           sha; optional first_failed_integrate, recovery_minutes, branch, remote.
@@ -840,7 +852,12 @@ def cmd_record(root: Path, args) -> int:
 
 CONFIRMATIONS = ("executable", "reviewer", "owner")
 FAILURE_CLASSES = ("code", "report", "environment", "parity", "conflict")
-IDENTITY = {"sha": "str", "tree": "str", "gate_hash": "str", "approved_gate_hash": "str", "seal": "hex64",
+# What a spec-clarification finding says was lost between the spec and the build: an appendix that
+# contradicts another, wording the builder read its own way, an appendix contract no criterion covers.
+SPEC_CLARIFICATION_KINDS = ("conflict", "reinterpretation", "uncovered-appendix")
+SPEC_STAGE = "spec-clarification"
+PLAN_STAGE = "plan-doc-review"
+IDENTITY ={"sha": "str", "tree": "str", "gate_hash": "str", "approved_gate_hash": "str", "seal": "hex64",
             "bundle": "str", "dirty": "bool", "not_run": "int", "steps": "str",
             "produced_by": ("enum", ("integrate", "gate", "check", "mutate"))}
 
@@ -848,12 +865,15 @@ EVENT_SPECS: dict[str, dict] = {
     "finding": {
         "required": {"stage": ("enum", STAGES), "title": "str", "confirmation": ("enum", CONFIRMATIONS)},
         "optional": {"reviewer": "str", "severity": "str", "outcome": "str", "raised_stage": ("enum", STAGES),
-                     "step": "str", "bundle": "str", "detail": "str", "minutes": "num?", "tokens": "int?"},
+                     "step": "str", "bundle": "str", "detail": "str", "minutes": "num?", "tokens": "int?",
+                     "kind": ("enum", SPEC_CLARIFICATION_KINDS)},
     },
     "integrate": {
         "required": {"where": "str", "result": ("enum", ("pass", "fail"))},
         "optional": {"failure_class": ("enum", FAILURE_CLASSES), "failed_step": "str",
-                     "signal": ("enum", ("setup-failed", "missing-tool", "screenshot", "scan-refusal", "merge-abort")),
+                     "signal": ("enum", ("setup-failed", "missing-tool", "screenshot", "scan-refusal", "merge-abort",
+                                         "regenerated")),
+                     "regenerated": "list",
                      "sandbox_gate_passed_sha": "str", "detail": "str", "failure_class_source": "str", **IDENTITY},
     },
     "intervention": {
@@ -984,6 +1004,8 @@ def validate_event(ev: dict) -> tuple[bool, list[str]]:
             e = _check(s, ev[k])
             if e:
                 errors.append(f"{k} {e}")
+    if t == "finding" and "kind" in ev and ev.get("stage") != SPEC_STAGE:
+        errors.append(f"kind belongs to a {SPEC_STAGE} finding, not to stage {ev.get('stage')}")
     if t == "integrate" and ev.get("result") == "fail" and "failure_class" not in ev:
         errors.append("failure_class is required for a failed integrate (or give failed_step / signal)")
     if t == "intervention" and ev.get("actor") != "owner" and not isinstance(ev.get("minutes"), (int, float)):
@@ -1070,6 +1092,122 @@ def cmd_event(root: Path, args) -> int:
     return 0
 
 
+# ---------------------------------------------------------------- plan-review
+
+HEADING_RE = re.compile(r"^(#{1,6})\s+(.*\S)\s*$")
+HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
+
+
+def _git(root: Path, *args: str) -> tuple[int, str]:
+    try:
+        p = subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True, timeout=60, check=False)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return 128, str(e)
+    return p.returncode, p.stdout
+
+
+def plan_sections(text: str, lines: list[int]) -> list[str]:
+    """The heading each changed new-side line falls under, in file order, deduplicated."""
+    heads: list[tuple[int, str]] = []
+    for i, line in enumerate(text.split("\n"), 1):
+        m = HEADING_RE.match(line)
+        if m:
+            heads.append((i, m.group(2)))
+    out: list[str] = []
+    for ln in sorted(set(lines)):
+        name = "(preamble)"
+        for start, title in heads:
+            if start <= ln:
+                name = title
+            else:
+                break
+        if name not in out:
+            out.append(name)
+    return out
+
+
+def cmd_plan_review(root: Path, args) -> int:
+    """Log a milestone's plan doc-review corrections as findings, one per changed plan section."""
+    rc, out = _git(root, "rev-parse", "--verify", "-q", f"{args.commit}^{{commit}}")
+    sha = out.strip()
+    if rc or not sha:
+        raise UsageError(f"--commit {args.commit} is not a commit in {root}")
+    rc, out = _git(root, "rev-list", "--parents", "-n", "1", sha)
+    if rc or len(out.split()) < 2:
+        print(f"grade.py: plan-review: {sha[:12]} has no parent; a doc-review commit changes a committed plan",
+              file=sys.stderr)
+        return 2
+    rc, out = _git(root, "-c", "core.quotePath=false", "diff", "--no-renames", "--name-status", f"{sha}^", sha)
+    if rc:
+        raise UsageError(f"could not read the paths of {sha[:12]}")
+    changed = {}
+    for line in out.splitlines():
+        parts = line.split("\t")
+        if len(parts) >= 2:
+            changed[parts[-1]] = parts[0][:1]
+    plan = args.plan
+    if not plan:
+        md = [p for p in changed if p.endswith(".md")]
+        named = [p for p in md if "plan" in p.lower()] or md
+        if len(named) != 1:
+            raise UsageError(f"name the plan with --plan: {sha[:12]} changes {', '.join(sorted(changed)) or 'nothing'}")
+        plan = named[0]
+    if plan not in changed:
+        raise UsageError(f"{sha[:12]} does not change {plan}")
+    if changed[plan] == "A":
+        print(f"grade.py: plan-review: {sha[:12]} adds {plan} rather than modifying it; the plan is committed first "
+              f"and its doc-review corrections in their own commit", file=sys.stderr)
+        return 2
+    rc, text = _git(root, "show", f"{sha}:{plan}")
+    if rc:
+        raise UsageError(f"could not read {plan} at {sha[:12]}")
+    rc, diff = _git(root, "-c", "core.quotePath=false", "diff", "--no-renames", "--unified=0", f"{sha}^", sha,
+                    "--", f":(literal){plan}")
+    if rc:
+        raise UsageError(f"could not diff {plan} at {sha[:12]}")
+    lines: list[int] = []
+    hunks = 0
+    for line in diff.splitlines():
+        m = HUNK_RE.match(line)
+        if not m:
+            continue
+        hunks += 1
+        start = int(m.group(1))
+        count = int(m.group(2)) if m.group(2) is not None else 1
+        lines += list(range(start, start + count)) or [start]
+    sections = plan_sections(text, lines)
+    if not sections:
+        print(f"grade.py: plan-review: {sha[:12]} changes no line of {plan}", file=sys.stderr)
+        return 2
+    rc, when = _git(root, "show", "-s", "--format=%aI", sha)
+    at = when.strip() if not rc and parse_iso(when.strip()) else now_iso()
+    change = f"milestone:{args.milestone}"
+    events = [{"type": "finding", "change_id": change, "stage": PLAN_STAGE, "confirmation": "reviewer",
+               "title": f"plan doc-review: {plan} §{s}",
+               "detail": f"corrections in {sha[:12]}", "at": at} for s in sections]
+    stage: dict = {"type": "stage", "change_id": change, "stage": PLAN_STAGE, "applied": len(sections),
+                   "note": f"{plan} doc-review corrections in {sha[:12]} ({hunks} hunks)", "at": at}
+    if args.minutes is not None:
+        stage["minutes"] = args.minutes
+    if args.tokens is not None:
+        stage["tokens"] = args.tokens
+    events.append(stage)
+    for e in events:
+        ok, errors = validate_event(e)
+        if not ok:
+            for msg in errors:
+                print(f"grade.py: plan-review: {msg}", file=sys.stderr)
+            return 2
+    p = milestones_dir(root) / "events.jsonl"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with p.open("a") as fh:
+        for e in events:
+            fh.write(json.dumps(e) + "\n")
+    print(f"grade.py: plan-review: {len(sections)} {PLAN_STAGE} findings for {change} from {sha[:12]} "
+          f"({', '.join(sections)}) appended to {p}")
+    return 0
+
+
 # ---------------------------------------------------------------- report
 
 
@@ -1110,11 +1248,23 @@ def build_report(root: Path, last: int = 20) -> dict:
     # failed_gates budget): a gate failure, counted apart, never a catch of a named defect.
     issues: dict[tuple, dict] = {}
     gate_failures: dict[str, int] = defaultdict(int)
+    # Spec clarifications are losses between the spec and the build, not defects a stage caught:
+    # they are counted by kind in their own section and stay out of the per-stage statistics.
+    spec_clar: dict = {"by_kind": {}, "findings": 0, "minutes": None, "tokens": None}
+    spec_seen: set = set()
     for e in events:
         if e.get("type") != "finding" or not e.get("title"):
             continue
         if is_driver_gate_failure(e):
             gate_failures[e["change_id"]] += 1
+            continue
+        if e.get("stage") == SPEC_STAGE:
+            key = (e["change_id"], re.sub(r"\s+", " ", str(e["title"]).strip().lower()))
+            if key not in spec_seen:
+                spec_seen.add(key)
+                spec_clar["findings"] += 1
+                k = e.get("kind") or "unspecified"
+                spec_clar["by_kind"][k] = spec_clar["by_kind"].get(k, 0) + 1
             continue
         key = (e["change_id"], re.sub(r"\s+", " ", str(e["title"]).strip().lower()))
         it = issues.setdefault(key, {"stage": e.get("raised_stage") or e.get("stage"), "confirmations": set()})
@@ -1136,18 +1286,28 @@ def build_report(root: Path, last: int = 20) -> dict:
             row["owner"] += 1
         else:
             row["reviewer_only"] += 1
+    plan_applied: int | None = None
     for e in events:
         if is_driver_gate_failure(e) or e.get("stage") in BOOKKEEPING_STAGES:
             continue
         if e.get("type") in ("stage", "finding") and e.get("stage"):
-            row = stage_row(e["stage"]) if e.get("type") == "stage" else stages.get(e["stage"])
+            if e["stage"] == SPEC_STAGE:
+                row = spec_clar
+            else:
+                row = stage_row(e["stage"]) if e.get("type") == "stage" else stages.get(e["stage"])
             if row is None:
                 continue
+            if e.get("type") == "stage" and e["stage"] == PLAN_STAGE and isinstance(e.get("applied"), int):
+                plan_applied = (plan_applied or 0) + e["applied"]
             for k in ("tokens", "minutes"):
                 if isinstance(e.get(k), (int, float)) and not isinstance(e.get(k), bool):
                     row[k] = (row[k] or 0) + e[k]
-    no_catch = sorted(s for s, r in stages.items() if r["caught"] == 0)
+    # Plan review's product is corrections applied to a plan, which no check can confirm; it is
+    # reported by those corrections and the escapes attributed to it, never as a drop candidate.
+    no_catch = sorted(s for s, r in stages.items() if r["caught"] == 0 and s != PLAN_STAGE)
     not_observed = [s for s in STAGES if s not in stages and s != "owner"]
+    if spec_clar["findings"] and SPEC_STAGE in not_observed:
+        not_observed.remove(SPEC_STAGE)
 
     escapes: dict[str, dict] = {}
     for g in grades:
@@ -1210,9 +1370,18 @@ def build_report(root: Path, last: int = 20) -> dict:
         else:
             c["owner_not_entered"] += 1
 
+    plan_row = stages.get(PLAN_STAGE, {"findings": 0, "tokens": None, "minutes": None})
+    plan_doc_review = {
+        "corrections": plan_applied if plan_applied is not None else plan_row["findings"],
+        "findings": plan_row["findings"], "tokens": plan_row["tokens"], "minutes": plan_row["minutes"],
+        "escapes": escapes.get(PLAN_STAGE, {"missed_at_completion": 0, "regressions_later": 0}),
+    }
+
     return {
         "window": {"last": last, "changes": window},
         "stages": stages,
+        "spec_clarification": spec_clar,
+        "plan_doc_review": plan_doc_review,
         "no_confirmed_catch": no_catch,
         "gate_failures": dict(gate_failures),
         "stages_not_observed": not_observed,
@@ -1236,6 +1405,19 @@ def format_report(rep: dict) -> str:
             for s in rep["no_confirmed_catch"]] or ["  (none)"]
     if rep["stages_not_observed"]:
         out.append(f"  not observed (no events): {', '.join(rep['stages_not_observed'])}")
+    out.append("")
+    sc = rep.get("spec_clarification") or {"by_kind": {}, "findings": 0, "tokens": None, "minutes": None}
+    out.append("Spec clarifications by kind (spec losses, counted apart from the stage statistics):")
+    out += [f"  {k} {v}" for k, v in sorted(sc["by_kind"].items())] or ["  (none)"]
+    out.append(f"  {sc['findings']} findings; tokens {sc['tokens']}, minutes {sc['minutes']}")
+    out.append("")
+    pdr = rep.get("plan_doc_review") or {"corrections": 0, "findings": 0, "tokens": None, "minutes": None,
+                                         "escapes": {"missed_at_completion": 0, "regressions_later": 0}}
+    out.append("Plan doc-review (corrections applied, never a drop candidate):")
+    out.append(f"  {pdr['corrections']} corrections over {pdr['findings']} findings; "
+               f"tokens {pdr['tokens']}, minutes {pdr['minutes']}")
+    out.append(f"  escapes attributed to it: {pdr['escapes']['missed_at_completion']} missed at completion, "
+               f"{pdr['escapes']['regressions_later']} regressions later")
     out.append("")
     out.append("Gate failures (driver-written, not findings):")
     out += [f"  {cid}: {k}" for cid, k in sorted(rep.get("gate_failures", {}).items())] or ["  (none)"]
@@ -1359,6 +1541,10 @@ def mlflow_log_report(rep: dict, project: str, last: int) -> None:
         for s, r in rep["stages"].items():
             metrics.append(Metric(_metric_key(f"caught.{s}"), float(r["caught"]), ts, 0))
         metrics.append(Metric("gate_failures", float(sum(rep.get("gate_failures", {}).values())), ts, 0))
+        for k, v in (rep.get("spec_clarification", {}).get("by_kind") or {}).items():
+            metrics.append(Metric(_metric_key(f"spec_clarifications.{k}"), float(v), ts, 0))
+        metrics.append(Metric("plan_doc_review_corrections",
+                              float((rep.get("plan_doc_review") or {}).get("corrections") or 0), ts, 0))
         for c, v in rep["integration"]["failure_classes"].items():
             metrics.append(Metric(_metric_key(f"integrate_failures.{c}"), float(v), ts, 0))
         rec = [m for m in rep["integration"]["recovery_minutes"].values() if isinstance(m, (int, float))]
@@ -1420,6 +1606,16 @@ def parser() -> argparse.ArgumentParser:
     e.add_argument("--json", help="fields as a JSON object (key=value pairs override)")
     e.add_argument("fields", nargs="*", help="key=value")
 
+    pr = sub.add_parser("plan-review", parents=[common],
+                        help="log a milestone's plan doc-review corrections from their commit",
+                        epilog="example:\n  grade.py plan-review 13 --commit 4edfb37 --minutes 12 --tokens 40000",
+                        formatter_class=argparse.RawDescriptionHelpFormatter)
+    pr.add_argument("milestone")
+    pr.add_argument("--commit", required=True, help="the commit holding the doc-review corrections")
+    pr.add_argument("--plan", help="the plan file, when the commit changes more than one markdown file")
+    pr.add_argument("--minutes", type=float)
+    pr.add_argument("--tokens", type=int)
+
     rp = sub.add_parser("report", parents=[common], help="decision report over a window of changes")
     rp.add_argument("--last", type=int, default=20)
     rp.add_argument("--json", action="store_true")
@@ -1442,6 +1638,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_record(root, args)
         if args.cmd == "event":
             return cmd_event(root, args)
+        if args.cmd == "plan-review":
+            return cmd_plan_review(root, args)
         return cmd_report(root, args)
     except UsageError as e:
         print(f"grade.py: {e}", file=sys.stderr)

@@ -67,7 +67,9 @@ The driver is `run-milestones.sh` next to this file. Run from the project root, 
 | `GATE_ENV` | a probe whose first stdout line goes into the evidence line as `env="..."` |
 | `GATE_TIMEOUT` | the bound on a whole gate run, sandbox or host; each step gets what is left of it |
 | `GATE_PORT_RANGE` | the range a host gate run takes `GATE_PORT_1` to `GATE_PORT_4` from, registered until the run ends, so two runs on one host never collide. Default `20000-29999` |
-| `INTEGRATE_GATE_WHERE` | where `integrate` and `mutate` gate: `host` (a temporary worktree of the merge, seeded from `SEED_PATHS`) or `sandbox` (a fresh sandbox of the merge commit, removed after). Use `sandbox` when the checks are bound to the sandbox image, such as pixel baselines or a browser the host lacks. Default `host` |
+| `INTEGRATE_GATE_WHERE` | where `integrate` and `mutate` gate: `host` (a temporary worktree of the merge, seeded from `SEED_PATHS`) or `sandbox` (a fresh sandbox of the merge commit, removed after). Use `sandbox` when the checks are bound to the sandbox image, such as pixel baselines or a browser the host lacks. Default `host`. `mutate --where host|sandbox` overrides it for one run, so an inconclusive verdict is re-run on the other route without a config edit, which would invalidate the owner's gate-definition approval |
+| `SANDBOX_GATE_STEPS` | the step names the gate after a milestone's turn runs, to keep a turn cheap; unset runs every step. `--gate` always runs every step, so one full sandbox gate stays available on demand. The rest are recorded `not run: not selected`, and a bundle with a not-run step never delivers |
+| `REGENERATE_ON_CONFLICT`, `REGENERATE_COMMAND` | the generated paths (space-separated paths or directory prefixes) a merge conflict may be resolved in mechanically, and the command that rebuilds them. When every conflicted path matches, `integrate` takes the integration branch's side of those paths, runs the command in a temporary worktree of the merge seeded from `SEED_PATHS` with its own `TMPDIR` (never in the owner's checkout), copies only those paths back, completes the merge and gates it like any other. A conflict anywhere else refuses as before. A failing command is a `conflict` failure, one that cannot start `environment`. Every repository path the command names is a gate-config path |
 | `SEED_PATHS` | the gitignored inputs the gate needs (an env file, a seeded database, model weights), copied into `integrate`'s temporary worktree. Mirror agent-sandbox's `worktree_seed` |
 | `INTEGRATION_BRANCH` | `integrate` refuses on any other branch. Unset means the checked-out branch |
 | `DEPLOY_MILESTONES` | numbers that need `--deploy` |
@@ -94,13 +96,15 @@ The step list, `GATE_SETUP`, `GATE_ENV`, both config files, the driver and the `
 | `.milestones/evaluation-N.md` | the independent evaluator's result, committed before `integrate` when `EVALUATE_N=1` |
 | `.milestones/acceptance/N.json` | one entry per exit criterion with its evidence, written by `run-milestones.sh accept` |
 | `.milestones/approvals/N.md` | the owner's approvals, written and committed only by `run-milestones.sh approve` at a terminal. Every line in another form is ignored |
-| `.milestones/mutations/N.jsonl` | one line per planted defect run by `mutate`: the patch, the criterion it cites, the verdict and both bundles. The patches themselves live beside it as `N-<slug>.patch` |
+| `.milestones/mutations/N.jsonl` | one line per planted defect run by `mutate`: the patch, the criterion it cites with its `criterion_kind` (`exit-criterion` or `appendix`), the verdict and both bundles. The patches themselves live beside it as `N-<slug>.patch` |
 | `.milestones/events.jsonl` | the typed events, appended by the driver and by `grade.py event` |
 | `.milestones/grades.jsonl` | one grade record per change, written by `grade.py record` |
 
 `.milestones/STATUS.md`, `events.jsonl`, `grades.jsonl`, `acceptance/`, `approvals/` and `mutations/` are the metadata allowlist: `integrate` ignores changes to them in its clean-tree checks, commits the first three with its STATUS row, and accepts a delivered tree that differs from the gated one only in those paths. Everything else, `evaluation-N.md` and `notes-N.md` included, has to be committed before the gate runs.
 
-The prompt the driver assembles, in order: pointer to the spec section and its appendices, standing rules, the spec section verbatim, the milestone paragraph, the notes, and the stop rule "when the exit criteria are met, or you have measured why one is not, stop". `run-milestones.sh prompt N` builds that prompt without launching, prints it and writes `logs/milestones/milestone-N.prompt`; read it before spending a run on it.
+A launch writes `.milestones/acceptance/N.json` from the milestone's `Exit:` paragraph when it is absent, and refuses when the record and that paragraph disagree or when no criteria extract: the record is the single copy of the exit criteria, and the brief hands the builder their ids.
+
+The prompt the driver assembles, in order: pointer to the spec section and its appendices, standing rules, the spec section verbatim, the exit criteria by id with the instruction to cite them, the milestone paragraph, the notes, and the stop rule "when the exit criteria are met, or you have measured why one is not, stop". `run-milestones.sh prompt N` builds that prompt without launching, prints it and writes `logs/milestones/milestone-N.prompt`; read it before spending a run on it.
 
 ## 7. Permission rules for the supervising session
 

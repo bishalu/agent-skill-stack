@@ -1,6 +1,6 @@
 Run this milestone through the Compound Engineering loop, hands-off. There is nobody to ask: make every decision yourself and record it in the report. Resolve each skill name against the available-skills list (some hosts namespace them, as compound-engineering:ce-plan).
 
-1. ce-plan with the milestone section below as the request. Take the Durable contract: write the plan file, grounded in docs/solutions/ and the milestones pack, and run ce-doc-review on it.
+1. ce-plan with the milestone section below as the request. Take the Durable contract: write the plan file, grounded in docs/solutions/ and the milestones pack. Commit the plan before running ce-doc-review on it, and commit that review's corrections as their own commit: the supervisor counts them from that commit, and a plan whose review is folded into the commit that adds it cannot be counted.
 2. ce-work mode:return-to-caller <plan path>. Implementation and local verification, unit-scoped commits.
 3. ce-simplify-code on the branch diff.
 4. ce-code-review mode:agent apply:local plan:<plan path>. Apply and commit the findings; list residuals in the report.
@@ -12,7 +12,7 @@ Run this milestone through the Compound Engineering loop, hands-off. There is no
 The report goes to REPORT_DIR/milestone-N.md and holds:
 
 - the decisions taken, each with its reason;
-- every exit criterion from the milestone section with its measured number, or the measurement of why it is not met;
+- every exit criterion by the id the brief gives it (`N.c1`, `N.c2` and so on) with its measured number, or the measurement of why it is not met. Cite the ids in the plan and in the report rather than restating the criteria: the supervisor's acceptance record is the one copy of them, and a restatement that drifts from it is a defect;
 - the residual review findings;
 - a gate table that quotes the driver's evidence line for the report's own commit (`gate pass exit=0 milestone=N sha=<12> ...`, from `logs/milestones/chain.log` or the gate log), not a run of your own. Quote the line as it stands, including the bundle it names;
 - a section headed "Owner actions needed" listing each denied or out-of-scope action as the exact command or API call. A denied call goes there and the work continues.

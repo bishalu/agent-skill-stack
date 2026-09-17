@@ -99,7 +99,18 @@ MEMORY=8g
 CPUS=4
 MEMORY_6=12g
 EOF
-printf '## Milestone 5\n\nfive.\n\n## Milestone 6\n\nsix.\n\n## Milestone 7\n\nseven.\n' > "$PROJ/docs/spec/11-milestones.md"
+# Every launched milestone carries an Exit paragraph: a launch writes the acceptance record from it
+# and refuses without one (U11). Milestone 9 deliberately has none.
+mk_pspec() {
+  local m
+  { printf '## Milestone 5\n\nfive.\n\nExit: five works.\n\n'
+    printf '## Milestone 6\n\nsix.\n\nExit: the first thing holds; the second thing holds; the third thing holds.\n\n'
+    printf '## Milestone 7\n\nseven.\n\nExit: seven works.\n\n'
+    printf '## Milestone 9\n\nnine.\n\n'
+    for m in 12 13 14 15; do printf '## Milestone %s\n\nbody %s.\n\nExit: %s works.\n\n' "$m" "$m" "$m"; done
+  } > "$PROJ/docs/spec/11-milestones.md"
+}
+mk_pspec
 CHAIN="$PROJ/logs/milestones/chain.log"
 # Sandbox worktrees the gate reads on the host: the gated commit and the report.
 mk_gws() {  # id [report]
@@ -121,7 +132,7 @@ fail() { echo "FAIL: $*" >&2; [[ -n "${KEEP_GOING:-}" ]] || exit 1; FAILS=$((FAI
 assert_grep() { grep -Eq -- "$1" "$2" && pass "$3" || { echo "--- $2:" >&2; cat "$2" >&2 || true; fail "$3 (no match for '$1')"; }; }
 assert_not_grep() { grep -Eq -- "$1" "$2" && { echo "--- $2:" >&2; cat "$2" >&2 || true; fail "$3 (unexpected match for '$1')"; } || pass "$3"; }
 assert_eq() { [[ "$1" == "$2" ]] && pass "$3" || fail "$3 (got '$1', want '$2')"; }
-reset() { rm -rf "$FAKE_DIR"/systemd-run.* "$FAKE_DIR/agent-sandbox.calls" "$FAKE_DIR/docker.calls" "$FAKE_DIR/units" "$FAKE_DIR/runs" "$CHAIN" "$PROJ/logs/milestones"/*.log "$PROJ/.milestones/STATUS.md" "$PROJ/.milestones/config.local" "$PROJ/.milestones/events.jsonl"; }
+reset() { rm -rf "$FAKE_DIR"/systemd-run.* "$FAKE_DIR/agent-sandbox.calls" "$FAKE_DIR/docker.calls" "$FAKE_DIR/units" "$FAKE_DIR/runs" "$CHAIN" "$PROJ/logs/milestones"/*.log "$PROJ/.milestones/STATUS.md" "$PROJ/.milestones/config.local" "$PROJ/.milestones/events.jsonl" "$PROJ/.milestones/acceptance"; mk_pspec; }
 argv_line() { tr '\n' ' ' < "$FAKE_DIR/systemd-run.argv" > "$FAKE_DIR/argv.line"; echo "$FAKE_DIR/argv.line"; }
 run_driver() { (cd "$PROJ" && "$DRIVER" "$@"); }
 
@@ -1994,12 +2005,13 @@ scenario "delivery: builder --gate, dirty check, mutate, sandbox-only-skip, dirt
 u8_waive_repo() { u8_repo; u8_waive; }
 u8_waive_repo
 RPRE="$(remote_head)"
-for v in gate check mutate skip dirty failed other forged; do
+for v in gate check mutate skip notsel dirty failed other forged; do
   case "$v" in
     gate)   R="$(forge_bundle "$B1" f-gate '.produced_by = "gate" | .where = "sandbox"')"; want='produced by gate at sandbox' ;;
     check)  R="$(forge_bundle "$B1" f-check '.produced_by = "check" | .where = "local" | .dirty = true')"; want='produced by check at local' ;;
     mutate) R="$(forge_bundle "$B1" f-mutate '.produced_by = "mutate" | .where = "host-mutate"')"; want='produced by mutate at host-mutate' ;;
     skip)   R="$(forge_bundle "$B1" f-skip '.steps += [{"index": 2, "name": "pg", "kind": "integration", "command": "true", "sandbox_only": true, "status": "not run: sandbox-only", "exit": null, "duration_ms": null, "log": null, "log_sha256": null}]')"; want='step pg was not run \(not run: sandbox-only\)' ;;
+    notsel) R="$(forge_bundle "$B1" f-notsel '.steps += [{"index": 2, "name": "lint", "kind": "static", "command": "true", "sandbox_only": false, "status": "not run: not selected", "exit": null, "duration_ms": null, "log": null, "log_sha256": null}]')"; want='step lint was not run \(not run: not selected\)' ;;
     dirty)  R="$(forge_bundle "$B1" f-dirty '.dirty = true')"; want='is dirty' ;;
     failed) R="$(forge_bundle "$B1" f-failed '.verdict = "fail" | .exit = 1')"; want='verdict fail' ;;
     other)  R="$(forge_bundle "$B1" f-other '.milestone = "8"')"; want="milestone 8's bundle" ;;
@@ -2270,7 +2282,7 @@ assert_grep 'no \.milestones/' "$T/init.nom" "with the old message"
 scenario "after init, a one-milestone spec and a GATE: prompt 1 prints the assembled prompt; --gate without --sandbox still dies"
 mk_newrepo; run_init "$NR_"
 mkdir -p "$NR_/docs"
-printf '# Milestones\n\n## Milestone 1\n\nBuild the first thing. Exit: one count.\n\n## Milestone 2\n\nsecond.\n' > "$NR_/docs/milestones.md"
+printf '# Milestones\n\n## Milestone 1\n\nBuild the first thing.\n\nExit: one count.\n\n## Milestone 2\n\nsecond.\n' > "$NR_/docs/milestones.md"
 sed -i 's#^MILESTONES_FILE=.*#MILESTONES_FILE=docs/milestones.md#; s#^GATE=.*#GATE="true"#' "$NR_/.milestones/config"
 set +e; (cd "$NR_" && "$DRIVER" prompt 1) > "$T/init.prompt" 2> "$T/init.prompt.err"; rc=$?; set -e
 assert_eq "$rc" 0 "prompt 1 exits 0"
@@ -2292,6 +2304,178 @@ set +e; (cd "$NR_" && "$DRIVER" 1 --gate) > "$T/init.g" 2>&1; rc=$?; set -e
 assert_eq "$rc" 2 "--gate without --sandbox dies"
 assert_grep '--gate needs --sandbox' "$T/init.g" "with the existing message"
 [[ -f "$FAKE_DIR/systemd-run.count" ]] && fail "a unit was created" || pass "no unit created"
+
+# ================================================================ U11 criterion ids in the brief
+scenario "launch: the acceptance record comes from the Exit paragraph, the prompt carries its ids, and a moved paragraph refuses"
+reset; cp "$T/config.base" "$PROJ/.milestones/config"
+run_driver 6 > "$T/u11a" 2>&1 || fail "launch 6 exited $?: $(cat "$T/u11a")"
+F6="$PROJ/.milestones/acceptance/6.json"
+[[ -f "$F6" ]] && pass "the launch wrote .milestones/acceptance/6.json" || fail "no $F6"
+assert_eq "$(jq -r '[.criteria[].id] | join(" ")' "$F6" 2>/dev/null)" "6.c1 6.c2 6.c3" "three criteria with stable ids"
+(cd "$PROJ" && "$DRIVER" prompt 6) > "$T/u11p" 2>&1 || fail "prompt 6 exited $?: $(cat "$T/u11p")"
+assert_grep '^  6\.c1: the first thing holds$' "$T/u11p" "the prompt carries the first id line"
+assert_grep '^  6\.c2: the second thing holds$' "$T/u11p" "the second"
+assert_grep '^  6\.c3: the third thing holds$' "$T/u11p" "the third"
+assert_eq "$(grep -c '^  6\.c[0-9]*: ' "$T/u11p")" 3 "one id line per criterion"
+assert_grep '[Cc]ite these ids' "$T/u11p" "and the instruction to cite them rather than restate them"
+S6="$(sha_of "$F6")"
+run_driver 6 > "$T/u11a2" 2>&1 || fail "a second launch exited $?: $(cat "$T/u11a2")"
+assert_eq "$(sha_of "$F6")" "$S6" "an existing record is not rewritten by a launch"
+sed -i 's/^Exit: the first thing holds.*/Exit: the first thing holds; the second thing moved./' "$PROJ/docs/spec/11-milestones.md"
+rm -f "$FAKE_DIR"/systemd-run.*
+set +e; run_driver 6 > "$T/u11b" 2>&1; rc=$?; set -e
+assert_eq "$rc" 2 "a record that no longer matches the Exit paragraph refuses the launch"
+assert_grep 'differ from the Exit paragraph' "$T/u11b" "the refusal says the criteria differ"
+assert_grep 'accept 6 --init --force' "$T/u11b" "and names the command that re-extracts them"
+[[ -f "$FAKE_DIR/systemd-run.count" ]] && fail "a unit was launched anyway" || pass "nothing launched"
+reset; cp "$T/config.base" "$PROJ/.milestones/config"
+set +e; run_driver 9 > "$T/u11c" 2>&1; rc=$?; set -e
+assert_eq "$rc" 2 "a milestone with no Exit paragraph refuses to launch"
+assert_grep 'Exit:' "$T/u11c" "the refusal names the Exit paragraph"
+[[ -f "$FAKE_DIR/systemd-run.count" ]] && fail "a unit was launched anyway" || pass "nothing launched"
+[[ -e "$PROJ/.milestones/acceptance/9.json" ]] && fail "a record was written for milestone 9" || pass "no record for milestone 9"
+
+# ================================================================ U11 appendix citations
+scenario "mutate: an appendix citation is checked against the target tree and never satisfies an exit criterion"
+mk_mrepo "$M_STEPS"
+printf '# Appendix A\n\n## Tenancy guard\n\nEvery query is scoped to the caller.\n' > "$IR/docs/spec/appendix-a.md"
+g add docs/spec/appendix-a.md; g commit -q -m "appendix a"
+run_mut 7 "$(mk_patch appx app.txt 'app v2' 'app v3' 'appendix docs/spec/appendix-a.md §Tenancy guard')"
+assert_eq "$MRC" 0 "an existing appendix section is accepted and the defect is caught ($(tail -n 3 "$T/mut.out" | tr '\n' ' '))"
+assert_eq "$(rec .criterion_kind)" "appendix" "the record says criterion_kind=appendix"
+assert_eq "$(rec .criterion)" "appendix docs/spec/appendix-a.md §Tenancy guard" "the record keeps the citation"
+assert_grep 'criterion_kind=appendix' "$(mut_all)" "the mutate line names the kind"
+run_mut 7 "$(mk_patch appx2 app.txt 'app v2' 'app v4' 'appendix docs/spec/appendix-a.md §No such section')"
+assert_eq "$MRC" 2 "a citation of a section no heading holds is refused"
+assert_grep 'No such section' "$(mut_all)" "the refusal names the section"
+run_mut 7 "$(mk_patch appx3 app.txt 'app v2' 'app v5' 'appendix docs/spec/appendix-z.md §Tenancy guard')"
+assert_eq "$MRC" 2 "a citation of a file the target tree lacks is refused"
+assert_grep 'appendix-z\.md' "$(mut_all)" "the refusal names the file"
+assert_eq "$(grep -c . "$MREC")" 1 "only the accepted citation wrote a record"
+idrv accept 7 --criterion 7.c1 --evidence mutation:1
+assert_eq "$DRC" 2 "accept refuses an appendix record as exit-criterion evidence"
+assert_grep 'appendix' "$T/drv.out" "and says the record cites an appendix section"
+assert_eq "$(jq -r '.criteria[0].evidence' "$ACC" 2>/dev/null)" "null" "nothing was recorded against 7.c1"
+
+# ================================================================ U12 post-turn gate subset
+U12_STEPS='GATE_STEPS=("replay|rec|echo rec-ran" "static|lint|echo lint-ran")'
+scenario "SANDBOX_GATE_STEPS selects the post-turn gate's steps; --gate still runs every step"
+reset; config_with '-GATE' "$U12_STEPS" 'SANDBOX_GATE_STEPS="rec"'
+(cd "$PROJ" && FAKE_ENTER_EXEC=1 "$DRIVER" --inside 6 --sandbox proj-1a2b3c4d --unit u) > "$T/u12a" 2>&1 \
+  || fail "the turn and its gate exited $?: $(cat "$T/u12a")"
+EJ="$PROJ/$(bundle_of "$CHAIN")/evidence.json"
+assert_eq "$(jq -r '[.steps[] | "\(.name):\(.status)"] | join(" ")' "$EJ" 2>/dev/null)" "rec:pass lint:not run: not selected" "only the selected step ran after the turn"
+assert_eq "$(jq -r '.selected | join(",")' "$EJ" 2>/dev/null)" "rec" "the bundle records the selection"
+reset; config_with '-GATE' "$U12_STEPS" 'SANDBOX_GATE_STEPS="rec"'
+gate_inside
+assert_eq "$GRC" 0 "--gate exits 0"
+EJ="$PROJ/$(bundle_of "$CHAIN")/evidence.json"
+assert_eq "$(jq -r '[.steps[] | "\(.name):\(.status)"] | join(" ")' "$EJ" 2>/dev/null)" "rec:pass lint:pass" "--gate runs every step whatever SANDBOX_GATE_STEPS says"
+assert_eq "$(jq -r '.selected' "$EJ" 2>/dev/null)" "null" "and records no selection"
+reset; config_with '-GATE' "$U12_STEPS" 'SANDBOX_GATE_STEPS="nosuch"'
+set +e; (cd "$PROJ" && "$DRIVER" --inside 6 --sandbox proj-1a2b3c4d --unit u) > "$T/u12b" 2>&1; rc=$?; set -e
+assert_eq "$rc" 2 "an unknown step name in SANDBOX_GATE_STEPS refuses before the turn"
+assert_grep 'SANDBOX_GATE_STEPS' "$T/u12b" "and names the key"
+assert_eq "$(grep -c '^enter ' "$FAKE_DIR/agent-sandbox.calls" 2>/dev/null || echo 0)" 0 "no turn was spent"
+
+# ================================================================ U12 conflict regeneration
+mkdir -p "$T/checks"
+cat > "$T/checks/regen.sh" <<EOF
+printf 'cwd=%s\n' "\$PWD" >> "$T/regen.cwd"
+touch marker-in-cwd
+mkdir -p web/api/generated
+printf 'client for %s\n' "\$(cat app.txt)" > web/api/generated/client.ts
+EOF
+printf 'echo "regeneration failed" >&2\nexit 1\n' > "$T/checks/regen-fail.sh"
+mk_regen() {  # [extra config lines]: a repo whose web/api/generated/ is regenerable
+  mk_irepo; istatus irepo-0000000a:7
+  mkdir -p "$IR/web/api/generated"; printf 'client for app v1\n' > "$IR/web/api/generated/client.ts"
+  g add web/api/generated/client.ts; g commit -q -m "generated client"; g push -q 2>/dev/null
+  iconfig 'REGENERATE_ON_CONFLICT="web/api/generated/"' "$@"
+  : > "$T/regen.cwd"; rm -f "$IR/marker-in-cwd"
+}
+ev_last() { tail -n 1 "$IR/.milestones/events.jsonl" 2>/dev/null | jq -r "$1" 2>/dev/null || true; }
+
+scenario "integrate: a conflict only in a regenerable path regenerates in a temporary worktree and completes the merge"
+mk_regen "REGENERATE_COMMAND=\"bash $T/checks/regen.sh\""
+sb_do irepo-0000000a "echo 'app v2' > app.txt && printf 'client for app v2 (stale)\n' > web/api/generated/client.ts" "milestone 7 work"
+sb_report irepo-0000000a 7
+printf 'client for app host\n' > "$IR/web/api/generated/client.ts"; g commit -q -am "host regenerated the client"; g push -q 2>/dev/null
+PRE="$(g rev-parse HEAD)"
+run_int irepo-0000000a
+assert_eq "$IRC" 0 "integrate exits 0 after regenerating ($(tail -n 3 "$T/int.out" | tr '\n' ' '))"
+MERGE="$(g rev-list --merges -n 1 HEAD)"
+assert_eq "$(g show "$MERGE:web/api/generated/client.ts" 2>/dev/null)" "client for app v2" "the merge holds the regenerated file, not either side"
+assert_eq "$(g show "$MERGE:app.txt" 2>/dev/null)" "app v2" "the sandbox's own change survives the merge"
+assert_eq "$(g rev-parse "$MERGE^1")" "$PRE" "the merge's first parent is the pre-merge head"
+assert_grep 'regenerated web/api/generated/client\.ts' "$(int_out)" "the chain log names what was regenerated"
+assert_eq "$(jq -r 'select(.type == "integrate" and .result == "pass") | "\(.signal) \(.regenerated | join(","))"' "$IR/.milestones/events.jsonl" 2>/dev/null | tail -n 1)" "regenerated web/api/generated/client.ts" "the passing integrate event carries signal=regenerated and the paths"
+assert_grep '^cwd=' "$T/regen.cwd" "the regeneration command recorded its working directory"
+assert_not_grep "^cwd=$IR\$" "$T/regen.cwd" "it did not run in the owner's checkout"
+[[ -e "$IR/marker-in-cwd" ]] && fail "the command wrote into the owner's checkout" || pass "the owner's checkout has no marker file"
+assert_eq "$(g status --porcelain --untracked-files=no -- . ':(exclude).milestones')" "" "the checkout is clean afterwards outside the metadata allowlist"
+
+scenario "integrate: a conflict in a regenerable path and one other path aborts the merge"
+mk_regen "REGENERATE_COMMAND=\"bash $T/checks/regen.sh\""
+sb_do irepo-0000000a "echo 'app sandbox' > app.txt && printf 'client sandbox\n' > web/api/generated/client.ts" "milestone 7 work"
+sb_report irepo-0000000a 7
+printf 'app host\n' > "$IR/app.txt"; printf 'client host\n' > "$IR/web/api/generated/client.ts"
+g commit -q -am "host change"; g push -q 2>/dev/null
+PRE="$(g rev-parse HEAD)"; RPRE="$(remote_head)"
+run_int irepo-0000000a
+assert_eq "$IRC" 2 "integrate refuses with 2"
+assert_eq "$(g rev-parse HEAD)" "$PRE" "HEAD is the pre-merge head"
+[[ -e "$IR/.git/MERGE_HEAD" ]] && fail "a merge is still in progress" || pass "no merge in progress"
+assert_eq "$(remote_head)" "$RPRE" "the remote is unchanged"
+assert_eq "$(wc -c < "$T/regen.cwd" | tr -d ' ')" 0 "the regeneration command never ran"
+assert_grep 'app\.txt' "$(int_out)" "the refusal names the path that is not regenerable"
+
+scenario "integrate: a failing regeneration is a conflict failure; one that cannot start is environment"
+for v in fail missing; do
+  case "$v" in
+    fail)    mk_regen "REGENERATE_COMMAND=\"bash $T/checks/regen-fail.sh\""; want=conflict ;;
+    missing) mk_regen "REGENERATE_COMMAND=\"$T/checks/no-such-regen-tool\""; want=environment ;;
+  esac
+  sb_do irepo-0000000a "echo 'app v2' > app.txt && printf 'client sandbox\n' > web/api/generated/client.ts" "milestone 7 work"
+  sb_report irepo-0000000a 7
+  printf 'client host\n' > "$IR/web/api/generated/client.ts"; g commit -q -am "host regenerated"; g push -q 2>/dev/null
+  PRE="$(g rev-parse HEAD)"; RPRE="$(remote_head)"
+  run_int irepo-0000000a
+  assert_eq "$IRC" 2 "($v) integrate refuses with 2"
+  assert_eq "$(g rev-parse HEAD)" "$PRE" "($v) HEAD is the pre-merge head"
+  [[ -e "$IR/.git/MERGE_HEAD" ]] && fail "($v) a merge is still in progress" || pass "($v) no merge in progress"
+  assert_eq "$(remote_head)" "$RPRE" "($v) nothing pushed"
+  assert_eq "$(ev_last '.type + " " + .result + " " + .failure_class')" "integrate fail $want" "($v) the integrate event is classed $want"
+done
+
+scenario "integrate: a repository path REGENERATE_COMMAND names is a gate-config path"
+mk_irepo; istatus irepo-0000000a:7
+mkdir -p "$IR/tools"; printf 'echo regen\n' > "$IR/tools/regen.sh"
+g add tools/regen.sh; g commit -q -m "the regeneration script"; g push -q 2>/dev/null
+iconfig 'REGENERATE_ON_CONFLICT="web/api/generated/"' 'REGENERATE_COMMAND="bash tools/regen.sh"'
+sb_do irepo-0000000a "echo 'app v2' > app.txt && echo 'echo regen2' > tools/regen.sh" "milestone 7 work"
+sb_report irepo-0000000a 7
+run_int irepo-0000000a
+assert_eq "$IRC" 2 "a change to the regeneration script needs an owner approval"
+assert_grep 'gate-config tools/regen\.sh' "$(int_out)" "the scan names it as a gate-config hit"
+
+scenario "mutate --where overrides INTEGRATE_GATE_WHERE for one run"
+mk_mrepo "$M_STEPS" 'INTEGRATE_GATE_WHERE=sandbox'
+rm -f "$FAKE_DIR/agent-sandbox.calls"
+run_mut 7 "$(mk_patch wh app.txt 'app v2' 'app v3')" --where host
+assert_eq "$MRC" 0 "--where host runs on the host ($(tail -n 3 "$T/mut.out" | tr '\n' ' '))"
+assert_eq "$(rec .where)" "host-mutate" "the record says host-mutate although the config says sandbox"
+assert_not_grep 'purpose=mutation-gate' "$FAKE_DIR/agent-sandbox.calls" "no mutation-gate sandbox was created"
+mk_mrepo "$M_STEPS"
+rm -f "$FAKE_DIR/agent-sandbox.calls"
+export FAKE_RUN_CLONE=1 FAKE_RUN_ID=irepo-7c7c7c7c FAKE_ENTER_EXEC=1
+run_mut 7 "$(mk_patch wh2 app.txt 'app v2' 'app v3')" --where sandbox
+unset FAKE_RUN_CLONE FAKE_RUN_ID FAKE_ENTER_EXEC
+assert_eq "$MRC" 0 "--where sandbox runs in a sandbox ($(tail -n 3 "$T/mut.out" | tr '\n' ' '))"
+assert_eq "$(rec .where)" "sandbox-mutate" "the record says sandbox-mutate although the config says host"
+run_mut 7 "$(mk_patch wh3 app.txt 'app v2' 'app v3')" --where nowhere
+assert_eq "$MRC" 2 "--where with any other value is refused"
+assert_grep '[-]-where' "$T/mut.out" "the refusal names the option"
 echo
 (( FAILS == 0 )) || { echo "$FAILS ASSERTIONS FAILED" >&2; exit 1; }
 echo "ALL $N SCENARIOS PASSED"

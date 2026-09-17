@@ -499,7 +499,7 @@ def test_seeded_events_shape_produces_a_report(tmp_path, capsys):
     assert rep["integration"]["failure_classes"] == {"report": 1, "environment": 2, "parity": 1}
     assert rep["integration"]["recovery_minutes"]["milestone:10"] == pytest.approx(19.28, abs=0.01)
     assert rep["stages"]["code-review"]["caught"] == 1
-    assert "plan-doc-review" in rep["no_confirmed_catch"]
+    assert "plan-doc-review" not in rep["no_confirmed_catch"]  # U11: never a drop candidate
     assert rep["interventions"]["environment"]["minutes"] == 3
 
 
@@ -544,3 +544,140 @@ def test_driver_bookkeeping_events_are_not_review_stages(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "Gate failures (driver-written, not findings):" in out
     assert "milestone:7: 2" in out
+
+
+# ---------------------------------------------------------------- U11: spec clarification, plan review
+
+
+def test_spec_clarification_findings_carry_a_kind(tmp_path):
+    root = make_project(tmp_path, "")
+    for kind in ("conflict", "reinterpretation", "uncovered-appendix"):
+        assert ev(root, "finding", "--change", "milestone:13", "stage=spec-clarification", f"title=t {kind}",
+                  "confirmation=reviewer", f"kind={kind}") == 0
+    assert ev(root, "finding", "--change", "milestone:13", "stage=spec-clarification", "title=t x",
+              "confirmation=reviewer", "kind=nonsense") == 2
+    # kind belongs to a spec-clarification finding, not to any other stage.
+    assert ev(root, "finding", "--change", "milestone:13", "stage=code-review", "title=t y",
+              "confirmation=reviewer", "kind=conflict") == 2
+    assert len(read_jsonl(root / ".milestones" / "events.jsonl")) == 3
+
+
+def test_integrate_regenerated_signal_and_paths_validate(tmp_path):
+    root = make_project(tmp_path, "")
+    assert ev(root, "integrate", "--change", "milestone:13", "where=host-integrate", "result=pass",
+              "signal=regenerated", "regenerated=contract/openapi.json,web/api/generated/") == 0
+    [line] = read_jsonl(root / ".milestones" / "events.jsonl")
+    assert line["signal"] == "regenerated"
+    assert line["regenerated"] == ["contract/openapi.json", "web/api/generated/"]
+    assert ev(root, "integrate", "--change", "milestone:13", "where=host-integrate", "result=pass",
+              "signal=nonsense") == 2
+
+
+def plan_repo(tmp_path, sections: str, second: str | None = None, plan="docs/plans/m13.md"):
+    """A repo whose first commit adds the plan and whose second changes it (unless second is None)."""
+    root = make_project(tmp_path, "")
+    g = ["git", "-C", str(root), "-c", "user.name=t", "-c", "user.email=t@t"]
+    subprocess.run(["git", "-C", str(root), "init", "-q"], check=True)
+    p = root / plan
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(sections)
+    subprocess.run(g + ["add", "-A"], check=True)
+    subprocess.run(g + ["commit", "-q", "-m", "plan: milestone 13"], check=True)
+    if second is not None:
+        p.write_text(second)
+        subprocess.run(g + ["add", "-A"], check=True)
+        subprocess.run(g + ["commit", "-q", "-m", "plan: doc-review corrections"], check=True)
+    return root
+
+
+PLAN_V1 = """\
+# Milestone 13 plan
+
+## Goal
+
+Ship the thing.
+
+## Approach
+
+One step, then another.
+
+## Risks
+
+None known.
+"""
+
+PLAN_V2 = """\
+# Milestone 13 plan
+
+## Goal
+
+Ship the thing, with the criterion ids cited.
+
+## Approach
+
+One step, then another.
+
+## Risks
+
+The regeneration command can fail; classed conflict.
+"""
+
+
+def test_plan_review_writes_one_finding_per_changed_section_and_a_stage_event(tmp_path):
+    root = plan_repo(tmp_path, PLAN_V1, PLAN_V2)
+    sha = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"], capture_output=True, text=True,
+                         check=True).stdout.strip()
+    assert run(["plan-review", "13", "--commit", sha, "--minutes", "12", "--tokens", "40000",
+                "--project", str(root), "--no-mlflow"]) == 0
+    events = read_jsonl(root / ".milestones" / "events.jsonl")
+    findings = [e for e in events if e["type"] == "finding"]
+    stages = [e for e in events if e["type"] == "stage"]
+    assert all(e["change_id"] == "milestone:13" for e in events)
+    assert all(f["stage"] == "plan-doc-review" and f["confirmation"] == "reviewer" for f in findings)
+    assert len(findings) == 2, [f["title"] for f in findings]
+    titles = " ".join(f["title"] for f in findings)
+    assert "Goal" in titles and "Risks" in titles and "Approach" not in titles
+    assert len(stages) == 1
+    assert stages[0]["stage"] == "plan-doc-review" and stages[0]["minutes"] == 12 and stages[0]["tokens"] == 40000
+    assert stages[0]["applied"] == 2
+    for e in events:
+        ok, errors = grade.validate_event(e)
+        assert ok, errors
+
+
+def test_plan_review_refuses_a_commit_that_adds_the_plan(tmp_path):
+    root = plan_repo(tmp_path, PLAN_V1)
+    sha = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"], capture_output=True, text=True,
+                         check=True).stdout.strip()
+    assert run(["plan-review", "13", "--commit", sha, "--project", str(root), "--no-mlflow"]) == 2
+    assert not (root / ".milestones" / "events.jsonl").exists()
+
+
+def test_report_counts_spec_clarification_by_kind_and_never_drops_plan_doc_review(tmp_path, capsys):
+    root = make_project(tmp_path, "")
+    ev(root, "finding", "--change", "milestone:13", "stage=spec-clarification", "title=appendix 4 conflicts with 7",
+       "confirmation=reviewer", "kind=conflict")
+    ev(root, "finding", "--change", "milestone:13", "stage=spec-clarification", "title=builder read chip as filter",
+       "confirmation=reviewer", "kind=reinterpretation")
+    ev(root, "finding", "--change", "milestone:13", "stage=spec-clarification", "title=tenancy guard has no criterion",
+       "confirmation=reviewer", "kind=uncovered-appendix")
+    ev(root, "stage", "--change", "milestone:13", "stage=spec-clarification", "minutes=9", "tokens=1000")
+    ev(root, "finding", "--change", "milestone:13", "stage=plan-doc-review", "title=lock does not serialize",
+       "confirmation=reviewer")
+    ev(root, "stage", "--change", "milestone:13", "stage=plan-doc-review", "applied=1", "minutes=12", "tokens=40000")
+    rep = grade.build_report(root, last=20)
+    assert "spec-clarification" not in rep["stages"], "spec-clarification stays out of the per-stage statistics"
+    assert rep["spec_clarification"]["by_kind"] == {"conflict": 1, "reinterpretation": 1, "uncovered-appendix": 1}
+    assert rep["spec_clarification"]["minutes"] == 9 and rep["spec_clarification"]["tokens"] == 1000
+    assert "spec-clarification" not in rep["no_confirmed_catch"]
+    assert "plan-doc-review" not in rep["no_confirmed_catch"], "plan review is never a drop candidate"
+    assert rep["plan_doc_review"]["corrections"] == 1
+    assert rep["plan_doc_review"]["minutes"] == 12 and rep["plan_doc_review"]["tokens"] == 40000
+    assert rep["plan_doc_review"]["escapes"] == {"missed_at_completion": 0, "regressions_later": 0}
+    for s in ("spec-clarification", "plan-doc-review"):
+        assert s not in rep["stages_not_observed"]
+    assert run(["report", "--last", "20", "--project", str(root), "--no-mlflow"]) == 0
+    out = capsys.readouterr().out
+    assert "Spec clarifications by kind" in out
+    assert "conflict 1" in out
+    assert "Plan doc-review" in out and "1 corrections over 1 findings" in out

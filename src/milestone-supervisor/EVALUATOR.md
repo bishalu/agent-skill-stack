@@ -33,7 +33,7 @@ Repository checkout: {checkout_path}
    authorization, persistence, or the interaction the section names. Read the code only
    to find where that promise is kept, then write the smallest change that silently
    breaks it while the app still starts. Each patch:
-   - starts with the line `# criterion: <exit criterion text, or its index>` before the
+   - starts with the line `# criterion: <exit criterion text or its id>   (or: # criterion: appendix <path> §<section> for a contract only an appendix states)` before the
      first diff line;
    - is a unified diff that applies with `git apply` at the repository root;
    - touches only application code: no gate or test-runner configuration (justfile,

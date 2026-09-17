@@ -33,9 +33,26 @@ GATE=""
 # GATE_TIMEOUT=30m                    # bound on a whole gate run, sandbox and host; each step gets what is left
 # GATE_PORT_RANGE=20000-29999         # where a host gate run's GATE_PORT_1..4 come from, so two runs never collide
 
+# The post-turn gate in the milestone's own sandbox may run a subset of the steps, named here, to
+# keep a turn cheap; `--gate` always runs every step, so one full sandbox gate stays available on
+# demand. A subset bundle records the rest "not run: not selected" and never delivers.
+# SANDBOX_GATE_STEPS="lint replay"
+
+# A merge conflict only in generated paths is mechanical, not a finishing turn: when every
+# conflicted path matches REGENERATE_ON_CONFLICT (space-separated paths or directory prefixes) and
+# REGENERATE_COMMAND is set, integrate takes the integration branch's side of those paths, runs the
+# command in a temporary seeded worktree of the merge (never in this checkout), copies only those
+# paths back and completes the merge; the merge is then gated like any other. A conflict anywhere
+# else refuses as before. Every repository path REGENERATE_COMMAND names is a gate-config path, so
+# changing it needs an owner approval.
+# REGENERATE_ON_CONFLICT="contract/openapi.json web/api/generated/"
+# REGENERATE_COMMAND="just contract-dump && just client-gen"
+
 # Where integrate and mutate gate: host (a temporary worktree of the merge, seeded from SEED_PATHS)
 # or sandbox (a fresh sandbox of the merge commit, removed after). Use sandbox when the checks need
-# the sandbox image's toolchain, browser or pixel baselines.
+# the sandbox image's toolchain, browser or pixel baselines. `mutate --where host|sandbox` overrides
+# this for one run, so an inconclusive verdict is re-run on the other route without a config edit
+# (which would invalidate the owner's gate-definition approval).
 # INTEGRATE_GATE_WHERE=host
 
 # Gitignored inputs the gate needs (an env file, a seeded database, model weights): integrate
