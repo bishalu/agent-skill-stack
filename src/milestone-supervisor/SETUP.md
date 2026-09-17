@@ -77,7 +77,7 @@ The driver is `run-milestones.sh` next to this file. Run from the project root, 
 | `MEMORY`, `CPUS`, `MODEL`, `EFFORT` | container resources and the agent's model and effort, each with a `_N` per-milestone form |
 | `LANE_N` | the lane milestone N runs in (default `main`); milestones sharing a dataset or modules share a lane |
 | `EVALUATE_N`, `EVALUATE_TARGET_N` | an independent evaluation before `integrate`, and the local command or URL it drives |
-| `TEST_WEAKENING_PATTERN`, `TEST_ASSERT_PATTERN`, `TEST_GLOBS`, `SNAPSHOT_GLOBS` | the weakening scan's patterns and file globs; cross-framework defaults live in the driver |
+| `TEST_WEAKENING_PATTERN`, `TEST_ASSERT_PATTERN`, `TEST_DEF_PATTERN`, `TEST_GLOBS`, `SNAPSHOT_GLOBS` | the weakening scan's patterns and file globs; cross-framework defaults live in the driver. The three patterns are matched only inside `TEST_GLOBS` files and each names one signal: an added line matching `TEST_WEAKENING_PATTERN` is a `skip-marker` hit, a removed line matching `TEST_ASSERT_PATTERN` a `removed-assert`, a removed line matching `TEST_DEF_PATTERN` (a test declaration: `def test_`, `func TestX`, `it(`, `test(`, `describe(`, `@Test`) a `removed-test`. Editing an existing test file is not a hit by itself |
 | `GATE_DEFINITION_GLOBS` | the files that define what the gate runs (justfile, Makefile, package.json, pyproject.toml, runner configs, `.github/`). A change to one is a gate-config hit needing an owner approval, as is a change to any repository file a step, `GATE_SETUP` or `GATE_ENV` names |
 | `MAX_FAILED_GATES`, `MAX_FINISHING_TURNS`, `MAX_HOURS` | attempt budgets per milestone (defaults 3, 3 and 24), each with a `_N` form. Exhausting one stops that milestone until the owner approves another attempt |
 

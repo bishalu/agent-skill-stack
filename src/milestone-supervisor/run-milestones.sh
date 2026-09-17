@@ -97,7 +97,10 @@
 #   GATE_PORT_RANGE=20000-29999                  where a host gate run's GATE_PORT_1..4 come from
 #   INTEGRATE_GATE_WHERE=host                    where integrate gates: host (a temporary worktree) or
 #                                                sandbox (a fresh sandbox of the merge commit, removed after)
-#   TEST_WEAKENING_PATTERN / TEST_ASSERT_PATTERN  grep -E patterns for integrate's weakening scan
+#   TEST_WEAKENING_PATTERN / TEST_ASSERT_PATTERN / TEST_DEF_PATTERN
+#                                                grep -E patterns for integrate's weakening scan:
+#                                                added skip markers, removed assertions, removed
+#                                                test definitions
 #   TEST_GLOBS / SNAPSHOT_GLOBS                  space-separated globs of test and snapshot files
 #   GATE_DEFINITION_GLOBS                        globs of the files that define what the gate runs
 #                                                (justfile, Makefile, package.json, pyproject.toml, runner
@@ -169,7 +172,7 @@
 #      aborts the merge as failure_class=conflict, one that could not start (exit 127) as
 #      environment;
 #   4. the weakening scan over @{upstream}..HEAD: every hit (skip-marker, removed-assert,
-#      deleted-test, test-change, snapshot, gate-config; see weakening_hits) needs an owner
+#      removed-test, deleted-test, snapshot, gate-config; see weakening_hits) needs an owner
 #      approval of its kind, path and current blob in .milestones/approvals/N.md as committed at
 #      HEAD. The report approves nothing. Any git error in the scan refuses (fails closed);
 #   5. EVALUATE_N=1: .milestones/evaluation-N.md committed, no "owner action required" line;
@@ -1379,6 +1382,8 @@ STATUS_HEADER='| Milestone | Lane | Sandbox | Merged | Gate | Unmet criteria | O
 # glob matches the path from the root or from any directory ("*" and "**" cross "/").
 TEST_WEAKENING_PATTERN="${TEST_WEAKENING_PATTERN:-pytest\.mark\.(skip|skipif|xfail)|pytest\.(skip|xfail)\(|unittest\.(skip|expectedFailure)|\.skip\(|\.only\(|(^|[^A-Za-z0-9_.])(xit|xdescribe|xtest)\(|\.fixme\(|t\.Skip(Now|f)?\(|@Disabled|@Ignore}"
 TEST_ASSERT_PATTERN="${TEST_ASSERT_PATTERN:-(^|[^A-Za-z0-9_])assert|expect\(|\.should|(^|[^A-Za-z0-9_])t\.(Error|Errorf|Fatal|Fatalf)\(|require\.[A-Z]}"
+# Test definitions, deliberately narrow: a line that declares a test, not one that calls a helper.
+TEST_DEF_PATTERN="${TEST_DEF_PATTERN:-(^|[^A-Za-z0-9_])(async +)?def +test|(^|[^A-Za-z0-9_])func +(Test|Benchmark|Example|Fuzz)[A-Z_]|(^|[^A-Za-z0-9_.])(it|test|describe|context)(\.[A-Za-z]+)? *\(|(^|[^A-Za-z0-9_])@Test($|[^A-Za-z0-9_])|(^|[^A-Za-z0-9_])function +test}"
 TEST_GLOBS="${TEST_GLOBS:-tests/ test/ __tests__/ e2e/ test_*.py *_test.py conftest.py *.test.* *.spec.* *_test.go *Test.java *Tests.java}"
 SNAPSHOT_GLOBS="${SNAPSHOT_GLOBS:-__snapshots__/ *.snap *-snapshots/}"
 GATE_DEFINITION_GLOBS="${GATE_DEFINITION_GLOBS:-justfile Makefile package.json pyproject.toml pytest.ini setup.cfg tox.ini conftest.py vitest.config.* jest.config.* playwright.config.* .github/}"
@@ -1434,24 +1439,25 @@ sandbox_workspace() {
   echo "$ws"
 }
 
-WEAKENING_KINDS="skip-marker removed-assert deleted-test snapshot test-change"
+WEAKENING_KINDS="skip-marker removed-assert removed-test deleted-test snapshot"
 
 weakening_hits() {
   # weakening_hits <base> [<head>, default HEAD]: "<kind> <path>" per hit in the diff <base>..<head>:
   #   skip-marker     an added line matching TEST_WEAKENING_PATTERN in a TEST_GLOBS file
   #   removed-assert  a removed line matching TEST_ASSERT_PATTERN in a TEST_GLOBS file
+  #   removed-test    a removed line matching TEST_DEF_PATTERN in a TEST_GLOBS file
   #   deleted-test    a deleted TEST_GLOBS file
-  #   test-change     a modified existing TEST_GLOBS file (an added test file is not a hit; a
-  #                   deleted one is deleted-test)
   #   snapshot        a modified or deleted SNAPSHOT_GLOBS file (a new baseline is not a change)
   #   gate-config     an added, modified or deleted GATE_DEFINITION_GLOBS file (the runner's
   #                   config or the gate recipe can narrow the suite without touching a test), or a
   #                   path a step command, GATE_SETUP or GATE_ENV names as a word (gate_named_paths)
   # The line checks are limited to test files so application code (an iterator's .skip(,
-  # a production assert) and the report quoting a marker are not hits.
+  # a production assert) and the report quoting a marker are not hits. A modified existing test
+  # file is a hit only through one of these signals: a file that only gains tests and assertions
+  # is no hit, because approving changes that weaken nothing trains the owner to approve on sight.
   # Fails closed: a git or reader error prints "error: <why>" as the last line and returns 1, so
   # no caller can read a failed scan as a scan with no hits.
-  local base="$1" head="${2:-HEAD}" status path body named names rc=0 i
+  local base="$1" head="${2:-HEAD}" status path body removed named names rc=0 i
   local entries=()
   if ! git rev-parse --verify -q "$base^{commit}" > /dev/null; then echo "error: the scan base '$base' does not resolve to a commit"; return 1; fi
   if ! git rev-parse --verify -q "$head^{commit}" > /dev/null; then echo "error: the scan head '$head' does not resolve to a commit"; return 1; fi
@@ -1470,7 +1476,6 @@ weakening_hits() {
     if path_matches "$path" "$GATE_DEFINITION_GLOBS" || grep -qxF -- "$path" <<< "$named"; then echo "gate-config $path"; fi
     path_matches "$path" "$TEST_GLOBS" || continue
     if [[ "$status" == D ]]; then echo "deleted-test $path"; continue; fi
-    if [[ "$status" == M || "$status" == T ]]; then echo "test-change $path"; fi
     rc=0
     body="$(git -c core.quotePath=false diff --no-color --no-ext-diff --no-renames --unified=0 "$base" "$head" -- ":(literal)$path" \
       | awk '/^@@/ { b = 1; next } /^diff --git / { b = 0 } b')" || rc=$?
@@ -1478,7 +1483,9 @@ weakening_hits() {
     # grep reads a here-string, never a pipe: `sed | grep -q` under pipefail fails when grep
     # exits at its first match while sed still writes, which hides a hit in a large diff.
     if grep -Eq -- "$TEST_WEAKENING_PATTERN" <<< "$(sed -n 's/^+//p' <<< "$body")"; then echo "skip-marker $path"; fi
-    if grep -Eq -- "$TEST_ASSERT_PATTERN" <<< "$(sed -n 's/^-//p' <<< "$body")"; then echo "removed-assert $path"; fi
+    removed="$(sed -n 's/^-//p' <<< "$body")"
+    if grep -Eq -- "$TEST_ASSERT_PATTERN" <<< "$removed"; then echo "removed-assert $path"; fi
+    if grep -Eq -- "$TEST_DEF_PATTERN" <<< "$removed"; then echo "removed-test $path"; fi
   done
 }
 

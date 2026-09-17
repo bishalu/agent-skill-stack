@@ -658,6 +658,10 @@ run_int() {  # integrate <args>; exit code in IRC; asserts no temporary worktree
   [[ "$(g worktree list | wc -l)" == 1 ]] && [[ -z "$(ls -A "$ITMP")" ]] && pass "no temporary worktree left" \
     || { g worktree list >&2; ls -A "$ITMP" >&2; fail "a temporary worktree or directory was left"; }
 }
+isettle() {  # commit the supervisor bookkeeping a run left uncommitted, so a later sb_do can switch branches
+  g add -A -- .milestones || true
+  g diff --cached --quiet || g commit -q -m "supervisor records"
+}
 remote_head() { git --git-dir="$BARE" rev-parse main; }
 int_out() { cat "$T/int.out" "$ICHAIN" 2>/dev/null > "$T/int.all"; echo "$T/int.all"; }
 
@@ -772,10 +776,8 @@ for variant in none other report-only approved; do
     report-only|approved) sb_report irepo-0000000a 7 $'\n## Test expectation changes\n\n- tests/test_a.py: skipped because the fixture moved\n' ;;
   esac
   if [[ "$variant" == approved ]]; then
-    for k in skip-marker test-change; do
-      iapprove 7 weakening "$k" tests/test_a.py --sandbox irepo-0000000a
-      assert_eq "$ARC" 0 "($variant) approve 7 weakening $k tests/test_a.py ($(tail -n 2 "$T/approve.out" | tr '\n' ' '))"
-    done
+    iapprove 7 weakening skip-marker tests/test_a.py --sandbox irepo-0000000a
+    assert_eq "$ARC" 0 "($variant) approve 7 weakening skip-marker tests/test_a.py ($(tail -n 2 "$T/approve.out" | tr '\n' ' '))"
   fi
   RPRE="$(remote_head)"
   run_int irepo-0000000a
@@ -798,6 +800,29 @@ sb_report irepo-0000000a 7
 run_int irepo-0000000a
 assert_eq "$IRC" 2 "refused with 2"
 assert_grep '^    removed-assert tests/test_a\.py$' "$T/int.out" "the refusal names the file as a removed assertion"
+assert_not_grep '^    removed-test ' "$T/int.out" "the surviving test definition is no removed-test hit"
+
+# ================================================================ U3.9b removed test definition
+scenario "integrate: removing a test definition is a removed-test hit the owner approves"
+mk_irepo; istatus irepo-0000000a:7
+sb_do irepo-0000000a "printf 'def test_extra():\n    pass\n' >> tests/test_a.py" "add a test"
+sb_report irepo-0000000a 7
+run_int irepo-0000000a
+assert_eq "$IRC" 0 "adding a test to an existing file is no hit ($(tail -n 3 "$T/int.out" | tr '\n' ' '))"
+isettle
+sb_do irepo-0000000a "sed -i '/^def test_extra():$/,+1d' tests/test_a.py" "drop the test"
+sb_report irepo-0000000a 7 $'\n## Notes\n\nthe extra test was dropped.\n'
+RPRE="$(remote_head)"
+run_int irepo-0000000a
+assert_eq "$IRC" 2 "removing it refuses with 2"
+assert_grep '^    removed-test tests/test_a\.py$' "$T/int.out" "the refusal names the file as a removed test"
+assert_not_grep '^    removed-assert ' "$T/int.out" "the removed body carried no assertion, so that is the only hit"
+assert_grep "approve 7 weakening removed-test tests/test_a\.py" "$T/int.out" "the refusal prints the approve command"
+assert_eq "$(remote_head)" "$RPRE" "nothing pushed"
+iapprove 7 weakening removed-test tests/test_a.py --sandbox irepo-0000000a
+assert_eq "$ARC" 0 "approve 7 weakening removed-test tests/test_a.py ($(tail -n 2 "$T/approve.out" | tr '\n' ' '))"
+run_int irepo-0000000a
+assert_eq "$IRC" 0 "approved: proceeds ($(tail -n 3 "$T/int.out" | tr '\n' ' '))"
 
 # ================================================================ U3.10 deleted test
 scenario "integrate: deleting tests/test_a.py is a hit"
@@ -1646,7 +1671,7 @@ assert_eq "$(grep -c '^rm irepo-6c6c6c6c' "$FAKE_DIR/agent-sandbox.calls")" 2 "e
 assert_eq "$(jq -r '[.produced_by, .where, .verdict] | join(" ")' "$IR/$(rec .patched_bundle)/evidence.json" 2>/dev/null)" "mutate sandbox-mutate fail" "the patched bundle is where=sandbox-mutate"
 assert_eq "$(jq -r .sha "$IR/$(rec .baseline_bundle)/evidence.json" 2>/dev/null | xargs -I{} git -C "$IR" rev-parse {}^2 2>/dev/null)" "$(g rev-parse agent-sandbox/irepo-0000000a)" "the sandbox gated the temporary merge"
 
-# ================================================================ U7 acceptance, approvals, test-change hits, fail-closed scan
+# ================================================================ U7 acceptance, approvals, scan kinds, fail-closed scan
 ACC="$IR/.milestones/acceptance/7.json"
 APPR="$IR/.milestones/approvals/7.md"
 acc() { jq -r "$1" "$ACC" 2>/dev/null || true; }
@@ -1848,17 +1873,16 @@ assert_eq "$IRC" 0 "the waivers complete acceptance: pushed ($(tail -n 2 "$T/int
 scenario "approvals: a weakening approval binds to the blob; a later change to the file is unapproved again"
 mk_irepo; istatus irepo-0000000a:7
 sb_do irepo-0000000a "sed -i '1i import pytest\n@pytest.mark.skip' tests/test_a.py" "skip a test"; sb_report irepo-0000000a 7
-for k in skip-marker test-change; do iapprove 7 weakening "$k" tests/test_a.py --sandbox irepo-0000000a; assert_eq "$ARC" 0 "approve $k"; done
+iapprove 7 weakening skip-marker tests/test_a.py --sandbox irepo-0000000a; assert_eq "$ARC" 0 "approve skip-marker"
 assert_grep "kind=weakening hit=skip-marker path=\"tests/test_a\.py\" blob=$(g rev-parse agent-sandbox/irepo-0000000a:tests/test_a.py) " "$APPR" "the entry binds the candidate's blob"
 sb_do irepo-0000000a "echo '# one more' >> tests/test_a.py" "change the test again"
 RPRE="$(remote_head)"
 run_int irepo-0000000a
 assert_eq "$IRC" 2 "the file at another blob is unapproved"
 assert_grep '^    skip-marker tests/test_a\.py$' "$T/int.out" "names the skip marker"
-assert_grep '^    test-change tests/test_a\.py$' "$T/int.out" "and the test change"
 assert_grep "approve 7 weakening skip-marker tests/test_a\.py" "$T/int.out" "the refusal prints the approve command"
 assert_eq "$(remote_head)" "$RPRE" "nothing pushed"
-for k in skip-marker test-change; do iapprove 7 weakening "$k" tests/test_a.py; assert_eq "$ARC" 0 "re-approve $k at the merged head"; done
+iapprove 7 weakening skip-marker tests/test_a.py; assert_eq "$ARC" 0 "re-approve skip-marker at the merged head"
 run_int irepo-0000000a
 assert_eq "$IRC" 0 "approvals at the current blob proceed ($(tail -n 2 "$T/int.out" | tr '\n' ' '))"
 
@@ -1873,13 +1897,19 @@ run_int irepo-0000000a
 assert_eq "$IRC" 2 "refused with 2"
 assert_grep '^    deleted-test tests/test_a\.py$' "$T/int.out" "the deleted test is still unapproved"
 
-scenario "scan: a modified existing test is a test-change hit; an added test is not"
+scenario "scan: a test file that only gains tests and assertions is no hit, nor is an added test file; removing one assertion from it is"
 mk_irepo; istatus irepo-0000000a:7
-sb_do irepo-0000000a "echo '# note' >> tests/test_a.py && printf 'def test_b():\n    assert True\n' > tests/test_b.py" "touch tests"; sb_report irepo-0000000a 7
+sb_do irepo-0000000a "printf '# note\ndef test_c():\n    y = 4\n    assert y == 4\n' >> tests/test_a.py && printf 'def test_b():\n    assert True\n' > tests/test_b.py" "add tests"; sb_report irepo-0000000a 7
 run_int irepo-0000000a
-assert_eq "$IRC" 2 "refused with 2"
-assert_grep '^    test-change tests/test_a\.py$' "$T/int.out" "the modified test is a test-change hit"
-assert_not_grep 'test_b\.py' "$T/int.out" "the added test is not a hit"
+assert_eq "$IRC" 0 "the modified and the added test file are both no hits ($(tail -n 3 "$T/int.out" | tr '\n' ' '))"
+assert_not_grep 'test_a\.py' "$T/int.out" "the modified test is named nowhere"
+assert_not_grep 'test_b\.py' "$T/int.out" "nor is the added one"
+isettle
+sb_do irepo-0000000a "sed -i 's/^    assert y == 4$/    pass/' tests/test_a.py" "drop one assertion"
+sb_report irepo-0000000a 7 $'\n## Notes\n\none assertion dropped.\n'
+run_int irepo-0000000a
+assert_eq "$IRC" 2 "removing one assertion from the same file refuses with 2"
+assert_grep '^    removed-assert tests/test_a\.py$' "$T/int.out" "as a removed-assert hit"
 
 scenario "scan: a branch editing a script a gate step names is a gate-config hit"
 mk_irepo; istatus irepo-0000000a:7
@@ -1898,7 +1928,7 @@ scenario "scan fails closed: an unresolvable base, a failing name-status diff or
 for variant in base namestatus blob; do
   mk_irepo; istatus irepo-0000000a:7
   sb_do irepo-0000000a "sed -i 's/assert x == 3/assert x >= 3/' tests/test_a.py" "loosen"; sb_report irepo-0000000a 7
-  iapprove 7 weakening test-change tests/test_a.py --sandbox irepo-0000000a
+  iapprove 7 weakening removed-assert tests/test_a.py --sandbox irepo-0000000a
   RPRE="$(remote_head)"; FG=""
   case "$variant" in
     base)       FG='^rev-parse --verify -q [0-9a-f]{40}\^\{commit\}$' ;;

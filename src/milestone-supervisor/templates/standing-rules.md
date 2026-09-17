@@ -25,7 +25,7 @@ The gate rebuilds derived state first (`GATE_SETUP`) from committed recordings, 
 
 Never skip, xfail, loosen an assertion, delete a test or re-baseline a snapshot to make a check pass. A test that fails is telling you something: fix the code, or measure and report why the expectation was wrong.
 
-When a test's expectation genuinely changes, the report has a section headed "Test expectation changes" that lists each changed test file by path with the reason. That list is information for the owner, who decides. It does not approve the change: the supervisor's integrate refuses every added skip marker, removed assertion, deleted or modified test file, changed snapshot and gate-config change until the owner has approved it at a terminal, whether or not the report lists it.
+When a test's expectation genuinely changes, the report has a section headed "Test expectation changes" that lists each changed test file by path with the reason. List every changed test file there, including the ones that only gain coverage, so the owner can read what moved. That list is information for the owner, who decides. It does not approve the change: the supervisor's integrate refuses every added skip marker, removed assertion, removed test definition, deleted test file, changed snapshot and gate-config change until the owner has approved it at a terminal, whether or not the report lists it. Adding tests and assertions needs no approval; removing them, skipping them and changing what the gate runs do.
 
 Extend earlier milestones' modules; do not rewrite them. Keep the full suite and the linters green at every commit. The spec is scope authority: a scope narrowed without saying so is a defect.
 
