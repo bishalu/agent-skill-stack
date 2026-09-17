@@ -43,10 +43,18 @@
 # <repo>/.milestones/config      shell assignments, all optional:
 #   MILESTONES_FILE=docs/spec/11-milestones.md   file whose "## Milestone N" sections are the briefs
 #   REPORT_DIR=docs/reports                      the agent writes milestone-N.md here
-#   GATE="just check"                            run inside the sandbox after each milestone; required
-#                                                to gate (no default: the gate is the project's own)
-#   GATE_SETUP="just replay"                     runs first, in the same shell, to rebuild derived state
-#                                                from committed recordings before the gate reads it
+#   GATE="just check"                            the gate as one step (kind static, named gate); this
+#                                                or GATE_STEPS is required to gate (no default)
+#   GATE_STEPS=("integration|pg|just test-pg|sandbox-only" "replay|api|just test-replay" "static|lint|just lint")
+#                                                the gate as labeled steps, in order, instead of GATE:
+#                                                kind|name|command[|sandbox-only]. kind: integration (real
+#                                                services or stores), replay (recorded external calls) or
+#                                                static (lint, types, drift). A sandbox-only step is recorded
+#                                                "not run: sandbox-only" on the host, never as a pass. The
+#                                                command may hold "|"; a trailing "|sandbox-only" is the flag
+#   GATE_SETUP="just replay"                     step `setup` (kind static), first, to rebuild derived state
+#                                                from committed recordings in the worktree before the gate
+#                                                reads it (steps share the worktree, not a shell or /tmp)
 #   GATE_ENV="sha256sum data/catalog.db | cut -c1-12"   a probe; its first stdout line goes
 #                                                into the gate's evidence line as env="..."
 #   DEPLOY_MILESTONES="7"                        numbers that need --deploy
@@ -61,7 +69,11 @@
 #   EVALUATE_16=1 EVALUATE_TARGET_16="pnpm dev"  milestone 16 gets an independent evaluation
 #   INTEGRATION_BRANCH=main                      integrate refuses on any other branch (unset: any branch)
 #   SEED_PATHS="data/catalog.db .env"            gitignored paths copied into integrate's temporary worktree
-#   GATE_TIMEOUT=30m                             bound on each gate run, sandbox and host
+#   GATE_TIMEOUT=30m                             bound on each gate run, sandbox and host: every step gets
+#                                                what is left of it
+#   GATE_PORT_RANGE=20000-29999                  where a host gate run's GATE_PORT_1..4 come from
+#   INTEGRATE_GATE_WHERE=host                    where integrate gates: host (a temporary worktree) or
+#                                                sandbox (a fresh sandbox of the merge commit, removed after)
 #   TEST_WEAKENING_PATTERN / TEST_ASSERT_PATTERN  grep -E patterns for integrate's weakening scan
 #   TEST_GLOBS / SNAPSHOT_GLOBS                  space-separated globs of test and snapshot files
 #   GATE_DEFINITION_GLOBS                        globs of the files that define what the gate runs
@@ -79,8 +91,26 @@
 # agent-sandbox result JSON, or the admission refusal), create-N-<stamp>.log (a new sandbox),
 # continue-<stamp>.log (a --continue turn's result JSON). An exit 3 is an admission refusal
 # only when its JSON is the admission payload; otherwise it is the command's own exit.
-# Every gate run appends one evidence line to its gate log and to chain.log:
-#   gate pass|FAIL exit=N milestone=N sha=<12> where=sandbox|host setup=yes|none env="..." at=<iso>
+#
+# Every gate run runs each step as its own invocation (a `bash -c` child on the host, an
+# `agent-sandbox enter` per step in a sandbox) and takes the step's exit code from that
+# invocation, stopping at the first failure; later steps are recorded "not run". A run gets
+# a fresh TMPDIR and, on the host, GATE_PORT_1..4 registered in logs/milestones/ports.registry
+# until it ends (in a sandbox the container's own namespace isolates them). Before any step
+# the host reads the gated commit's tree, a definition hash (the step list, GATE_SETUP,
+# GATE_ENV, config, config.local, this driver, MAX_* budget keys) and the dirt: tracked
+# changes and untracked files git does not ignore, SEED_PATHS excluded, plus a sandbox's
+# seed_kept paths. The bundle, always on the host, is
+#   logs/milestones/evidence/<milestone>-<where>-<stamp>/
+#     evidence.json  dirty.patch  untracked.txt  steps/<i>-<name>.log  steps/env.log
+# evidence.json is written after the last step, and its sha256 is logged as the seal.
+# Each run appends to its gate log and chain.log:
+#   gate pass|FAIL exit=N milestone=N sha=<12> tree=<12> def=<12> dirty=yes|no
+#     where=sandbox|host-integrate|sandbox-integration|local setup=yes|none
+#     steps=integration:<passed>/<n> replay:<passed>/<n> static:<passed>/<n> skipped:sandbox-only:<k>
+#     env="..." evidence=<bundle> at=<iso>                                  (one line)
+# and to chain.log only:
+#   seal <sha256 of evidence.json> <bundle>
 # The agent's transcript is the sandbox's own runs/<id>/stdout.log, which `status` scans.
 #
 # A failed gate stops the unit and leaves the sandbox for inspection. Nothing is merged
@@ -103,10 +133,14 @@
 #      removed-assert, deleted-test, snapshot, gate-config) must appear whole in the
 #      "Test expectation changes" section of REPORT_DIR/milestone-N.md at HEAD;
 #   5. EVALUATE_N=1: .milestones/evaluation-N.md committed, no "owner action required" line;
-#   6. GATE_SETUP, GATE_ENV and GATE on the host in a temporary detached worktree of HEAD
-#      seeded with SEED_PATHS, under timeout GATE_TIMEOUT; evidence line where=host; then
-#      refuse unless HEAD is still the gated commit on the same branch with no tracked change;
-#   7. upsert the STATUS.md row (Lane, Sandbox, Merged = gated sha, Gate), commit only that
+#   6. the gate steps under GATE_TIMEOUT: INTEGRATE_GATE_WHERE=host in a temporary detached
+#      worktree of HEAD seeded with SEED_PATHS (where=host-integrate); =sandbox in a fresh
+#      `agent-sandbox run <repo> --new` tagged purpose=integration-gate, refused unless its
+#      HEAD is the merge commit, removed on every exit path (where=sandbox-integration); then
+#      refuse unless the bundle still matches its seal and HEAD is still the gated commit on
+#      the same branch with no tracked change;
+#   7. upsert the STATUS.md row (Lane, Sandbox, Merged = gated sha, Gate = pass <sha> tree=
+#      def= and the kind counts), commit only that
 #      file, check the commit's parent is the gated sha, and push that commit to the
 #      upstream under timeout GATE_TIMEOUT with stdin closed.
 # A refusal or failure after step 3 pushes nothing. When this run made the merge, it keeps
@@ -160,7 +194,7 @@ if [[ "${1-}" == init ]]; then shift; do_init "$@"; exit 0; fi
 PROJECT="$(basename "$REPO")"
 MILESTONES_FILE="docs/spec/11-milestones.md"; REPORT_DIR="docs/reports"   # defaults; .milestones/config overrides
 GATE=""; GATE_SETUP=""; GATE_ENV=""; DEPLOY_MILESTONES=""; TIMEOUT="12h"
-GATE_TIMEOUT="30m"
+GATE_TIMEOUT="30m"; GATE_STEPS=(); GATE_PORT_RANGE="20000-29999"; INTEGRATE_GATE_WHERE="host"
 # shellcheck disable=SC1091
 [[ -f "$REPO/.milestones/config" ]] && source "$REPO/.milestones/config"
 # A host's own values (its toolchain's PATH) stay out of the committed config.
@@ -281,28 +315,433 @@ resolve_lane() {
 
 require_gate() {
   # No default gate: a language-specific guess would pass or fail for the wrong reason.
-  [[ -n "$GATE" ]] || die "no GATE in $REPO/.milestones/config: set GATE to the project's check command (and GATE_SETUP if derived state must be rebuilt first)"
+  [[ -n "$GATE" || ${#GATE_STEPS[@]} -gt 0 ]] || die "no GATE in $REPO/.milestones/config: set GATE to the project's check command, or GATE_STEPS to its labeled steps (and GATE_SETUP if derived state must be rebuilt first)"
+  load_gate_steps
 }
 
-gate_evidence() {
-  # One line of gate evidence, to chain.log and appended to <gatelog>. Used by the
-  # sandbox gate here (where=sandbox) and by a host-side gate (where=host).
-  #   gate_evidence <exit> <milestone> <sha> <where> <setup yes|none> <env> <gatelog>
-  local rc="$1" n="$2" sha="$3" where="$4" setup="$5" env="$6" gatelog="$7" result=FAIL
-  (( rc == 0 )) && result=pass
-  env="${env//\"/\'}"   # keep the quoted field one field
-  local line at
+# ---------------------------------------------------------------- gate runner
+# The effective step list, parallel arrays: kind, name, command, "sandbox-only" or empty.
+ST_KIND=(); ST_NAME=(); ST_CMD=(); ST_ONLY=()
+
+add_gate_step() {
+  local kind="$1" name="$2" cmd="$3" only="$4" seen
+  [[ "$kind" == integration || "$kind" == replay || "$kind" == static ]] \
+    || die "gate step '$name': kind '$kind' is not integration, replay or static"
+  [[ "$name" =~ ^[A-Za-z0-9_.-]+$ ]] || die "gate step name '$name': letters, digits, _ . or -"
+  [[ "$cmd" =~ [^[:space:]] ]] || die "gate step '$name' has no command"
+  for seen in "${ST_NAME[@]}"; do
+    [[ "$seen" != "$name" ]] || die "gate step name '$name' appears twice (GATE_SETUP is the step named setup)"
+  done
+  ST_KIND+=("$kind"); ST_NAME+=("$name"); ST_CMD+=("$cmd"); ST_ONLY+=("$only")
+}
+
+load_gate_steps() {
+  # GATE_SETUP as step `setup`, then GATE_STEPS, or GATE as one static step named `gate`.
+  local e kind rest name cmd only
+  ST_KIND=(); ST_NAME=(); ST_CMD=(); ST_ONLY=()
+  [[ -z "$GATE" || ${#GATE_STEPS[@]} -eq 0 ]] || die "set GATE or GATE_STEPS in .milestones/config, not both"
+  [[ -z "$GATE_SETUP" ]] || add_gate_step static setup "$GATE_SETUP" ""
+  if (( ${#GATE_STEPS[@]} )); then
+    for e in "${GATE_STEPS[@]}"; do
+      [[ "$e" == *"|"*"|"* ]] || die "GATE_STEPS entry '$e': want kind|name|command[|sandbox-only]"
+      kind="${e%%|*}"; rest="${e#*|}"; name="${rest%%|*}"; cmd="${rest#*|}"; only=""
+      if [[ "$cmd" == *"|sandbox-only" ]]; then cmd="${cmd%|sandbox-only}"; only=sandbox-only; fi
+      add_gate_step "$kind" "$name" "$cmd" "$only"
+    done
+  else
+    add_gate_step static gate "$GATE" ""
+  fi
+}
+
+gate_definition_hash() {
+  # sha256 over what decides a run's verdict: the effective steps, GATE_SETUP, GATE_ENV,
+  # .milestones/config and config.local as files, this driver, and the MAX_* budget keys.
+  local k f v
+  {
+    printf 'steps\0'
+    for k in "${!ST_NAME[@]}"; do printf '%s|%s|%s|%s\0' "${ST_KIND[k]}" "${ST_NAME[k]}" "${ST_CMD[k]}" "${ST_ONLY[k]}"; done
+    printf 'setup\0%s\0env\0%s\0' "$GATE_SETUP" "$GATE_ENV"
+    for f in config config.local; do
+      printf '%s\0' "$f"
+      if [[ -f "$REPO/.milestones/$f" ]]; then cat "$REPO/.milestones/$f"; else printf 'absent'; fi
+      printf '\0'
+    done
+    printf 'driver\0'; cat "$SELF"; printf '\0budgets\0'
+    for v in $(compgen -v MAX_ | LC_ALL=C sort); do printf '%s=%s\0' "$v" "${!v}"; done
+  } | sha256sum | cut -d' ' -f1
+}
+
+file_size() { if [[ -f "$1" ]]; then wc -c < "$1" | tr -d ' '; else echo 0; fi; }
+
+# ---- ports: a host gate run's GATE_PORT_1..4
+PORTS=(); PORT_TOKEN=""
+free_ports() {
+  # free_ports <count> <candidate>...: the first <count> candidates nothing is bound to, by a
+  # bind on every address (IPv4 and IPv6); /dev/tcp connects when python3 is absent.
+  local want="$1" p free=()
+  shift
+  if command -v python3 > /dev/null 2>&1; then
+    python3 -c '
+import errno, socket, sys
+want, out = int(sys.argv[1]), []
+for a in sys.argv[2:]:
+    busy = False
+    for fam, host in ((socket.AF_INET, "0.0.0.0"), (socket.AF_INET6, "::")):
+        try:
+            s = socket.socket(fam, socket.SOCK_STREAM)
+        except OSError:
+            continue
+        try:
+            if fam == socket.AF_INET6:
+                s.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+            s.bind((host, int(a)))
+        except OSError as e:
+            busy = e.errno in (errno.EADDRINUSE, errno.EACCES)
+        finally:
+            s.close()
+        if busy:
+            break
+    if not busy:
+        out.append(a)
+        if len(out) == want:
+            break
+print(" ".join(out))' "$want" "$@"
+    return
+  fi
+  for p in "$@"; do
+    (exec 3<> "/dev/tcp/127.0.0.1/$p") 2> /dev/null && continue
+    free+=("$p"); (( ${#free[@]} < want )) || break
+  done
+  echo "${free[*]}"
+}
+
+alloc_ports() {
+  # Four ports into PORTS, under an flock on logs/milestones/ports.registry: a port is taken
+  # only when no live run has it registered and nothing is bound to it, and it stays
+  # registered until release_ports, because an app binds it minutes later. Registry lines:
+  # "<port> <token> <pid> <at>"; a line whose pid is gone is pruned.
+  local token="$1" reg="$LOGS/ports.registry" lo hi fd p tok pid at span start i got
+  local keep=() cands=() held=" "
+  if [[ ! "$GATE_PORT_RANGE" =~ ^([0-9]+)-([0-9]+)$ ]]; then log "GATE_PORT_RANGE='$GATE_PORT_RANGE': want <low>-<high>"; return 1; fi
+  lo="${BASH_REMATCH[1]}"; hi="${BASH_REMATCH[2]}"
+  if (( lo < 1024 || hi > 65535 || hi - lo < 3 )); then log "GATE_PORT_RANGE=$GATE_PORT_RANGE: want four or more ports within 1024-65535"; return 1; fi
+  exec {fd}>> "$reg.lock"
+  if ! flock -w 60 "$fd"; then exec {fd}>&-; log "could not lock $reg within 60s"; return 1; fi
+  if [[ -f "$reg" ]]; then
+    while read -r p tok pid at; do
+      if [[ ! "$p" =~ ^[0-9]+$ || ! "$pid" =~ ^[0-9]+$ ]] || ! kill -0 "$pid" 2> /dev/null; then continue; fi
+      keep+=("$p $tok $pid $at"); held+="$p "
+    done < "$reg"
+  fi
+  span=$(( hi - lo + 1 )); start=$(( RANDOM % span ))
+  for (( i = 0; i < span; i++ )); do
+    p=$(( lo + (start + i) % span ))
+    [[ "$held" == *" $p "* ]] || cands+=("$p")
+  done
+  got=""; (( ${#cands[@]} )) && got="$(free_ports 4 "${cands[@]}")"
+  read -r -a PORTS <<< "$got"
+  if (( ${#PORTS[@]} < 4 )); then
+    PORTS=(); exec {fd}>&-
+    log "no four free, unregistered ports in GATE_PORT_RANGE=$GATE_PORT_RANGE"; return 1
+  fi
   at="$(date -Is)"
-  line="gate $result exit=$rc milestone=$n sha=${sha:-unknown} where=$where setup=$setup env=\"$env\" at=$at"
-  echo "$line" >> "$gatelog"
-  log "$line"
+  { if (( ${#keep[@]} )); then printf '%s\n' "${keep[@]}"; fi
+    for p in "${PORTS[@]}"; do echo "$p $token $$ $at"; done; } > "$reg.$$"
+  mv -f "$reg.$$" "$reg"
+  PORT_TOKEN="$token"
+  exec {fd}>&-
 }
 
-sandbox_worktree() {
-  # The sandbox's worktree: the enter result's `.worktree`, else agent-sandbox's layout.
-  local ws; ws="$(json_field "$2" worktree)"
-  [[ -n "$ws" ]] || ws="${AGENT_SANDBOX_HOME:-$HOME/agent-sandbox}/worktrees/$1"
-  echo "$ws"
+release_ports() {
+  [[ -n "$PORT_TOKEN" ]] || return 0
+  local reg="$LOGS/ports.registry" tok="$PORT_TOKEN" fd
+  PORT_TOKEN=""; PORTS=()
+  exec {fd}>> "$reg.lock"
+  flock -w 60 "$fd" || true
+  if [[ -f "$reg" ]]; then awk -v t="$tok" '$2 != t' "$reg" > "$reg.$$" && mv -f "$reg.$$" "$reg"; fi
+  exec {fd}>&-
+}
+
+# ---- cleanup on every exit path of a gate run
+GATE_TMP=""; INTEGRATE_TREE=""; GATE_SANDBOX_CREATED=""
+on_exit() {
+  release_ports
+  [[ -z "$GATE_TMP" ]] || rm -rf "$GATE_TMP" 2> /dev/null || true
+  GATE_TMP=""
+  integrate_cleanup
+  remove_gate_sandbox
+}
+arm_cleanup() { trap on_exit EXIT; trap 'exit 130' INT TERM; }
+
+integrate_cleanup() {
+  # Remove the temporary worktree on every exit path.
+  [[ -n "$INTEGRATE_TREE" ]] || return 0
+  git -C "$REPO" worktree remove --force "$INTEGRATE_TREE/tree" > /dev/null 2>&1 || true
+  rm -rf "$INTEGRATE_TREE"
+  git -C "$REPO" worktree prune > /dev/null 2>&1 || true
+  INTEGRATE_TREE=""
+}
+
+remove_gate_sandbox() {
+  # agent-sandbox rm for the integration sandbox this run created, and only that one:
+  # GATE_SANDBOX_CREATED is set only after the id read back from `run --new` passed the id
+  # rule, and the rule is checked again here. --force: the sandbox holds no work (its HEAD
+  # is the merge commit already on the host branch), only what the steps left in its tree.
+  local id="$GATE_SANDBOX_CREATED" rc=0
+  [[ -n "$id" ]] || return 0
+  GATE_SANDBOX_CREATED=""
+  if [[ ! "$id" =~ $SANDBOX_ID_RE || "$id" == *..* ]]; then log "  integration sandbox id '$id' fails the id rule; not removed"; return 0; fi
+  agent-sandbox rm "$id" --force > "$LOGS/integrate-rm-$id.log" 2>&1 || rc=$?
+  if (( rc )); then log "  could not remove integration sandbox $id (exit $rc, see $LOGS/integrate-rm-$id.log)"
+  else log "  removed integration sandbox $id"; fi
+}
+
+# ---- identity and dirt, read on the host before any step
+DIRTY_TRACKED=1; DIRTY_UNTRACKED=1
+gate_dirty() {
+  # gate_dirty <dir> <bundle> <sha>: dirty.patch (tracked changes and untracked files, one
+  # patch that applies to <sha>) and untracked.txt. Ignored files and SEED_PATHS never enter
+  # either. Returns non-zero on a git error, leaving both flags dirty.
+  local dir="$1" b="$2" sha="$3" idx="$GATE_TMP/dirty.index" z="$GATE_TMP/untracked.z" p rc=0
+  local ex=()
+  DIRTY_TRACKED=1; DIRTY_UNTRACKED=1
+  local -
+  set -f
+  for p in ${SEED_PATHS:-}; do
+    [[ "$p" == /* || "/$p/" == */../* ]] || ex+=(":(top,exclude)${p%/}")
+  done
+  set +f
+  : > "$b/dirty.patch"; : > "$b/untracked.txt"
+  git -C "$dir" ls-files --others --exclude-standard -z -- . "${ex[@]}" > "$z" || return 1
+  tr '\0' '\n' < "$z" > "$b/untracked.txt"
+  GIT_INDEX_FILE="$idx" git -C "$dir" read-tree "$sha" || return 1
+  if [[ -s "$z" ]]; then
+    GIT_INDEX_FILE="$idx" GIT_LITERAL_PATHSPECS=1 git -C "$dir" add -N --pathspec-from-file="$z" --pathspec-file-nul || return 1
+  fi
+  GIT_INDEX_FILE="$idx" git -C "$dir" -c core.quotePath=false diff --binary --no-color --no-ext-diff --no-renames "$sha" -- . "${ex[@]}" > "$b/dirty.patch" || return 1
+  git -C "$dir" diff --quiet --no-ext-diff "$sha" -- . "${ex[@]}" || rc=$?
+  (( rc <= 1 )) || return 1
+  DIRTY_TRACKED="$rc"; DIRTY_UNTRACKED=0
+  [[ ! -s "$z" ]] || DIRTY_UNTRACKED=1
+}
+
+seed_kept_of() {
+  # The seed_kept paths of an agent-sandbox run.json: seeded files the run changed, which
+  # the sandbox kept instead of refreshing from the host. One per line.
+  [[ -f "$1" ]] || return 0
+  if have_jq; then jq -r '(.seed_kept // [])[] | strings' "$1" 2> /dev/null || true
+  else python3 -c '
+import json, sys
+try:
+    for p in json.load(open(sys.argv[1])).get("seed_kept") or []:
+        if isinstance(p, str): print(p)
+except Exception: pass' "$1" 2> /dev/null || true
+  fi
+}
+
+# ---- one invocation
+host_step_script() { printf 'set -o pipefail\n%s\n' "$1"; }
+
+sandbox_step_script() {
+  # Each enter is a fresh container: its own ports and /tmp, so any values work.
+  # shellcheck disable=SC2016
+  printf 'set -o pipefail\nexport GATE_PORT_1=20001 GATE_PORT_2=20002 GATE_PORT_3=20003 GATE_PORT_4=20004\nTMPDIR="$(mktemp -d)" && export TMPDIR\n(\n%s\n)\n__gate_rc=$?\nrm -rf "$TMPDIR"\nexit "$__gate_rc"\n' "$1"
+}
+
+SB_STDOUT=""; SB_RUNDIR=""
+gate_invoke() {
+  # gate_invoke host <dir> <script> <log> <seconds>
+  # gate_invoke sandbox <id> <script> <log> <seconds>
+  # Returns the invocation's exit code, read from the driver's own wait (host) or from that
+  # invocation's own `enter` (sandbox, whose container output is sliced back into <log>
+  # from the sandbox's stdout.log and stderr.log).
+  local route="$1" target="$2" script="$3" out="$4" secs="$5" rc=0
+  if [[ "$route" == host ]]; then
+    (cd "$target" && TMPDIR="$GATE_TMP/tmp" GATE_PORT_1="${PORTS[0]}" GATE_PORT_2="${PORTS[1]}" \
+      GATE_PORT_3="${PORTS[2]}" GATE_PORT_4="${PORTS[3]}" timeout "${secs}s" bash -c "$script") > "$out" 2>&1 < /dev/null || rc=$?
+    return "$rc"
+  fi
+  local so se o0 e0 jo res="${out%.log}.enter.json"
+  so="${SB_STDOUT:-${AGENT_SANDBOX_HOME:-$HOME/agent-sandbox}/runs/$target/stdout.log}"; se="$(dirname "$so")/stderr.log"
+  o0="$(file_size "$so")"; e0="$(file_size "$se")"
+  sandbox_call "$res" enter "$target" --timeout "${secs}s" "${RES[@]}" "${TAGS[@]}" --json -- bash -lc "$script" || rc=$?
+  jo="$(json_field "$res" logs.stdout)"
+  if [[ -n "$jo" ]]; then
+    [[ "$jo" == "$so" ]] || { o0=0; e0=0; }
+    so="$jo"; se="$(json_field "$res" logs.stderr)"; se="${se:-$(dirname "$so")/stderr.log}"
+    SB_STDOUT="$jo"; SB_RUNDIR="$(json_field "$res" logs.dir)"
+  fi
+  { log_segment "$so" "$o0" "$(file_size "$so")"
+    if (( $(file_size "$se") > e0 )); then echo "--- stderr"; log_segment "$se" "$e0" "$(file_size "$se")"; fi
+  } > "$out" 2> /dev/null || true
+  return "$rc"
+}
+
+write_evidence() {
+  # write_evidence <file> key=value... -- <kind name command flag status exit ms log>...
+  # Writes evidence.json and prints the kind counts for the evidence line.
+  python3 - "$@" <<'PY'
+import json, sys
+a = sys.argv[1:]
+path = a.pop(0)
+cut = a.index("--")
+h = dict(x.split("=", 1) for x in a[:cut])
+r = a[cut + 1:]
+steps = []
+for i in range(0, len(r), 8):
+    kind, name, cmd, flag, status, ex, ms, log = r[i:i + 8]
+    steps.append({"index": i // 8 + 1, "name": name, "kind": kind, "command": cmd,
+                  "sandbox_only": flag == "sandbox-only", "status": status,
+                  "exit": int(ex) if ex else None, "duration_ms": int(ms) if ms else None,
+                  "log": log or None})
+counts = {}
+for k in ("integration", "replay", "static"):
+    mine = [s for s in steps if s["kind"] == k]
+    counts[k] = {"passed": sum(s["status"] == "pass" for s in mine), "total": len(mine)}
+counts["skipped_sandbox_only"] = sum(s["status"] == "not run: sandbox-only" for s in steps)
+doc = {
+    "schema": 1,
+    "milestone": h["milestone"], "where": h["where"],
+    "verdict": "pass" if h["exit"] == "0" else "fail", "exit": int(h["exit"]),
+    "failed_step": h["failed_step"] or None,
+    "sha": h["sha"], "tree": h["tree"], "definition_hash": h["definition_hash"],
+    "dirty": h["dirty"] == "yes", "dirty_tracked": h["dirty_tracked"] == "1",
+    "dirty_untracked": h["dirty_untracked"] == "1",
+    "seed_kept": [p for p in h["seed_kept"].split("\n") if p],
+    "dirty_patch": "dirty.patch", "untracked": "untracked.txt",
+    "sandbox": h["sandbox"] or None, "setup": h["setup"], "env": h["env"],
+    "report": h["report"] or None, "timeout": h["timeout"],
+    "ports": [int(p) for p in h["ports"].split()],
+    "driver": h["driver"], "started_at": h["started_at"], "finished_at": h["finished_at"],
+    "counts": counts, "steps": steps,
+}
+with open(path, "w") as f:
+    json.dump(doc, f, indent=2)
+    f.write("\n")
+print(" ".join("%s:%d/%d" % (k, counts[k]["passed"], counts[k]["total"]) for k in ("integration", "replay", "static"))
+      + " skipped:sandbox-only:%d" % counts["skipped_sandbox_only"])
+PY
+}
+
+# ---- one gate run
+GATE_RC=0; GATE_BUNDLE=""; GATE_FAILED_STEP=""; GATE_COUNTS=""; GATE_TREE=""; GATE_DEF=""; GATE_ADMISSION=0
+gate_run() {
+  # gate_run <where> <milestone> <dir> <sha> [sandbox-id]
+  #   where: sandbox (a milestone's own sandbox, whose report must exist), host-integrate,
+  #   sandbox-integration, local. <dir> is the gated worktree as the host sees it.
+  # Returns GATE_RC: 0, or the failing step's exit. Returns 1 with no bundle when the run
+  # could not start (unreadable tree, no ports). Sets GATE_BUNDLE, GATE_FAILED_STEP,
+  # GATE_COUNTS, GATE_TREE, GATE_DEF and GATE_ADMISSION (a step enter not admitted).
+  local where="$1" n="$2" dir="$3" sha="$4" sb="${5:-}" route=host target="$3"
+  case "$where" in sandbox|sandbox-integration) route=sandbox; target="$sb" ;; esac
+  GATE_RC=0; GATE_BUNDLE=""; GATE_FAILED_STEP=""; GATE_COUNTS=""; GATE_ADMISSION=0; SB_STDOUT=""; SB_RUNDIR=""
+  arm_cleanup
+  GATE_TREE="$(git -C "$dir" rev-parse --verify -q "$sha^{tree}" 2> /dev/null)" \
+    || { log "milestone $n: cannot read the tree of ${sha:0:12} in $dir; no gate step ran"; return 1; }
+  GATE_DEF="$(gate_definition_hash)"
+  local stamp b i=1
+  stamp="$(date +%Y%m%dT%H%M%S)"; mkdir -p "$LOGS/evidence"
+  b="$LOGS/evidence/$n-$where-$stamp"
+  until mkdir "$b" 2> /dev/null; do
+    i=$(( i + 1 )); b="$LOGS/evidence/$n-$where-$stamp.$i"
+    (( i < 100 )) || { log "milestone $n: cannot create an evidence directory under $LOGS/evidence; no gate step ran"; return 1; }
+  done
+  mkdir -p "$b/steps"
+  GATE_TMP="$(mktemp -d "${TMPDIR:-/tmp}/gate-$PROJECT-$n.XXXXXX")"; mkdir -p "$GATE_TMP/tmp"
+  if [[ "$route" == host ]] && ! alloc_ports "$(basename "$b")"; then
+    rm -rf "$b"; log "milestone $n: no gate step ran"; return 1
+  fi
+  GATE_BUNDLE="$b"
+
+  local started seed_kept="" seed_read=0 dirty=no env="-" probed=0 total deadline rem k rc t0 report=""
+  local s_status=() s_exit=() s_ms=() s_log=()
+  started="$(date -Is)"
+  gate_dirty "$dir" "$b" "$sha" || log "  could not read the dirt of $dir; the bundle counts as dirty"
+  [[ -z "$GATE_ENV" ]] || env="unavailable"
+  total="$(to_seconds "$GATE_TIMEOUT")"; deadline=$(( SECONDS + total ))
+  for k in "${!ST_NAME[@]}"; do
+    s_log[k]=""; s_exit[k]=""; s_ms[k]=""
+    if (( GATE_RC )); then s_status[k]="not run"; continue; fi
+    # The GATE_ENV probe: once, after setup, before the first other step. Not a step.
+    if [[ -n "$GATE_ENV" && "$probed" == 0 && "${ST_NAME[k]}" != setup ]]; then
+      probed=1; rem=$(( deadline - SECONDS ))
+      if (( rem > 0 )); then
+        ADMISSION_REFUSED=0
+        gate_invoke "$route" "$target" "$(printf '{\n%s\n} 2>/dev/null | head -n 1' "$GATE_ENV")" "$b/steps/env.log" "$rem" || true
+        (( ADMISSION_REFUSED )) || env="$(head -n 1 "$b/steps/env.log" 2> /dev/null || true)"
+        if [[ "$route" == sandbox && "$seed_read" == 0 ]]; then seed_read=1; seed_kept="$(seed_kept_of "$SB_RUNDIR/run.json")"; fi
+      fi
+    fi
+    if [[ "$route" == host && "${ST_ONLY[k]}" == sandbox-only ]]; then s_status[k]="not run: sandbox-only"; continue; fi
+    s_log[k]="steps/$(( k + 1 ))-${ST_NAME[k]}.log"
+    rem=$(( deadline - SECONDS )); rc=0; t0="${EPOCHREALTIME//[.,]/}"
+    if (( rem <= 0 )); then
+      rc=124; echo "not started: GATE_TIMEOUT $GATE_TIMEOUT was spent" > "$b/${s_log[k]}"
+    elif [[ "$route" == host ]]; then
+      gate_invoke host "$dir" "$(host_step_script "${ST_CMD[k]}")" "$b/${s_log[k]}" "$rem" || rc=$?
+    else
+      gate_invoke sandbox "$sb" "$(sandbox_step_script "${ST_CMD[k]}")" "$b/${s_log[k]}" "$rem" || rc=$?
+      if [[ "$seed_read" == 0 ]]; then seed_read=1; seed_kept="$(seed_kept_of "$SB_RUNDIR/run.json")"; fi
+    fi
+    s_ms[k]=$(( (${EPOCHREALTIME//[.,]/} - t0) / 1000 )); s_exit[k]="$rc"
+    if (( rc == 0 )); then s_status[k]=pass; continue; fi
+    s_status[k]=fail
+    if [[ "$route" == sandbox ]] && (( rc == 3 && ADMISSION_REFUSED )); then s_status[k]="not admitted"; GATE_ADMISSION=1; fi
+    GATE_RC="$rc"; GATE_FAILED_STEP="${ST_NAME[k]}"
+  done
+  if [[ "$where" == sandbox ]]; then
+    # The milestone's report, read on the host after the steps.
+    report=missing; [[ ! -s "$dir/$REPORT_DIR/milestone-$n.md" ]] || report=present
+    if (( GATE_RC == 0 )) && [[ "$report" == missing ]]; then GATE_RC=1; GATE_FAILED_STEP=report; fi
+  fi
+  [[ "$DIRTY_TRACKED" == 0 && "$DIRTY_UNTRACKED" == 0 && -z "$seed_kept" ]] || dirty=yes
+
+  local args=() setup=none result=FAIL rel="${b#"$REPO"/}" seal line
+  for k in "${!ST_NAME[@]}"; do
+    args+=("${ST_KIND[k]}" "${ST_NAME[k]}" "${ST_CMD[k]}" "${ST_ONLY[k]}" "${s_status[k]}" "${s_exit[k]}" "${s_ms[k]}" "${s_log[k]}")
+  done
+  [[ -z "$GATE_SETUP" ]] || setup=yes
+  if ! GATE_COUNTS="$(write_evidence "$b/evidence.json" milestone="$n" where="$where" exit="$GATE_RC" \
+      failed_step="$GATE_FAILED_STEP" sha="$sha" tree="$GATE_TREE" definition_hash="$GATE_DEF" dirty="$dirty" \
+      dirty_tracked="$DIRTY_TRACKED" dirty_untracked="$DIRTY_UNTRACKED" seed_kept="$seed_kept" sandbox="$sb" \
+      setup="$setup" env="$env" report="$report" timeout="$GATE_TIMEOUT" ports="${PORTS[*]}" driver="$SELF" \
+      started_at="$started" finished_at="$(date -Is)" -- "${args[@]}")" || [[ ! -s "$b/evidence.json" ]]; then
+    log "milestone $n: could not write $b/evidence.json (python3); the gate counts as failed"
+    (( GATE_RC )) || GATE_RC=1
+    release_ports
+    return "$GATE_RC"
+  fi
+  (( GATE_RC )) || result=pass
+  env="${env//\"/\'}"   # keep the quoted field one field
+  seal="$(sha256sum "$b/evidence.json" | cut -d' ' -f1)"
+  line="gate $result exit=$GATE_RC milestone=$n sha=${sha:0:12} tree=${GATE_TREE:0:12} def=${GATE_DEF:0:12} dirty=$dirty where=$where setup=$setup steps=$GATE_COUNTS env=\"$env\" evidence=$rel at=$(date -Is)"
+  echo "$line" >> "$LOGS/milestone-$n.gate.log"
+  log "$line"
+  log "seal $seal $rel"
+  release_ports
+  rm -rf "$GATE_TMP" 2> /dev/null || true
+  GATE_TMP=""
+  return "$GATE_RC"
+}
+
+seal_of() {
+  # The seal chain.log holds for <bundle> (absolute, or relative to the project): the sha256
+  # of its "seal <sha256> <bundle>" line. Empty unless exactly one such line exists, so an
+  # extra line appended by anything but the run that sealed it voids the seal.
+  local rel="${1#"$REPO"/}"
+  rel="${rel%/}"
+  [[ -f "$CHAIN" ]] || return 0
+  awk -v b="$rel" '$1 == "seal" && $3 == b && NF == 3 { s = $2; c++ } END { if (c == 1) print s }' "$CHAIN"
+}
+
+bundle_sealed() {
+  # True when <bundle>/evidence.json's sha256 equals its seal in chain.log now.
+  local rel="${1#"$REPO"/}" want have
+  rel="${rel%/}"
+  want="$(seal_of "$rel")"
+  [[ -n "$want" && -f "$REPO/$rel/evidence.json" ]] || return 1
+  have="$(sha256sum "$REPO/$rel/evidence.json" | cut -d' ' -f1)"
+  [[ "$have" == "$want" ]]
 }
 
 lane_blocker() {
@@ -386,66 +825,20 @@ milestone_prompt() {
 }
 
 # ---------------------------------------------------------------- the unit's body
-gate_script() {
-  # The shell script one gate run executes: GATE_SETUP, the GATE_ENV probe, GATE, then an
-  # optional final check, as marker lines "@@<nonce> env=..." and "@@<nonce> step=<step>"
-  # (the step that failed). An EXIT trap names the failing step, so a setup or gate that
-  # calls `exit` itself is still attributed; `|| exit` keeps a failing step from falling
-  # through to the next.
-  local nonce="$1" final="${2:-}" script
-  script="set +e"$'\n'"trap '__gate_rc=\$?; [ \$__gate_rc -eq 0 ] || echo \"@@$nonce step=\$__gate_step\"' EXIT"
-  if [[ -n "$GATE_SETUP" ]]; then
-    script+=$'\n'"__gate_step=setup"$'\n'"{
-$GATE_SETUP
-} || exit \$?"
-  fi
-  if [[ -n "$GATE_ENV" ]]; then
-    script+=$'\n'"echo \"@@$nonce env=\$( {
-$GATE_ENV
-} 2>/dev/null | head -n 1)\""
-  fi
-  script+=$'\n'"__gate_step=gate"$'\n'"{
-$GATE
-} || exit \$?"
-  [[ -n "$final" ]] && script+=$'\n'"__gate_step=report"$'\n'"$final"
-  printf '%s\n' "$script"
-}
-
 run_gate() {
-  # Setup, the env probe, the gate and the report check run in one `bash -lc`, so the
-  # state setup rebuilds is the state the gate reads. With --json, agent-sandbox sends
-  # the container's stdout only to the sandbox's stdout.log, so the script prints marker
-  # lines carrying a per-run nonce, and the driver reads them back from that log.
-  local n="$1"
-  local rc=0 gatelog="$LOGS/milestone-$n.gate.log" nonce setup=none script
+  # A milestone's own sandbox: identity, dirt and the report read on the host from its
+  # worktree, each step through its own enter.
+  local n="$1" ws sha rc=0
   require_gate
-  nonce="rm-gate-$(date +%s)-$$-$RANDOM"
-  [[ -n "$GATE_SETUP" ]] && setup=yes
-  script="$(gate_script "$nonce" "test -s $REPORT_DIR/milestone-$n.md")"
-  sandbox_call "$gatelog" enter "$SANDBOX" --timeout "$GATE_TIMEOUT" "${RES[@]}" "${TAGS[@]}" --json -- \
-    bash -lc "$script" || rc=$?
-  if (( rc == 3 && ADMISSION_REFUSED )); then
-    log "milestone $n: gate not admitted; unit stops"; return 3
+  ws="$(sandbox_workspace "$SANDBOX")"
+  sha="$(git -C "$ws" rev-parse --verify -q HEAD 2> /dev/null || true)"
+  if [[ ! -d "$ws" || -z "$sha" ]]; then
+    log "milestone $n: gate FAILED: cannot read the gated commit in $ws; no step ran; unit stops"; return 1
   fi
-
-  # The gated commit, read on the host: the worktree is a host directory.
-  local ws sha stdout_log marks="" env="-" step
-  ws="$(sandbox_worktree "$SANDBOX" "$gatelog")"
-  sha="$(git -C "$ws" rev-parse HEAD 2>/dev/null | cut -c1-12 || true)"
-  stdout_log="$(json_field "$gatelog" logs.stdout)"
-  [[ -n "$stdout_log" && -f "$stdout_log" ]] && marks="$(grep -a "^@@$nonce " "$stdout_log" || true)"
-  step="$(sed -n "s/^@@$nonce step=//p" <<< "$marks" | tail -n 1)"
-  if [[ -n "$GATE_ENV" ]]; then
-    # A marker that never came back (no log, or the probe's line lost) is not an empty probe.
-    if grep -q "^@@$nonce env=" <<< "$marks"; then env="$(sed -n "s/^@@$nonce env=//p" <<< "$marks" | tail -n 1)"
-    else env="unavailable"; fi
-  fi
-  gate_evidence "$rc" "$n" "$sha" sandbox "$setup" "$env" "$gatelog"
-
-  if (( rc == 0 )); then
-    log "milestone $n: gate passed $(date -Is)"; return 0
-  fi
-  log "milestone $n: gate FAILED (exit $rc${step:+, at $step}), see $gatelog and the sandbox transcript; unit stops"
+  gate_run sandbox "$n" "$ws" "$sha" "$SANDBOX" || rc=$?
+  if (( GATE_ADMISSION )); then log "milestone $n: gate not admitted; unit stops"; return 3; fi
+  if (( rc == 0 )); then log "milestone $n: gate passed $(date -Is)"; return 0; fi
+  log "milestone $n: gate FAILED (exit $rc${GATE_FAILED_STEP:+, at $GATE_FAILED_STEP}), see ${GATE_BUNDLE:-$LOGS} and the sandbox transcript; unit stops"
   return 1
 }
 
@@ -731,24 +1124,34 @@ path_matches() {
   return 1
 }
 
-sandbox_milestone_tag() {
-  # The `milestone` tag of sandbox <id>'s record in agent-sandbox status --json; empty
-  # when the record, the tag or agent-sandbox itself is missing.
+sandbox_record_field() {
+  # A field (dotted path) of sandbox <id>'s record in agent-sandbox status --json; empty when
+  # the record, the field or agent-sandbox itself is missing.
   local js
-  js="$(agent-sandbox status --json 2>/dev/null)" || return 0
+  js="$(agent-sandbox status --json 2> /dev/null)" || return 0
   if have_jq; then
-    printf '%s' "$js" | jq -r --arg id "$1" '.[]? | select(.sandbox_id == $id) | .tags.milestone // empty' 2>/dev/null | head -n 1 || true
+    printf '%s' "$js" | jq -r --arg id "$1" --arg p "$2" '.[]? | select(.sandbox_id == $id) | getpath($p | split(".")) // empty' 2> /dev/null | head -n 1 || true
   else
     printf '%s' "$js" | python3 -c '
 import json, sys
 try:
     for r in json.load(sys.stdin):
         if r.get("sandbox_id") == sys.argv[1]:
-            m = (r.get("tags") or {}).get("milestone")
-            if m not in (None, ""): print(m)
+            v = r
+            for k in sys.argv[2].split("."): v = v.get(k) if isinstance(v, dict) else None
+            if v not in (None, ""): print(v)
             break
-except Exception: pass' "$1" 2>/dev/null || true
+except Exception: pass' "$1" "$2" 2> /dev/null || true
   fi
+}
+
+sandbox_milestone_tag() { sandbox_record_field "$1" tags.milestone; }
+
+sandbox_workspace() {
+  # Sandbox <id>'s worktree on the host: its record's workspace, else agent-sandbox's layout.
+  local ws; ws="$(sandbox_record_field "$1" workspace)"
+  [[ -n "$ws" ]] || ws="${AGENT_SANDBOX_HOME:-$HOME/agent-sandbox}/worktrees/$1"
+  echo "$ws"
 }
 
 report_expectation_section() {
@@ -844,26 +1247,14 @@ status_upsert() {
   cat "$tmp" > "$sfile"; rm -f "$tmp"   # keep the file's own mode
 }
 
-INTEGRATE_TREE=""
-integrate_cleanup() {
-  # Remove the temporary worktree on every exit path.
-  [[ -n "$INTEGRATE_TREE" ]] || return 0
-  git -C "$REPO" worktree remove --force "$INTEGRATE_TREE/tree" >/dev/null 2>&1 || true
-  rm -rf "$INTEGRATE_TREE"
-  git -C "$REPO" worktree prune >/dev/null 2>&1 || true
-  INTEGRATE_TREE=""
-}
-
 host_gate() {
   # Gate HEAD on the host in a temporary detached worktree seeded with SEED_PATHS copies,
-  # so GATE_SETUP never writes the host files every sandbox is seeded from. Writes the
-  # evidence line (where=host); returns the gate's exit code. Sets GATE_STEP on failure.
-  local n="$1" sha="$2" rc=0 nonce script out setup=none env="-" p marks
-  local gatelog="$LOGS/milestone-$n.gate.log"
+  # so GATE_SETUP never writes the host files every sandbox is seeded from. The bundle is
+  # written under the project's logs before the worktree is removed. Returns the gate's exit.
+  local n="$1" sha="$2" rc=0 p
+  arm_cleanup
   INTEGRATE_TREE="$(mktemp -d "${TMPDIR:-/tmp}/integrate-$PROJECT-$n.XXXXXX")"
-  trap integrate_cleanup EXIT
-  trap 'exit 130' INT TERM
-  git worktree add -q --detach "$INTEGRATE_TREE/tree" "$sha" >/dev/null
+  git worktree add -q --detach "$INTEGRATE_TREE/tree" "$sha" > /dev/null || { log "  could not add a worktree of ${sha:0:12}"; return 1; }
   local -
   set -f
   for p in ${SEED_PATHS:-}; do
@@ -874,21 +1265,42 @@ host_gate() {
     log "  seeded $p"
   done
   set +f
-  nonce="rm-gate-$(date +%s)-$$-$RANDOM"
-  [[ -n "$GATE_SETUP" ]] && setup=yes
-  script="$(gate_script "$nonce")"
-  out="$LOGS/integrate-$n-$(date +%Y%m%dT%H%M%S).out"
-  log "  host gate in $INTEGRATE_TREE/tree (timeout $GATE_TIMEOUT), output: $out"
-  (cd "$INTEGRATE_TREE/tree" && timeout "$GATE_TIMEOUT" bash -c "$script") > "$out" 2>&1 < /dev/null || rc=$?
-  marks="$(grep -a "^@@$nonce " "$out" || true)"
-  GATE_STEP="$(sed -n "s/^@@$nonce step=//p" <<< "$marks" | tail -n 1)"
-  (( rc == 124 )) && GATE_STEP="timeout $GATE_TIMEOUT"
-  if [[ -n "$GATE_ENV" ]]; then
-    if grep -q "^@@$nonce env=" <<< "$marks"; then env="$(sed -n "s/^@@$nonce env=//p" <<< "$marks" | tail -n 1)"
-    else env="unavailable"; fi
-  fi
-  gate_evidence "$rc" "$n" "${sha:0:12}" host "$setup" "$env" "$gatelog"
+  log "  host gate in $INTEGRATE_TREE/tree (timeout $GATE_TIMEOUT)"
+  gate_run host-integrate "$n" "$INTEGRATE_TREE/tree" "$sha" || rc=$?
   integrate_cleanup
+  return "$rc"
+}
+
+GATE_REFUSED=""
+sandbox_integration_gate() {
+  # INTEGRATE_GATE_WHERE=sandbox: a fresh sandbox of the host checkout, whose HEAD is the
+  # merge commit, refused unless its worktree is at that commit, gated step by step through
+  # enter and removed on every exit path. Sets GATE_REFUSED for a sandbox at another commit.
+  local n="$1" head="$2" lane="$3" created id ws wsha rc=0
+  arm_cleanup
+  resolve_resources "$n"
+  TAGS=(--tag "milestone=$n" --tag "lane=$lane" --tag purpose=integration-gate)
+  created="$LOGS/integrate-$n-sandbox-$(date +%Y%m%dT%H%M%S).log"
+  log "  integration sandbox for ${head:0:12}, created from $REPO (log $created)"
+  sandbox_call "$created" run "$REPO" --new "${RES[@]}" "${TAGS[@]}" --json -- true || rc=$?
+  if (( rc == 3 && ADMISSION_REFUSED )); then GATE_FAILED_STEP="sandbox creation, not admitted"; return 3; fi
+  id="$(json_sandbox_id "$created")"
+  if [[ -z "$id" || ! "$id" =~ $SANDBOX_ID_RE || "$id" == *..* ]]; then
+    log "  no valid sandbox id in $created (agent-sandbox exit $rc); nothing to remove"
+    GATE_FAILED_STEP="sandbox creation"; return 1
+  fi
+  GATE_SANDBOX_CREATED="$id"
+  log "  integration sandbox: $id"
+  if (( rc )); then GATE_FAILED_STEP="sandbox creation (exit $rc)"; remove_gate_sandbox; return 1; fi
+  ws="$(json_field "$created" worktree)"
+  wsha=""
+  [[ -z "$ws" || ! -d "$ws" ]] || wsha="$(git -C "$ws" rev-parse --verify -q HEAD 2> /dev/null || true)"
+  if [[ "$wsha" != "$head" ]]; then
+    GATE_REFUSED="integration sandbox $id is at ${wsha:-an unreadable HEAD}, not the merge commit $head"
+    remove_gate_sandbox; return 2
+  fi
+  gate_run sandbox-integration "$n" "$ws" "$head" "$id" || rc=$?
+  remove_gate_sandbox
   return "$rc"
 }
 
@@ -913,6 +1325,9 @@ do_integrate() {
   sbranch="agent-sandbox/$id"
   log "=== integrate milestone $n from $sbranch: $(date -Is) ==="
   refuse() { log "integrate milestone $n refused: $*"; exit 2; }
+  local gwhere="${INTEGRATE_GATE_WHERE:-host}" glabel="host gate"
+  [[ "$gwhere" == host || "$gwhere" == sandbox ]] || refuse "INTEGRATE_GATE_WHERE=$gwhere: want host or sandbox"
+  [[ "$gwhere" == host ]] || glabel="sandbox-integration gate"
 
   # ---- preconditions: nothing below merges until all hold
   [[ -z "$(git status --porcelain --untracked-files=no)" ]] || refuse "the host checkout has tracked changes; commit or stash them first"
@@ -1030,31 +1445,37 @@ do_integrate() {
     log "  evaluation record $evf present, no owner action left"
   fi
 
-  # ---- host gate
-  GATE_STEP=""
-  if ! host_gate "$n" "$head"; then
-    kept "host gate FAILED${GATE_STEP:+ at $GATE_STEP}; output under $LOGS/integrate-$n-*.out"
+  # ---- the gate, where INTEGRATE_GATE_WHERE says
+  local grc=0 why=""
+  GATE_FAILED_STEP=""; GATE_REFUSED=""; GATE_BUNDLE=""
+  if [[ "$gwhere" == sandbox ]]; then sandbox_integration_gate "$n" "$head" "$(resolve_lane "$n")" || grc=$?
+  else host_gate "$n" "$head" || grc=$?; fi
+  [[ -z "$GATE_REFUSED" ]] || { kept "refused: $GATE_REFUSED"; exit 2; }
+  if (( grc )); then
+    why="${GATE_FAILED_STEP:+ at $GATE_FAILED_STEP}"; (( grc != 124 )) || why+=" (timed out after $GATE_TIMEOUT)"
+    kept "$glabel FAILED$why; evidence: ${GATE_BUNDLE:-none}"
     exit 1
   fi
+  bundle_sealed "$GATE_BUNDLE" || { kept "refused: $GATE_BUNDLE/evidence.json does not match its seal in chain.log"; exit 2; }
 
   # The checkout is shared: a commit or edit landing while the gate ran was never gated.
   if [[ "$(git rev-parse HEAD)" != "$head" || "$(git symbolic-ref --quiet --short HEAD || true)" != "$branch" \
         || -n "$(git status --porcelain --untracked-files=no)" ]]; then
-    kept "refused: HEAD or the tracked tree changed while the host gate ran; the gated commit is ${head:0:12}, HEAD is now $(git rev-parse --short=12 HEAD)"
+    kept "refused: HEAD or the tracked tree changed while the $glabel ran; the gated commit is ${head:0:12}, HEAD is now $(git rev-parse --short=12 HEAD)"
     exit 2
   fi
 
   # ---- STATUS.md, then push
   local sha12="${head:0:12}" lane final
   lane="$(resolve_lane "$n")"
-  status_upsert "$n" "$lane" "$id" "$sha12" "pass $sha12 $(date +%Y-%m-%d)"
+  status_upsert "$n" "$lane" "$id" "$sha12" "pass $sha12 tree=${GATE_TREE:0:12} def=${GATE_DEF:0:12} $GATE_COUNTS $(date +%Y-%m-%d)"
   git add -- .milestones/STATUS.md
   if git diff --cached --quiet -- .milestones/STATUS.md; then
     log "  STATUS.md row for milestone $n unchanged"
     final="$(git rev-parse HEAD)"
     [[ "$final" == "$head" ]] || { kept "refused: HEAD moved off the gated commit ${head:0:12} before the push"; exit 2; }
   else
-    git commit -q -m "milestone $n: STATUS.md after a passing host gate on $sha12" -- .milestones/STATUS.md
+    git commit -q -m "milestone $n: STATUS.md after a passing $glabel on $sha12" -- .milestones/STATUS.md
     final="$(git rev-parse HEAD)"
     log "  STATUS.md row for milestone $n committed as ${final:0:12}"
     [[ "$(git rev-parse "$final^")" == "$head" ]] \
@@ -1084,6 +1505,11 @@ do_config() {
   echo "GATE_SETUP=$GATE_SETUP"
   echo "GATE=$GATE"
   echo "GATE_ENV=$GATE_ENV"
+  echo "INTEGRATE_GATE_WHERE=$INTEGRATE_GATE_WHERE"
+  if [[ -n "$GATE" || ${#GATE_STEPS[@]} -gt 0 ]]; then
+    load_gate_steps
+    for key in "${!ST_NAME[@]}"; do echo "GATE_STEP=${ST_KIND[key]}|${ST_NAME[key]}|${ST_CMD[key]}${ST_ONLY[key]:+|${ST_ONLY[key]}}"; done
+  fi
 }
 
 # ---------------------------------------------------------------- prompt verb

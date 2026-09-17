@@ -25,6 +25,10 @@ cat > "$FAKE_DIR/bin/systemctl" <<'EOF'
 #!/usr/bin/env bash
 cat "$FAKE_DIR/units" 2>/dev/null || true
 EOF
+# The driver's agent-sandbox layout fallbacks (worktrees/<id>, runs/<id>) resolve into the
+# fakes, never into the real ~/agent-sandbox.
+export AGENT_SANDBOX_HOME="$FAKE_DIR"
+export FAKE_WS_ROOT="$FAKE_DIR/worktrees"
 cat > "$FAKE_DIR/bin/agent-sandbox" <<'EOF'
 #!/usr/bin/env bash
 # One line per call; a multi-line bash -lc script has its newlines shown as \n.
@@ -32,7 +36,18 @@ all="$*"; printf '%s\n' "${all//$'\n'/\\n}" >> "$FAKE_DIR/agent-sandbox.calls"
 case "$1" in
   status) cat "$FAKE_DIR/status.json" ;;
   run)    echo "[agent-sandbox] effective budget 16 GiB (config), floor 8 GiB (config)" >&2
-          echo '{"sandbox_id": "'"${FAKE_RUN_ID:-proj-deadbeef}"'", "status": "completed", "exit_code": 0}' ;;
+          id="${FAKE_RUN_ID:-proj-deadbeef}"; ws="${FAKE_WS_ROOT:-/nonexistent}/$id"; runs="$FAKE_DIR/runs/$id"
+          # FAKE_RUN_CLONE=1: the new sandbox's worktree is a clone of the repo argument,
+          # detached at FAKE_RUN_AT (default HEAD), like `run <repo> --new` from its HEAD.
+          if [[ -n "${FAKE_RUN_CLONE:-}" ]]; then
+            at="$(git -C "$2" rev-parse "${FAKE_RUN_AT:-HEAD}")"
+            git clone -q "$2" "$ws" > /dev/null 2>&1 && git -C "$ws" checkout -q --detach "$at" > /dev/null 2>&1
+            mkdir -p "$runs"
+          fi
+          echo '{"sandbox_id": "'"$id"'", "worktree": "'"$ws"'", "status": "completed", "exit_code": 0,'
+          echo ' "logs": {"dir": "'"$runs"'", "stdout": "'"$runs"'/stdout.log", "stderr": "'"$runs"'/stderr.log"}}' ;;
+  rm)     [[ -n "${2:-}" ]] || { echo "agent-sandbox: refusing an empty id" >&2; exit 2; }
+          rm -rf "${FAKE_WS_ROOT:?}/$2"; echo "removed $2" ;;
   enter)  rc="${FAKE_ENTER_RC:-0}"
           # FAKE_ENTER_NOADMIT=1: exit 3 is the command's own exit, with an ordinary result JSON.
           if [[ "$rc" == 3 && -z "${FAKE_ENTER_NOADMIT:-}" ]]; then
@@ -86,6 +101,15 @@ MEMORY_6=12g
 EOF
 printf '## Milestone 5\n\nfive.\n\n## Milestone 6\n\nsix.\n\n## Milestone 7\n\nseven.\n' > "$PROJ/docs/spec/11-milestones.md"
 CHAIN="$PROJ/logs/milestones/chain.log"
+# Sandbox worktrees the gate reads on the host: the gated commit and the report.
+mk_gws() {  # id [report]
+  local ws="$FAKE_WS_ROOT/$1"
+  mkdir -p "$ws/docs/reports"; git -C "$ws" init -q -b main
+  [[ "${2:-}" == report ]] && echo "# Milestone 6 report" > "$ws/docs/reports/milestone-6.md"
+  git -C "$ws" add -A && git -C "$ws" -c user.name=t -c user.email=t@t commit -q --allow-empty -m "milestone 6 report"
+}
+mk_gws proj-deadbeef report
+mk_gws proj-1a2b3c4d report
 
 # ---------------------------------------------------------------- assertions
 N=0
@@ -283,7 +307,7 @@ reset
 assert_grep '^run .* --new --memory 12g --cpus 4 --tag unit=milestone-proj-6-T --tag milestone=6 --json -- true$' "$FAKE_DIR/agent-sandbox.calls" "no --sandbox: the sandbox is created inside the unit, tagged"
 assert_grep '^sandbox: proj-deadbeef$' "$CHAIN" "the new id read from the result JSON"
 assert_grep '^enter proj-deadbeef --timeout 2h --memory 12g --cpus 4 --tag unit=milestone-proj-6-T --tag milestone=6 --json -- claude ' "$FAKE_DIR/agent-sandbox.calls" "milestone turn tagged with resources"
-assert_grep '^enter proj-deadbeef --timeout 30m --memory 12g --cpus 4 --tag unit=milestone-proj-6-T --tag milestone=6 --json -- bash -lc .*true.*test -s docs/reports/milestone-6.md' "$FAKE_DIR/agent-sandbox.calls" "gate tagged as a second call"
+assert_grep '^enter proj-deadbeef --timeout 1[78][0-9]{2}s --memory 12g --cpus 4 --tag unit=milestone-proj-6-T --tag milestone=6 --json -- bash -lc .*true' "$FAKE_DIR/agent-sandbox.calls" "gate tagged as a second call, bounded by GATE_TIMEOUT's 1800 seconds"
 assert_eq "$(grep -c '^enter ' "$FAKE_DIR/agent-sandbox.calls")" 2 "exactly two enter calls"
 assert_grep 'milestone 6: gate passed' "$CHAIN" "gate result in chain.log"
 assert_grep 'Milestone 6 of docs/spec/11-milestones.md' "$PROJ/logs/milestones/milestone-6.prompt" "prompt assembled"
@@ -322,12 +346,9 @@ config_with() {  # the base config plus KEY=value lines; GATE removed with -GATE
     else printf '%s\n' "$l" >> "$PROJ/.milestones/config"; fi
   done
 }
-export FAKE_WS_ROOT="$T/gws"
-GWS="$FAKE_WS_ROOT/proj-1a2b3c4d"; mkdir -p "$GWS/docs/reports"
-git -C "$GWS" init -q -b main
-echo "# Milestone 6 report" > "$GWS/docs/reports/milestone-6.md"
-git -C "$GWS" add -A && git -C "$GWS" -c user.name=t -c user.email=t@t commit -q -m "milestone 6 report"
+GWS="$FAKE_WS_ROOT/proj-1a2b3c4d"
 GSHA="$(git -C "$GWS" rev-parse HEAD | cut -c1-12)"
+EVLINE='tree=[0-9a-f]{12} def=[0-9a-f]{12}'   # the identity fields between sha= and dirty=
 gate_inside() {  # run the gate-only unit body against proj-1a2b3c4d; its exit code in GRC
   set +e
   (cd "$PROJ" && FAKE_ENTER_EXEC=1 "$DRIVER" --inside 6 --sandbox proj-1a2b3c4d --unit u --gate "$@") > "$T/gate.out" 2>&1; GRC=$?
@@ -336,38 +357,40 @@ gate_inside() {  # run the gate-only unit body against proj-1a2b3c4d; its exit c
 GATELOG="$PROJ/logs/milestones/milestone-6.gate.log"
 
 # ================================================================ 10. setup, then gate, then report check
-scenario "GATE_SETUP runs before GATE before the report check, in one bash -lc"
+scenario "GATE_SETUP runs as step setup before GATE, each its own enter, then the host checks the report"
 reset; config_with 'GATE_SETUP="echo setup"' 'GATE="echo gate"'
 gate_inside
 assert_eq "$GRC" 0 "gate passes"
-assert_eq "$(grep -c '^enter ' "$FAKE_DIR/agent-sandbox.calls")" 1 "one enter call"
-assert_grep '^enter proj-1a2b3c4d .* -- bash -lc .*echo setup.*echo gate.*test -s docs/reports/milestone-6.md' "$FAKE_DIR/agent-sandbox.calls" "setup before gate before report check"
-assert_eq "$(grep -Ex 'setup|gate' "$FAKE_DIR/runs/proj-1a2b3c4d/stdout.log" | tr '\n' ' ')" "setup gate " "setup ran before gate in the same shell"
-assert_grep "^gate pass exit=0 milestone=6 sha=$GSHA where=sandbox setup=yes env=\"-\" at=[0-9]{4}-[0-9]{2}-[0-9]{2}T" "$CHAIN" "evidence line in chain.log"
-assert_grep "^gate pass exit=0 milestone=6 sha=$GSHA where=sandbox setup=yes " "$GATELOG" "evidence line appended to the gate log"
+assert_eq "$(grep -c '^enter ' "$FAKE_DIR/agent-sandbox.calls")" 2 "one enter call per step"
+assert_grep '^enter proj-1a2b3c4d .* -- bash -lc .*echo setup' <(grep '^enter ' "$FAKE_DIR/agent-sandbox.calls" | sed -n 1p) "the first enter runs setup"
+assert_grep '^enter proj-1a2b3c4d .* -- bash -lc .*echo gate' <(grep '^enter ' "$FAKE_DIR/agent-sandbox.calls" | sed -n 2p) "the second enter runs the gate"
+assert_not_grep 'test -s docs/reports' "$FAKE_DIR/agent-sandbox.calls" "the report check runs on the host, not in the container"
+assert_eq "$(grep -Ex 'setup|gate' "$FAKE_DIR/runs/proj-1a2b3c4d/stdout.log" | tr '\n' ' ')" "setup gate " "setup ran before gate, in the same worktree"
+assert_grep "^gate pass exit=0 milestone=6 sha=$GSHA $EVLINE dirty=no where=sandbox setup=yes steps=integration:0/0 replay:0/0 static:2/2 skipped:sandbox-only:0 env=\"-\" evidence=logs/milestones/evidence/6-sandbox-[0-9T.]+ at=[0-9]{4}-[0-9]{2}-[0-9]{2}T" "$CHAIN" "evidence line in chain.log"
+assert_grep "^gate pass exit=0 milestone=6 sha=$GSHA $EVLINE dirty=no where=sandbox setup=yes " "$GATELOG" "evidence line appended to the gate log"
 
 # ================================================================ 11. no setup
 scenario "no GATE_SETUP: gate then report check, evidence says setup=none"
 reset; config_with 'GATE="echo gate"'
 gate_inside
 assert_eq "$GRC" 0 "gate passes"
-assert_grep '^enter proj-1a2b3c4d .* -- bash -lc .*echo gate.*test -s docs/reports/milestone-6.md' "$FAKE_DIR/agent-sandbox.calls" "gate then report check"
+assert_grep '^enter proj-1a2b3c4d .* -- bash -lc .*echo gate' "$FAKE_DIR/agent-sandbox.calls" "the gate step"
 assert_not_grep 'echo setup' "$FAKE_DIR/agent-sandbox.calls" "no setup in the command"
-assert_grep "^gate pass exit=0 milestone=6 sha=[0-9a-f]{12} where=sandbox setup=none " "$CHAIN" "setup=none, 12-character sha, where=sandbox"
+assert_grep "^gate pass exit=0 milestone=6 sha=[0-9a-f]{12} $EVLINE dirty=no where=sandbox setup=none " "$CHAIN" "setup=none, 12-character sha, where=sandbox"
 
 # ================================================================ 12. GATE_ENV probe
 scenario "GATE_ENV output lands in the evidence line"
 reset; config_with 'GATE="echo gate"' 'GATE_ENV="echo catalog abc123; echo second line"'
 gate_inside
 assert_eq "$GRC" 0 "gate passes"
-assert_grep "^gate pass exit=0 milestone=6 sha=$GSHA where=sandbox setup=none env=\"catalog abc123\" at=" "$CHAIN" "env carries the probe's first line"
+assert_grep "^gate pass exit=0 milestone=6 sha=$GSHA $EVLINE dirty=no where=sandbox setup=none steps=[^ ]+ [^ ]+ [^ ]+ [^ ]+ env=\"catalog abc123\" evidence=[^ ]+ at=" "$CHAIN" "env carries the probe's first line"
 
 # ================================================================ 13. failing gate and failing setup
 scenario "a failing enter writes gate FAIL exit=1 and the unit fails"
 reset; config_with 'GATE="echo gate"'
 set +e; (cd "$PROJ" && FAKE_ENTER_RC=1 "$DRIVER" --inside 6 --sandbox proj-1a2b3c4d --unit u --gate) > /dev/null 2>&1; rc=$?; set -e
 [[ "$rc" != 0 ]] && pass "unit exits non-zero ($rc)" || fail "failed gate exited 0"
-assert_grep '^gate FAIL exit=1 milestone=6 sha=[0-9a-f]{12} where=sandbox setup=none ' "$CHAIN" "FAIL evidence line"
+assert_grep "^gate FAIL exit=1 milestone=6 sha=[0-9a-f]{12} $EVLINE dirty=no where=sandbox setup=none " "$CHAIN" "FAIL evidence line"
 reset; config_with 'GATE_SETUP="exit 4"' 'GATE="echo gate"'
 gate_inside
 assert_eq "$GRC" 1 "a setup failure fails the unit"
@@ -573,12 +596,12 @@ assert_eq "$(g rev-parse HEAD^)" "$MERGE" "the STATUS commit sits directly on th
 assert_eq "$(g rev-parse "$MERGE^1")" "$PRE" "the merge's first parent is the pre-merge head"
 assert_grep "irepo-0000000a" <(g log -1 --format=%B "$MERGE") "the merge message names the sandbox"
 assert_grep "milestone 7" <(g log -1 --format=%B "$MERGE") "the merge message names the milestone"
-assert_grep "^gate pass exit=0 milestone=7 sha=$M12 where=host setup=none env=\"-\" at=" "$ICHAIN" "host evidence line for the merge"
-assert_grep "^gate pass exit=0 milestone=7 sha=$M12 where=host " "$IR/logs/milestones/milestone-7.gate.log" "evidence in the gate log"
+assert_grep "^gate pass exit=0 milestone=7 sha=$M12 $EVLINE dirty=no where=host-integrate setup=none steps=integration:0/0 replay:0/0 static:1/1 skipped:sandbox-only:0 env=\"-\" evidence=logs/milestones/evidence/7-host-integrate-[0-9T.]+ at=" "$ICHAIN" "host evidence line for the merge"
+assert_grep "^gate pass exit=0 milestone=7 sha=$M12 $EVLINE dirty=no where=host-integrate " "$IR/logs/milestones/milestone-7.gate.log" "evidence in the gate log"
 assert_eq "$(g show --name-only --format= HEAD)" ".milestones/STATUS.md" "the last commit touches only STATUS.md"
 g show HEAD:.milestones/STATUS.md > "$T/st" 2>/dev/null || : > "$T/st"
 assert_grep '^\| Milestone \| Lane \| Sandbox \| Merged \| Gate \| Unmet criteria \| Open blockers \| Next action \|$' "$T/st" "STATUS.md created with its header"
-assert_grep "^\| 7 \| main \| irepo-0000000a \| $M12 \| pass $M12 [0-9]{4}-[0-9]{2}-[0-9]{2} \| - \| - \| - \|$" "$T/st" "row for milestone 7"
+assert_grep "^\| 7 \| main \| irepo-0000000a \| $M12 \| pass $M12 $EVLINE integration:0/0 replay:0/0 static:1/1 skipped:sandbox-only:0 [0-9]{4}-[0-9]{2}-[0-9]{2} \| - \| - \| - \|$" "$T/st" "row for milestone 7"
 assert_eq "$(remote_head)" "$(g rev-parse HEAD)" "the remote's main equals the local head"
 assert_grep "pushed .*$(g rev-parse --short=12 HEAD)" "$ICHAIN" "the pushed sha is logged"
 assert_grep "pre-merge $PRE" "$ICHAIN" "the pre-merge sha is logged"
@@ -591,7 +614,7 @@ PRE="$(g rev-parse HEAD)"; RPRE="$(remote_head)"
 run_int irepo-0000000a
 [[ "$IRC" != 0 ]] && pass "integrate exits non-zero ($IRC)" || fail "failed gate exited 0"
 assert_eq "$(remote_head)" "$RPRE" "the remote is unchanged"
-assert_grep '^gate FAIL exit=1 milestone=7 sha=[0-9a-f]{12} where=host setup=none ' "$ICHAIN" "gate FAIL evidence"
+assert_grep "^gate FAIL exit=1 milestone=7 sha=[0-9a-f]{12} $EVLINE dirty=no where=host-integrate setup=none " "$ICHAIN" "gate FAIL evidence"
 assert_grep "pre-merge $PRE" "$ICHAIN" "the pre-merge sha is logged"
 assert_grep "git reset --hard $PRE" "$ICHAIN" "the reset hint is logged"
 assert_eq "$(g rev-list --merges --count origin/main..HEAD)" 1 "the merge commit stays local"
@@ -605,7 +628,7 @@ RPRE="$(remote_head)"
 run_int irepo-0000000a
 [[ "$IRC" != 0 ]] && pass "integrate exits non-zero ($IRC)" || fail "setup failure exited 0"
 assert_eq "$(remote_head)" "$RPRE" "the remote is unchanged"
-assert_grep '^gate FAIL exit=1 milestone=7 .* where=host setup=yes ' "$ICHAIN" "FAIL evidence with setup=yes"
+assert_grep '^gate FAIL exit=1 milestone=7 .* where=host-integrate setup=yes ' "$ICHAIN" "FAIL evidence with setup=yes"
 assert_grep 'milestone 7: host gate FAILED .*setup' "$ICHAIN" "the log names setup"
 
 # ================================================================ U3.4 re-run after a fix
@@ -621,7 +644,7 @@ assert_eq "$IRC" 0 "the re-run exits 0 ($(tail -n 3 "$T/int.out" | tr '\n' ' '))
 assert_eq "$(git --git-dir="$BARE" rev-list --merges --count main)" 1 "exactly one merge commit reached the remote"
 assert_eq "$(remote_head)" "$(g rev-parse HEAD)" "the remote's main equals the local head"
 assert_grep 'already merged' "$ICHAIN" "the re-run says the branch is already merged"
-assert_grep "^gate pass exit=0 milestone=7 sha=$(g rev-parse --short=12 HEAD^) where=host " "$ICHAIN" "the gated sha is the fix commit under the STATUS commit"
+assert_grep "^gate pass exit=0 milestone=7 sha=$(g rev-parse --short=12 HEAD^) $EVLINE dirty=no where=host-integrate " "$ICHAIN" "the gated sha is the fix commit under the STATUS commit"
 
 # ================================================================ U3.5 merge conflict
 scenario "integrate: a merge conflict aborts, leaves a clean tree, pushes nothing"
@@ -738,7 +761,7 @@ cp "$IR/data/seed.txt" "$T/seed.before"
 run_int irepo-0000000a
 assert_eq "$IRC" 0 "integrate exits 0 ($(tail -n 3 "$T/int.out" | tr '\n' ' '))"
 cmp -s "$T/seed.before" "$IR/data/seed.txt" && pass "the host's seed file is byte-identical" || fail "the host's seed file changed"
-assert_grep '^gate pass exit=0 milestone=7 .* where=host setup=yes env="seed" ' "$ICHAIN" "setup ran on the copy and GATE_ENV was probed there"
+assert_grep '^gate pass exit=0 milestone=7 .* where=host-integrate setup=yes steps=integration:0/0 replay:0/0 static:2/2 skipped:sandbox-only:0 env="seed" ' "$ICHAIN" "setup ran on the copy and GATE_ENV was probed there"
 
 # ================================================================ U3.14 snapshot
 scenario "integrate: a changed snapshot baseline is a hit"
@@ -791,7 +814,7 @@ run_int irepo-0000000a
 assert_eq "$IRC" 0 "integrate exits 0 ($(tail -n 3 "$T/int.out" | tr '\n' ' '))"
 M12="$(g rev-parse --short=12 HEAD^)"
 g show HEAD:.milestones/STATUS.md > "$T/st" 2>/dev/null || : > "$T/st"
-assert_grep "^\| 7 \| main \| irepo-0000000a \| $M12 \| pass $M12 [0-9-]{10} \| criterion 2 \| owner: sign in to Spotify \| review report \|$" "$T/st" "row 7 updated, supervisor cells kept"
+assert_grep "^\| 7 \| main \| irepo-0000000a \| $M12 \| pass $M12 $EVLINE [^|]+ [0-9-]{10} \| criterion 2 \| owner: sign in to Spotify \| review report \|$" "$T/st" "row 7 updated, supervisor cells kept"
 assert_grep '^\| 6 \| main \| irepo-00000006 \| 0123456789ab \| pass 0123456789ab 2026-09-01 \| - \| - \| - \|$' "$T/st" "row 6 untouched"
 assert_eq "$(grep -c '^| 7 ' "$T/st")" 1 "one row for milestone 7"
 assert_eq "$(remote_head)" "$(g rev-parse HEAD)" "pushed"
@@ -823,7 +846,7 @@ run_int irepo-0000000c 8
 assert_eq "$IRC" 2 "a positional number that contradicts the tag is refused"
 set +e; (cd "$IR" && RUN_MILESTONES_NO_JQ=1 TMPDIR="$ITMP" "$DRIVER" integrate irepo-0000000a 5) > "$T/int.out" 2>&1; IRC=$?; set -e
 assert_eq "$IRC" 0 "untagged with a positional 5 proceeds (python path) ($(tail -n 3 "$T/int.out" | tr '\n' ' '))"
-assert_grep '^gate pass exit=0 milestone=5 .* where=host ' "$ICHAIN" "evidence names milestone 5"
+assert_grep '^gate pass exit=0 milestone=5 .* where=host-integrate ' "$ICHAIN" "evidence names milestone 5"
 
 # ================================================================ U3.19 missing host tool
 scenario "integrate: a gate calling a tool the host lacks fails with exit 127"
@@ -831,7 +854,7 @@ mk_irepo; istatus irepo-0000000a:7; iconfig 'GATE="no-such-tool-u3 check"'
 sb_do irepo-0000000a "echo 'app v2' > app.txt" "milestone 7 work"; sb_report irepo-0000000a 7
 run_int irepo-0000000a
 [[ "$IRC" != 0 ]] && pass "integrate exits non-zero" || fail "exited 0"
-assert_grep '^gate FAIL exit=127 milestone=7 .* where=host ' "$ICHAIN" "FAIL exit=127"
+assert_grep '^gate FAIL exit=127 milestone=7 .* where=host-integrate ' "$ICHAIN" "FAIL exit=127"
 
 # ================================================================ U3.20 gate timeout
 scenario "integrate: GATE_TIMEOUT bounds the host gate"
@@ -839,7 +862,7 @@ mk_irepo; istatus irepo-0000000a:7; iconfig 'GATE_TIMEOUT=1s' 'GATE="sleep 10"'
 sb_do irepo-0000000a "echo 'app v2' > app.txt" "milestone 7 work"; sb_report irepo-0000000a 7
 run_int irepo-0000000a
 [[ "$IRC" != 0 ]] && pass "integrate exits non-zero" || fail "exited 0"
-assert_grep '^gate FAIL exit=124 milestone=7 .* where=host ' "$ICHAIN" "FAIL exit=124"
+assert_grep '^gate FAIL exit=124 milestone=7 .* where=host-integrate ' "$ICHAIN" "FAIL exit=124"
 
 # ================================================================ U3.21 other preconditions
 scenario "integrate: no GATE, no upstream, behind upstream and an unknown branch refuse before merging"
@@ -997,6 +1020,282 @@ assert_eq "$IRC" 0 "integrate exits 0 ($(tail -n 3 "$T/int.out" | tr '\n' ' '))"
 assert_grep "seed path '/etc/hostname' skipped: not a path inside the repository" "$ICHAIN" "the absolute entry is skipped with its message"
 assert_grep "seed path '\.\./outside' skipped: not a path inside the repository" "$ICHAIN" "the .. entry is skipped with its message"
 assert_grep '^  seeded data/seed\.txt$' "$ICHAIN" "the valid entry is seeded"
+
+# ================================================================ U2 step runner and evidence bundle
+bundle_of() { { sed -n 's/^gate .* evidence=\([^ ]*\) at=.*/\1/p' "$1" 2>/dev/null || true; } | tail -n 1; }   # the last gate line's bundle
+seal_in() { awk -v b="$2" '$1 == "seal" && $3 == b { s = $2 } END { print s }' "$1" 2>/dev/null || true; }   # chain.log bundle
+sha_of() { sha256sum "$1" | cut -d' ' -f1; }
+
+# ================================================================ U2.1 three kinds on the host
+scenario "gate steps: integration, replay and static pass on the host; evidence.json, kind counts, identity and seal"
+mk_irepo; istatus irepo-0000000a:7
+U21_STEPS='GATE_STEPS=("integration|db|echo db-ran" "replay|rec|echo rec-ran" "static|lint|echo \"tmp=\$TMPDIR ports=\$GATE_PORT_1 \$GATE_PORT_2 \$GATE_PORT_3 \$GATE_PORT_4\"")'
+iconfig 'GATE=""' "$U21_STEPS"
+sb_do irepo-0000000a "echo 'app v2' > app.txt" "milestone 7 work"; sb_report irepo-0000000a 7
+run_int irepo-0000000a
+assert_eq "$IRC" 0 "integrate exits 0 ($(tail -n 3 "$T/int.out" | tr '\n' ' '))"
+MERGE="$(g rev-parse HEAD^ 2>/dev/null || true)"; M12="${MERGE:0:12}"; TREE="$(g rev-parse "$MERGE^{tree}" 2>/dev/null || true)"
+assert_grep "^gate pass exit=0 milestone=7 sha=$M12 tree=${TREE:0:12} def=[0-9a-f]{12} dirty=no where=host-integrate setup=none steps=integration:1/1 replay:1/1 static:1/1 skipped:sandbox-only:0 env=\"-\" evidence=logs/milestones/evidence/7-host-integrate-[0-9T.]+ at=" "$ICHAIN" "the evidence line carries tree, definition, dirty, kind counts and the bundle"
+REL="$(bundle_of "$ICHAIN")"; B="$IR/$REL"; EJ="$B/evidence.json"
+[[ -f "$EJ" ]] && pass "evidence.json written in the host bundle" || fail "no $EJ"
+assert_eq "$(jq -r '[.steps[] | "\(.kind):\(.name):\(.status):\(.exit)"] | join(" ")' "$EJ" 2>/dev/null)" "integration:db:pass:0 replay:rec:pass:0 static:lint:pass:0" "three steps with kind, name, status and exit"
+assert_eq "$(jq -r '[.steps[] | (.duration_ms | type)] | join(" ")' "$EJ" 2>/dev/null)" "number number number" "each step has a duration"
+assert_eq "$(jq -r '[.verdict, .exit, .where, .sha, .tree, .dirty] | map(tostring) | join(" ")' "$EJ" 2>/dev/null)" "pass 0 host-integrate $MERGE $TREE false" "verdict and identity in evidence.json"
+DEF="$(jq -r .definition_hash "$EJ" 2>/dev/null || true)"
+[[ "$DEF" =~ ^[0-9a-f]{64}$ ]] && grep -q "def=${DEF:0:12} " "$ICHAIN" && pass "the definition hash is a sha256 and the line carries its prefix" || fail "definition hash '$DEF'"
+for s in 1-db 2-rec 3-lint; do [[ -f "$B/steps/$s.log" ]] && pass "step log $s.log kept after the worktree's removal" || fail "no $B/steps/$s.log"; done
+assert_grep '^db-ran$' "$B/steps/1-db.log" "the step's output is in its log"
+LINT="$(cat "$B/steps/3-lint.log" 2>/dev/null || true)"
+[[ "$LINT" =~ ^tmp=(/[^ ]+)\ ports=([0-9]+)\ ([0-9]+)\ ([0-9]+)\ ([0-9]+)$ ]] && pass "TMPDIR and GATE_PORT_1..4 exported to the step" || fail "step env: '$LINT'"
+GTMP="${BASH_REMATCH[1]:-}"
+[[ -n "$GTMP" && "$GTMP" != "$ITMP" && ! -e "$GTMP" ]] && pass "the per-run TMPDIR was fresh and is removed" || fail "per-run TMPDIR '$GTMP'"
+assert_eq "$(printf '%s\n' "${BASH_REMATCH[@]:2:4}" | sort -u | wc -l)" 4 "four distinct ports"
+assert_eq "$(grep -c '^[0-9]' "$IR/logs/milestones/ports.registry" 2>/dev/null || true)" 0 "the ports are released after the run"
+assert_eq "$(seal_in "$ICHAIN" "$REL")" "$(sha_of "$EJ")" "chain.log's seal is the sha256 of evidence.json"
+g show HEAD:.milestones/STATUS.md > "$T/st" 2>/dev/null || : > "$T/st"
+assert_grep "^\| 7 \| main \| irepo-0000000a \| $M12 \| pass $M12 tree=${TREE:0:12} def=${DEF:0:12} integration:1/1 replay:1/1 static:1/1 skipped:sandbox-only:0 [0-9-]{10} \|" "$T/st" "the STATUS gate cell carries identity and kind counts"
+mk_irepo; istatus irepo-0000000a:7; iconfig 'GATE=""' "$U21_STEPS"
+sb_do irepo-0000000a "echo 'app v3' > app.txt" "other milestone 7 work"; sb_report irepo-0000000a 7
+run_int irepo-0000000a
+assert_eq "$IRC" 0 "a second project with the same definition exits 0"
+assert_eq "$(sed -n 's/^gate pass .* def=\([0-9a-f]*\) .*/\1/p' "$ICHAIN" 2>/dev/null | tail -n 1)" "${DEF:0:12}" "the same definition gives the same hash on a different tree"
+mk_irepo; istatus irepo-0000000a:7; iconfig 'GATE=""' "$U21_STEPS"
+sb_do irepo-0000000a "echo 'app v2' > app.txt" "milestone 7 work"; sb_report irepo-0000000a 7
+echo 'MAX_GATE_FAILURES=3' > "$IR/.milestones/config.local"
+run_int irepo-0000000a
+assert_eq "$IRC" 0 "a run with a budget key exits 0"
+[[ "$(sed -n 's/^gate pass .* def=\([0-9a-f]*\) .*/\1/p' "$ICHAIN" 2>/dev/null | tail -n 1)" != "${DEF:0:12}" ]] && pass "config.local and a budget key change the definition hash" || fail "definition hash unchanged"
+
+# ================================================================ U2.2 a failing step stops the run
+scenario "gate steps: the second step exits 3; FAIL exit 3, the third not run, its log kept"
+mk_irepo; istatus irepo-0000000a:7; rm -f "$T/c-ran"
+iconfig 'GATE=""' "GATE_STEPS=(\"static|a|echo a-ran\" \"replay|b|echo b-out; exit 3\" \"integration|c|touch $T/c-ran\")"
+sb_do irepo-0000000a "echo 'app v2' > app.txt" "milestone 7 work"; sb_report irepo-0000000a 7
+RPRE="$(remote_head)"
+run_int irepo-0000000a
+assert_eq "$IRC" 1 "integrate exits 1"
+assert_eq "$(remote_head)" "$RPRE" "nothing pushed"
+assert_grep "^gate FAIL exit=3 milestone=7 .* steps=integration:0/1 replay:0/1 static:1/1 skipped:sandbox-only:0 " "$ICHAIN" "FAIL with the step's own exit and the counts"
+assert_grep 'milestone 7: host gate FAILED at b' "$ICHAIN" "the failing step is named"
+REL="$(bundle_of "$ICHAIN")"; B="$IR/$REL"; EJ="$B/evidence.json"
+assert_eq "$(jq -r '[.steps[] | "\(.status):\(.exit)"] | join(",")' "$EJ" 2>/dev/null)" "pass:0,fail:3,not run:null" "statuses: pass, fail 3, not run"
+assert_eq "$(jq -r '[.verdict, .exit, .failed_step] | map(tostring) | join(" ")' "$EJ" 2>/dev/null)" "fail 3 b" "verdict fail, exit 3, failed step b"
+[[ -e "$T/c-ran" ]] && fail "the third step ran" || pass "the third step did not run"
+assert_grep '^b-out$' "$B/steps/2-b.log" "the failed step's log survives the worktree's removal"
+assert_eq "$(seal_in "$ICHAIN" "$REL")" "$(sha_of "$EJ")" "a failed run is sealed too"
+
+# ================================================================ U2.3 sandbox-only
+scenario "gate steps: a sandbox-only step is not run on the host and runs in the sandbox"
+mk_irepo; istatus irepo-0000000a:7; rm -f "$T/pg-ran"
+iconfig 'GATE=""' "GATE_STEPS=(\"static|a|true\" \"integration|pg|touch $T/pg-ran|sandbox-only\")"
+sb_do irepo-0000000a "echo 'app v2' > app.txt" "milestone 7 work"; sb_report irepo-0000000a 7
+run_int irepo-0000000a
+assert_eq "$IRC" 0 "the host gate passes on the other steps ($(tail -n 2 "$T/int.out" | tr '\n' ' '))"
+assert_grep "^gate pass exit=0 milestone=7 .* steps=integration:0/1 replay:0/0 static:1/1 skipped:sandbox-only:1 " "$ICHAIN" "the skip is counted, not passed"
+EJ="$IR/$(bundle_of "$ICHAIN")/evidence.json"
+assert_eq "$(jq -r '.steps[1] | "\(.name):\(.status):\(.exit):\(.sandbox_only)"' "$EJ" 2>/dev/null)" "pg:not run: sandbox-only:null:true" "recorded not run: sandbox-only"
+[[ -e "$T/pg-ran" ]] && fail "the sandbox-only step ran on the host" || pass "the sandbox-only step did not run on the host"
+reset; config_with 'GATE=""' "GATE_STEPS=(\"static|a|true\" \"integration|pg|touch $T/pg-ran|sandbox-only\")"
+gate_inside
+assert_eq "$GRC" 0 "the sandbox gate passes"
+[[ -e "$T/pg-ran" ]] && pass "the sandbox-only step ran in the sandbox" || fail "the sandbox-only step did not run in the sandbox"
+assert_grep "^gate pass exit=0 milestone=6 .* where=sandbox setup=none steps=integration:1/1 replay:0/0 static:1/1 skipped:sandbox-only:0 " "$CHAIN" "counted as passed in the sandbox"
+
+# ================================================================ U2.4 dirty tree
+scenario "gate: a dirty sandbox worktree gives dirty=yes and a dirty.patch that reproduces it, without ignored or seeded files"
+reset; config_with 'GATE="echo gate"' 'SEED_PATHS="seeded.cfg"'
+printf 'secret.env\n' > "$GWS/.gitignore"; echo 'app v1' > "$GWS/app.txt"
+git -C "$GWS" add -A && git -C "$GWS" -c user.name=t -c user.email=t@t commit -q -m "app and ignores"
+DSHA="$(git -C "$GWS" rev-parse HEAD)"
+echo 'app v2' > "$GWS/app.txt"; echo 'brand new' > "$GWS/new.txt"
+echo 'SECRET-VALUE-1' > "$GWS/secret.env"; echo 'SEED-VALUE-1' > "$GWS/seeded.cfg"
+gate_inside
+assert_eq "$GRC" 0 "a dirty tree does not fail the --gate run"
+assert_grep "^gate pass exit=0 milestone=6 sha=${DSHA:0:12} $EVLINE dirty=yes where=sandbox " "$CHAIN" "dirty=yes"
+B="$PROJ/$(bundle_of "$CHAIN")"
+assert_eq "$(jq -r '[.dirty, .dirty_tracked, .dirty_untracked] | map(tostring) | join(" ")' "$B/evidence.json" 2>/dev/null)" "true true true" "tracked and untracked dirt recorded"
+assert_eq "$(cat "$B/untracked.txt" 2>/dev/null)" "new.txt" "untracked.txt lists only the untracked, unignored, unseeded file"
+assert_not_grep 'SECRET-VALUE|secret\.env|SEED-VALUE|seeded\.cfg' "$B/dirty.patch" "dirty.patch holds neither the ignored secret nor the seeded file"
+assert_not_grep 'secret\.env|seeded\.cfg' "$B/untracked.txt" "untracked.txt names neither"
+rm -rf "$T/replay"; git clone -q "$GWS" "$T/replay"; git -C "$T/replay" checkout -q --detach "$DSHA"
+git -C "$T/replay" apply "$B/dirty.patch" 2>/dev/null && pass "dirty.patch applies to the recorded sha" || fail "dirty.patch does not apply"
+cmp -s "$GWS/app.txt" "$T/replay/app.txt" && cmp -s "$GWS/new.txt" "$T/replay/new.txt" && pass "the patch reproduces the tracked and untracked changes" || fail "the replayed tree differs"
+
+# ================================================================ U2.5 clean tree and seed_kept
+scenario "gate: a clean worktree gives dirty=no and an empty patch; a kept seeded path makes it dirty"
+reset; config_with 'GATE="echo gate"' 'SEED_PATHS="seeded.cfg"'
+git -C "$GWS" checkout -q -- app.txt; rm -f "$GWS/new.txt"   # the ignored secret and the seeded file stay
+gate_inside
+assert_eq "$GRC" 0 "gate passes"
+assert_grep "^gate pass exit=0 milestone=6 .* dirty=no where=sandbox " "$CHAIN" "dirty=no"
+B="$PROJ/$(bundle_of "$CHAIN")"
+[[ -f "$B/dirty.patch" && ! -s "$B/dirty.patch" && -f "$B/untracked.txt" && ! -s "$B/untracked.txt" ]] && pass "empty dirty.patch and untracked.txt" || fail "patch or untracked list not empty"
+reset; config_with 'GATE="echo gate"' 'SEED_PATHS="seeded.cfg"'
+mkdir -p "$FAKE_DIR/runs/proj-1a2b3c4d"; echo '{"sandbox_id": "proj-1a2b3c4d", "seed_kept": ["data/catalog.db"]}' > "$FAKE_DIR/runs/proj-1a2b3c4d/run.json"
+gate_inside
+assert_grep "^gate pass exit=0 milestone=6 .* dirty=yes where=sandbox " "$CHAIN" "a seeded path the run kept makes the bundle dirty"
+B="$PROJ/$(bundle_of "$CHAIN")"
+assert_eq "$(jq -c '[.seed_kept, .dirty_tracked, .dirty_untracked]' "$B/evidence.json" 2>/dev/null)" '[["data/catalog.db"],false,false]' "evidence.json names the kept path"
+
+# ================================================================ U2.6 GATE alone, and the report check
+scenario "gate: a config with only GATE is one static step named gate; a missing report fails the sandbox gate"
+reset; config_with 'GATE="echo gate"'
+gate_inside
+EJ="$PROJ/$(bundle_of "$CHAIN")/evidence.json"
+assert_eq "$(jq -r '[.steps[] | "\(.kind)|\(.name)|\(.command)"] | join(";")' "$EJ" 2>/dev/null)" "static|gate|echo gate" "one step: static, gate, the GATE command"
+assert_grep "steps=integration:0/0 replay:0/0 static:1/1 skipped:sandbox-only:0 " "$CHAIN" "counted as one static step"
+assert_eq "$(jq -r .report "$EJ" 2>/dev/null)" "present" "the report is recorded present"
+mk_gws proj-00000a0b
+set +e; (cd "$PROJ" && FAKE_ENTER_EXEC=1 "$DRIVER" --inside 6 --sandbox proj-00000a0b --unit u --gate) > "$T/norep.out" 2>&1; rc=$?; set -e
+assert_eq "$rc" 1 "no report: the unit fails"
+assert_grep '^gate FAIL exit=1 milestone=6 ' "$CHAIN" "FAIL evidence line"
+assert_grep 'milestone 6: gate FAILED .*report' "$CHAIN" "the chain names the report"
+assert_eq "$(jq -r '[.report, .failed_step, .steps[0].status] | join(" ")' "$PROJ/$(bundle_of "$CHAIN")/evidence.json" 2>/dev/null)" "missing report pass" "the steps passed and the report is missing"
+
+# ================================================================ U2.7 pipelines
+scenario "gate: a step whose pipeline fails early (false | true) fails, on the host and in the sandbox"
+mk_irepo; istatus irepo-0000000a:7; iconfig 'GATE="false | true"'
+sb_do irepo-0000000a "echo 'app v2' > app.txt" "milestone 7 work"; sb_report irepo-0000000a 7
+run_int irepo-0000000a
+assert_eq "$IRC" 1 "the host gate fails"
+assert_grep '^gate FAIL exit=1 milestone=7 .* where=host-integrate ' "$ICHAIN" "host FAIL exit=1"
+reset; config_with 'GATE="false | true"'
+gate_inside
+assert_eq "$GRC" 1 "the sandbox gate fails"
+assert_grep '^gate FAIL exit=1 milestone=6 .* where=sandbox ' "$CHAIN" "sandbox FAIL exit=1"
+
+# ================================================================ U2.8 forged evidence
+scenario "gate: a step that forges evidence.json cannot change the verdict, and a later forgery breaks the seal"
+mk_irepo; istatus irepo-0000000a:7; rm -f "$T/forge-go" "$T/forged"
+cat > "$T/forge.sh" <<EOF
+forge() { for d in "$IR"/logs/milestones/evidence/*/; do printf '{"verdict": "pass", "exit": 0}\n' > "\${d}evidence.json"; done; }
+forge
+( for i in \$(seq 300); do [ -e "$T/forge-go" ] && break; sleep 0.1; done; forge; touch "$T/forged" ) > /dev/null 2>&1 < /dev/null &
+exit 1
+EOF
+iconfig "GATE=\"bash $T/forge.sh\""
+sb_do irepo-0000000a "echo 'app v2' > app.txt" "milestone 7 work"; sb_report irepo-0000000a 7
+RPRE="$(remote_head)"
+run_int irepo-0000000a
+assert_eq "$IRC" 1 "integrate fails"
+assert_eq "$(remote_head)" "$RPRE" "nothing pushed"
+assert_grep '^gate FAIL exit=1 milestone=7 ' "$ICHAIN" "the driver's verdict is FAIL"
+REL="$(bundle_of "$ICHAIN")"; EJ="$IR/$REL/evidence.json"
+assert_eq "$(jq -r '"\(.verdict) \(.exit)"' "$EJ" 2>/dev/null)" "fail 1" "evidence.json is the driver's, written after the step"
+SEAL="$(seal_in "$ICHAIN" "$REL")"
+assert_eq "$SEAL" "$(sha_of "$EJ")" "the seal matches before the late forgery"
+touch "$T/forge-go"
+for i in $(seq 100); do [[ -e "$T/forged" ]] && break; sleep 0.1; done
+assert_grep '"verdict": "pass"' "$EJ" "the late forgery landed"
+[[ -n "$SEAL" && "$SEAL" != "$(sha_of "$EJ")" ]] && pass "the logged seal no longer matches the forged file" || fail "the seal matches a forged file"
+
+# ================================================================ U2.9 integrate in a sandbox
+scenario "integrate with INTEGRATE_GATE_WHERE=sandbox gates a fresh sandbox of the merge commit and removes it"
+SBX_STEPS="GATE_STEPS=(\"static|lint|test -f app.txt && git rev-parse HEAD > $T/sbx-head\" \"integration|pg|touch $T/sbx-pg|sandbox-only\")"
+mk_irepo; istatus irepo-0000000a:7; iconfig 'GATE=""' 'INTEGRATE_GATE_WHERE=sandbox' "$SBX_STEPS"
+sb_do irepo-0000000a "echo 'app v2' > app.txt" "milestone 7 work"; sb_report irepo-0000000a 7
+rm -f "$FAKE_DIR/agent-sandbox.calls" "$T/sbx-head" "$T/sbx-pg"
+export FAKE_RUN_CLONE=1 FAKE_RUN_ID=irepo-5b5b5b5b FAKE_ENTER_EXEC=1
+run_int irepo-0000000a
+unset FAKE_RUN_CLONE FAKE_RUN_ID FAKE_ENTER_EXEC
+assert_eq "$IRC" 0 "integrate exits 0 ($(tail -n 3 "$T/int.out" | tr '\n' ' '))"
+MERGE="$(g rev-parse HEAD^ 2>/dev/null || true)"
+assert_grep '^run [^ ]*/irepo --new --tag milestone=7 --tag lane=main --tag purpose=integration-gate --json -- true$' "$FAKE_DIR/agent-sandbox.calls" "a fresh, tagged sandbox from the repo"
+assert_eq "$(grep -c '^enter irepo-5b5b5b5b ' "$FAKE_DIR/agent-sandbox.calls")" 2 "each step through its own enter"
+assert_eq "$(cat "$T/sbx-head" 2>/dev/null)" "$MERGE" "the steps ran on the merge commit"
+[[ -e "$T/sbx-pg" ]] && pass "the sandbox-only step ran" || fail "the sandbox-only step did not run"
+assert_grep "^gate pass exit=0 milestone=7 sha=${MERGE:0:12} $EVLINE dirty=no where=sandbox-integration setup=none steps=integration:1/1 replay:0/0 static:1/1 skipped:sandbox-only:0 " "$ICHAIN" "where=sandbox-integration"
+assert_grep '^rm irepo-5b5b5b5b( --force)?$' "$FAKE_DIR/agent-sandbox.calls" "the sandbox is removed after a pass"
+[[ -e "$FAKE_WS_ROOT/irepo-5b5b5b5b" ]] && fail "the sandbox worktree is still there" || pass "the sandbox worktree is gone"
+assert_eq "$(remote_head)" "$(g rev-parse HEAD)" "a sandbox-integration pass pushes"
+
+mk_irepo; istatus irepo-0000000a:7; iconfig 'GATE="false"' 'INTEGRATE_GATE_WHERE=sandbox'
+sb_do irepo-0000000a "echo 'app v2' > app.txt" "milestone 7 work"; sb_report irepo-0000000a 7
+rm -f "$FAKE_DIR/agent-sandbox.calls"; RPRE="$(remote_head)"
+export FAKE_RUN_CLONE=1 FAKE_RUN_ID=irepo-5b5b5b5b FAKE_ENTER_EXEC=1
+run_int irepo-0000000a
+unset FAKE_RUN_CLONE FAKE_RUN_ID FAKE_ENTER_EXEC
+assert_eq "$IRC" 1 "a failing sandbox-integration gate exits 1"
+assert_grep '^gate FAIL exit=1 milestone=7 .* where=sandbox-integration ' "$ICHAIN" "FAIL where=sandbox-integration"
+assert_grep '^rm irepo-5b5b5b5b( --force)?$' "$FAKE_DIR/agent-sandbox.calls" "the sandbox is removed after a failure"
+[[ -e "$FAKE_WS_ROOT/irepo-5b5b5b5b" ]] && fail "the sandbox worktree is still there" || pass "the sandbox worktree is gone"
+assert_eq "$(remote_head)" "$RPRE" "nothing pushed"
+
+mk_irepo; istatus irepo-0000000a:7; iconfig 'INTEGRATE_GATE_WHERE=sandbox'
+sb_do irepo-0000000a "echo 'app v2' > app.txt" "milestone 7 work"; sb_report irepo-0000000a 7
+rm -f "$FAKE_DIR/agent-sandbox.calls"; RPRE="$(remote_head)"
+export FAKE_RUN_CLONE=1 FAKE_RUN_ID=irepo-5b5b5b5b FAKE_ENTER_EXEC=1 FAKE_RUN_AT='HEAD^'
+run_int irepo-0000000a
+unset FAKE_RUN_CLONE FAKE_RUN_ID FAKE_ENTER_EXEC FAKE_RUN_AT
+assert_eq "$IRC" 2 "a sandbox not at the merge commit is refused with 2"
+assert_grep 'not the merge' "$(int_out)" "the refusal says the sandbox is not at the merge commit"
+assert_not_grep '^enter ' "$FAKE_DIR/agent-sandbox.calls" "no step ran"
+assert_grep '^rm irepo-5b5b5b5b( --force)?$' "$FAKE_DIR/agent-sandbox.calls" "the sandbox is removed after the refusal"
+assert_eq "$(remote_head)" "$RPRE" "nothing pushed"
+
+mk_irepo; istatus irepo-0000000a:7; iconfig 'INTEGRATE_GATE_WHERE=sandbox'
+sb_do irepo-0000000a "echo 'app v2' > app.txt" "milestone 7 work"; sb_report irepo-0000000a 7
+rm -f "$FAKE_DIR/agent-sandbox.calls"
+export FAKE_RUN_ID='../evil'
+run_int irepo-0000000a
+unset FAKE_RUN_ID
+[[ "$IRC" != 0 ]] && pass "an unreadable sandbox id fails ($IRC)" || fail "an invalid id exited 0"
+assert_not_grep '^rm' "$FAKE_DIR/agent-sandbox.calls" "an invalid id is never passed to rm"
+mk_irepo; istatus irepo-0000000a:7; iconfig 'INTEGRATE_GATE_WHERE=elsewhere'
+sb_do irepo-0000000a "echo 'app v2' > app.txt" "milestone 7 work"; sb_report irepo-0000000a 7
+PRE="$(g rev-parse HEAD)"
+run_int irepo-0000000a
+assert_eq "$IRC" 2 "an unknown INTEGRATE_GATE_WHERE is refused"
+assert_eq "$(g rev-parse HEAD)" "$PRE" "before merging"
+
+# ================================================================ U2.10 concurrent port allocation
+scenario "ports: two host gates at once hold different registered ports before either binds"
+mk_irepo; istatus irepo-0000000a:7
+sb_do irepo-0000000a "echo 'app v2' > app.txt" "milestone 7 work"; sb_report irepo-0000000a 7
+IR2="$T/irepo2"; BARE2="$T/iremote2.git"; ITMP2="$T/itmp2"
+rm -rf "$IR2" "$BARE2" "$ITMP2" "$T"/ports.? "$T"/registry.?; mkdir -p "$ITMP2" "$IR/logs/milestones"
+cp -a "$IR" "$IR2"; cp -a "$BARE" "$BARE2"; git -C "$IR2" remote set-url origin "$BARE2"
+rm -rf "$IR2/logs"; ln -s "$IR/logs" "$IR2/logs"   # one project's logs, so one registry
+cat > "$T/portstep.sh" <<EOF
+echo "\$GATE_PORT_1 \$GATE_PORT_2 \$GATE_PORT_3 \$GATE_PORT_4" > "$T/ports.\$1"
+for i in \$(seq 300); do [ -e "$T/ports.\$2" ] && break; sleep 0.1; done
+cp "$IR/logs/milestones/ports.registry" "$T/registry.\$1"
+for i in \$(seq 300); do [ -e "$T/registry.\$2" ] && break; sleep 0.1; done   # neither ends before both looked
+test -e "$T/ports.\$2"
+EOF
+iconfig "GATE=\"bash $T/portstep.sh a b\"" 'GATE_PORT_RANGE=41100-41139'
+printf '%s\n' 'REPORT_DIR=docs/reports' "GATE=\"bash $T/portstep.sh b a\"" 'GATE_PORT_RANGE=41100-41139' > "$IR2/.milestones/config"
+set +e
+(cd "$IR" && TMPDIR="$ITMP" "$DRIVER" integrate irepo-0000000a) > "$T/pa.out" 2>&1 & PA=$!
+(cd "$IR2" && TMPDIR="$ITMP2" "$DRIVER" integrate irepo-0000000a) > "$T/pb.out" 2>&1 & PB=$!
+wait "$PA"; RA=$?; wait "$PB"; RB=$?
+set -e
+assert_eq "$RA $RB" "0 0" "both gates pass ($(tail -n 2 "$T/pa.out" | tr '\n' ' ') / $(tail -n 2 "$T/pb.out" | tr '\n' ' '))"
+ALL="$(cat "$T/ports.a" "$T/ports.b" 2>/dev/null | tr ' ' '\n' | grep -c . || true)"
+assert_eq "$ALL" 8 "eight ports handed out"
+assert_eq "$(cat "$T/ports.a" "$T/ports.b" 2>/dev/null | tr ' ' '\n' | grep . | sort -u | wc -l)" 8 "no port handed to both runs"
+assert_eq "$(cat "$T/ports.a" "$T/ports.b" 2>/dev/null | tr ' ' '\n' | grep . | awk '$1 < 41100 || $1 > 41139' | wc -l)" 0 "all inside GATE_PORT_RANGE"
+assert_eq "$(cat "$T/registry.a" "$T/registry.b" 2>/dev/null | grep -c '^[0-9]' || true)" 16 "while both ran, the registry held all eight, seen from each run"
+assert_eq "$(grep -c '^[0-9]' "$IR/logs/milestones/ports.registry" 2>/dev/null || true)" 0 "both released their ports"
+
+# ================================================================ U2.11 bound and registered ports
+scenario "ports: a bound port and a live registration are skipped; a dead holder's registration is pruned"
+mk_irepo; istatus irepo-0000000a:7
+iconfig "GATE=\"echo \\\$GATE_PORT_1 \\\$GATE_PORT_2 \\\$GATE_PORT_3 \\\$GATE_PORT_4 > $T/ports.c\"" 'GATE_PORT_RANGE=41150-41155'
+sb_do irepo-0000000a "echo 'app v2' > app.txt" "milestone 7 work"; sb_report irepo-0000000a 7
+rm -f "$T/ports.c" "$T/bound"
+python3 -c 'import socket, sys, time
+s = socket.socket(); s.bind(("127.0.0.1", 41150)); s.listen(1)
+open(sys.argv[1], "w").close(); time.sleep(60)' "$T/bound" & LISTENER=$!
+for i in $(seq 50); do [[ -e "$T/bound" ]] && break; sleep 0.1; done
+true & DEAD=$!; wait "$DEAD"
+mkdir -p "$IR/logs/milestones"
+printf '41151 other-run %s 2026-09-17T00:00:00\n41152 dead-run %s 2026-09-17T00:00:00\n' "$$" "$DEAD" > "$IR/logs/milestones/ports.registry"
+run_int irepo-0000000a
+kill "$LISTENER" 2>/dev/null || true; wait "$LISTENER" 2>/dev/null || true
+assert_eq "$IRC" 0 "the gate passes ($(tail -n 2 "$T/int.out" | tr '\n' ' '))"
+assert_eq "$(tr ' ' '\n' < "$T/ports.c" 2>/dev/null | grep . | sort | tr '\n' ' ')" "41152 41153 41154 41155 " "the bound 41150 and the live 41151 are skipped; the dead holder's 41152 is reused"
+assert_eq "$(grep '^[0-9]' "$IR/logs/milestones/ports.registry" | cut -d' ' -f1-2)" "41151 other-run" "only the live registration remains"
 
 # ================================================================ U8 init
 NR_="$T/newrepo"
