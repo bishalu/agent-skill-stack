@@ -291,6 +291,11 @@ if wants 6; then
   echo "  $(mark '[ -s ~/.config/gcloud/credentials.db ]') gcloud          gcloud auth login"
   echo "  [ ] design          /design-login inside Claude Code"
 
+  echo
+  echo "Per project, from its root, once the logins are in (see the skill's SETUP.md):"
+  echo "  $G/skills/milestone-supervisor/run-milestones.sh init"
+  echo "  then fill in .milestones/config (the milestones file, the gate steps) and commit it."
+
   if grep -qi microsoft /proc/sys/kernel/osrelease 2>/dev/null; then
     distro="${WSL_DISTRO_NAME:-<distro>}"
     echo
