@@ -540,20 +540,75 @@ ICHAIN="$IR/logs/milestones/chain.log"
 REAL_GIT="$(command -v git)"
 g() { git -C "$IR" "$@"; }
 iconfig() { printf '%s\n' 'REPORT_DIR=docs/reports' 'GATE="true"' "$@" > "$IR/.milestones/config"; }
-mk_irepo() {
+# pty_run <input> <command...>: the command with a pseudo-terminal on stdin and stdout (how an
+# owner's terminal looks to it), <input> typed into it; output on stdout, the command's exit code.
+pty_run() {
+  python3 -c '
+import os, pty, sys
+pid, fd = pty.fork()
+if pid == 0:
+    os.execvp(sys.argv[2], sys.argv[2:])
+os.write(fd, sys.argv[1].encode())
+out = b""
+while True:
+    try:
+        r = os.read(fd, 4096)
+    except OSError:
+        break
+    if not r:
+        break
+    out += r
+_, st = os.waitpid(pid, 0)
+sys.stdout.buffer.write(out.replace(b"\r\n", b"\n"))
+sys.exit(os.waitstatus_to_exitcode(st))' "$@"
+}
+# iapprove <N> <kind> [items and options]: `approve` in the host checkout through a pty, typing
+# "approve N kind" (or IAPPROVE_TYPE); output in $T/approve.out, exit code in ARC.
+iapprove() {
+  local typed="${IAPPROVE_TYPE-approve $1 $2}"
+  set +e; (cd "$IR" && TMPDIR="$ITMP" pty_run "$typed"$'\n' "$DRIVER" approve "$@") > "$T/approve.out" 2>&1; ARC=$?; set -e
+}
+idrv() {  # the driver in the host checkout; output in $T/drv.out, exit code in DRC
+  set +e; (cd "$IR" && TMPDIR="$ITMP" "$DRIVER" "$@") > "$T/drv.out" 2>&1; DRC=$?; set -e
+}
+# The milestones file every integrate repository carries: milestone 7 has two exit criteria.
+IMILESTONES='# Milestones
+
+## Milestone 5
+
+Build: five.
+
+Exit: five works.
+
+## Milestone 7
+
+Build: app v2.
+
+Exit: the app reports v2 (asserted by the rec step; see app.txt); the report is written.
+
+## Milestone 8
+
+Exit: eight works.
+'
+mk_irepo() {  # [nowaive]: without it, milestone 7's criteria are waived through approve, as an owner would
   rm -rf "$IR" "$BARE" "$ITMP"; mkdir -p "$ITMP"
   git init -q --bare -b main "$BARE"
   git init -q -b main "$IR"
   g config user.name t; g config user.email t@t
-  mkdir -p "$IR/.milestones" "$IR/docs/reports" "$IR/tests" "$IR/web/__snapshots__" "$IR/data"
+  mkdir -p "$IR/.milestones" "$IR/docs/reports" "$IR/docs/spec" "$IR/tests" "$IR/web/__snapshots__" "$IR/data"
   printf 'logs/\n.milestones/config\n.milestones/config.local\ndata/\n' > "$IR/.gitignore"
   printf 'def test_a():\n    x = 3\n    assert x == 3\n' > "$IR/tests/test_a.py"
   printf 'exports[`x`] = `one`;\n' > "$IR/web/__snapshots__/x.snap"
   printf 'app v1\n' > "$IR/app.txt"
+  printf '%s' "$IMILESTONES" > "$IR/docs/spec/11-milestones.md"
   g add -A; g commit -q -m init
+  iconfig
+  if [[ "${1:-}" != nowaive ]]; then
+    idrv accept 7 --init; [[ "$DRC" == 0 ]] || fail "mk_irepo: accept 7 --init exited $DRC: $(cat "$T/drv.out")"
+    iapprove 7 criterion-waiver 7.c1 7.c2; [[ "$ARC" == 0 ]] || fail "mk_irepo: the waiver approval exited $ARC: $(cat "$T/approve.out")"
+  fi
   g remote add origin "$BARE"; g push -q -u origin main 2>/dev/null
   echo seed > "$IR/data/seed.txt"
-  iconfig
 }
 istatus() {  # id:milestone ... (an empty milestone leaves the record untagged)
   local rows=() e
@@ -566,7 +621,8 @@ istatus() {  # id:milestone ... (an empty milestone leaves the record untagged)
 sb_branch() { g rev-parse -q --verify "refs/heads/agent-sandbox/$1" > /dev/null || g branch -q "agent-sandbox/$1" origin/main; }
 sb_do() {  # id "shell in the checkout" message: one commit on agent-sandbox/<id>
   sb_branch "$1"; g switch -q "agent-sandbox/$1"
-  (cd "$IR" && bash -c "$2") && g add -A && g commit -q -m "$3"
+  # The host's own uncommitted records (acceptance, mutation results) never ride on a sandbox commit.
+  (cd "$IR" && bash -c "$2") && g add -A -- . ':(exclude).milestones/acceptance' ':(exclude).milestones/mutations' && g commit -q -m "$3"
   g switch -q main
 }
 sb_report() {  # id milestone [extra markdown]
@@ -682,18 +738,24 @@ assert_eq "$(g rev-parse HEAD)" "$PRE" "nothing merged"
 assert_grep "INTEGRATION_BRANCH.*main" "$(int_out)" "the refusal names the integration branch"
 
 # ================================================================ U3.8 weakening: skip marker
-scenario "integrate: an added skip marker needs its path in the report's expectation-changes section"
-for variant in none other listed; do
+scenario "integrate: an added skip marker needs an owner approval; a report section listing it approves nothing"
+for variant in none other report-only approved; do
   mk_irepo; istatus irepo-0000000a:7
   sb_do irepo-0000000a "sed -i '1i import pytest\n@pytest.mark.skip' tests/test_a.py" "skip a test"
   case "$variant" in
     none)   sb_report irepo-0000000a 7 ;;
     other)  sb_report irepo-0000000a 7 $'\n## Notes\n\ntests/test_a.py was touched.\n\n## Test expectation changes\n\n- tests/test_b.py: reason\n\n## After\n\nnothing\n' ;;
-    listed) sb_report irepo-0000000a 7 $'\n## Test expectation changes\n\n- tests/test_a.py: skipped because the fixture moved\n' ;;
+    report-only|approved) sb_report irepo-0000000a 7 $'\n## Test expectation changes\n\n- tests/test_a.py: skipped because the fixture moved\n' ;;
   esac
+  if [[ "$variant" == approved ]]; then
+    for k in skip-marker test-change; do
+      iapprove 7 weakening "$k" tests/test_a.py --sandbox irepo-0000000a
+      assert_eq "$ARC" 0 "($variant) approve 7 weakening $k tests/test_a.py ($(tail -n 2 "$T/approve.out" | tr '\n' ' '))"
+    done
+  fi
   RPRE="$(remote_head)"
   run_int irepo-0000000a
-  if [[ "$variant" == listed ]]; then
+  if [[ "$variant" == approved ]]; then
     assert_eq "$IRC" 0 "($variant) the listed path proceeds ($(tail -n 3 "$T/int.out" | tr '\n' ' '))"
     assert_eq "$(remote_head)" "$(g rev-parse HEAD)" "($variant) pushed"
   else
@@ -844,6 +906,8 @@ assert_eq "$IRC" 2 "no tag and no number: refused"
 assert_grep 'milestone' "$T/int.out" "the refusal asks for the milestone"
 run_int irepo-0000000c 8
 assert_eq "$IRC" 2 "a positional number that contradicts the tag is refused"
+idrv accept 5 --init; iapprove 5 criterion-waiver 5.c1
+assert_eq "$DRC $ARC" "0 0" "milestone 5's criterion waived by the owner"
 set +e; (cd "$IR" && RUN_MILESTONES_NO_JQ=1 TMPDIR="$ITMP" "$DRIVER" integrate irepo-0000000a 5) > "$T/int.out" 2>&1; IRC=$?; set -e
 assert_eq "$IRC" 0 "untagged with a positional 5 proceeds (python path) ($(tail -n 3 "$T/int.out" | tr '\n' ' '))"
 assert_grep '^gate pass exit=0 milestone=5 .* where=host-integrate ' "$ICHAIN" "evidence names milestone 5"
@@ -958,18 +1022,20 @@ for variant in empty-branch empty-report; do
 done
 
 # ================================================================ U3.28 gate definition changes
-scenario "integrate: a change to a gate definition file is a gate-config hit"
-for variant in none listed; do
+scenario "integrate: a change to a gate definition file is a gate-config hit, approved only through approve"
+for variant in none approved; do
   mk_irepo; istatus irepo-0000000a:7
   sb_do irepo-0000000a "printf 'check:\n\tpytest -k fast\n' > justfile && mkdir -p .github/workflows && echo 'on: push' > .github/workflows/ci.yml" "narrow the gate"
   case "$variant" in
     none)   sb_report irepo-0000000a 7 ;;
-    listed) sb_report irepo-0000000a 7 $'\n## Test expectation changes\n\n- justfile: the slow suite moved to nightly\n- .github/workflows/ci.yml: new\n' ;;
+    approved) sb_report irepo-0000000a 7 $'\n## Test expectation changes\n\n- justfile: the slow suite moved to nightly\n- .github/workflows/ci.yml: new\n'
+              iapprove 7 gate-config justfile .github/workflows/ci.yml --sandbox irepo-0000000a
+              assert_eq "$ARC" 0 "($variant) approve 7 gate-config ($(tail -n 2 "$T/approve.out" | tr '\n' ' '))" ;;
   esac
   RPRE="$(remote_head)"
   run_int irepo-0000000a
-  if [[ "$variant" == listed ]]; then
-    assert_eq "$IRC" 0 "($variant) listed gate-config changes proceed ($(tail -n 3 "$T/int.out" | tr '\n' ' '))"
+  if [[ "$variant" == approved ]]; then
+    assert_eq "$IRC" 0 "($variant) approved gate-config changes proceed ($(tail -n 3 "$T/int.out" | tr '\n' ' '))"
   else
     assert_eq "$IRC" 2 "($variant) refused with 2"
     assert_grep '^    gate-config justfile$' "$T/int.out" "($variant) the refusal names justfile"
@@ -979,16 +1045,18 @@ for variant in none listed; do
 done
 
 # ================================================================ U3.29 listed paths match whole
-scenario "integrate: a listed path must match the hit's path whole, not as a substring"
-for variant in longer backtick; do
+scenario "integrate: an approval must name the hit's path whole, not a path containing it"
+for variant in longer exact; do
   mk_irepo; istatus irepo-0000000a:7
   sb_do irepo-0000000a "printf 'func TestA(t *testing.T) { t.Skip(\"later\") }\n' > a_test.go" "skip a go test"
+  sb_report irepo-0000000a 7
   case "$variant" in
-    longer)   sb_report irepo-0000000a 7 $'\n## Test expectation changes\n\n- pkg/a_test.go: skipped\n- a_test.go.orig: removed\n' ;;
-    backtick) sb_report irepo-0000000a 7 $'\n## Test expectation changes\n\nSkipped `a_test.go` until the fixture lands, see a_test.go.\n' ;;
+    longer) iapprove 7 weakening skip-marker pkg/a_test.go a_test.go.orig --sandbox irepo-0000000a ;;
+    exact)  iapprove 7 weakening skip-marker a_test.go --sandbox irepo-0000000a ;;
   esac
+  assert_eq "$ARC" 0 "($variant) the approval is written ($(tail -n 2 "$T/approve.out" | tr '\n' ' '))"
   run_int irepo-0000000a
-  if [[ "$variant" == backtick ]]; then
+  if [[ "$variant" == exact ]]; then
     assert_eq "$IRC" 0 "($variant) the path named whole proceeds ($(tail -n 3 "$T/int.out" | tr '\n' ' '))"
   else
     assert_eq "$IRC" 2 "($variant) a path containing the hit's path is not a listing"
@@ -1025,6 +1093,44 @@ assert_grep '^  seeded data/seed\.txt$' "$ICHAIN" "the valid entry is seeded"
 bundle_of() { { sed -n 's/^gate .* evidence=\([^ ]*\) at=.*/\1/p' "$1" 2>/dev/null || true; } | tail -n 1; }   # the last gate line's bundle
 seal_in() { awk -v b="$2" '$1 == "seal" && $3 == b { s = $2 } END { print s }' "$1" 2>/dev/null || true; }   # chain.log bundle
 sha_of() { sha256sum "$1" | cut -d' ' -f1; }
+# port_block <count>: the first port of <count> consecutive ports nothing on this host holds now,
+# probed the way the driver probes (a bind on 0.0.0.0 and on ::), outside the kernel's ephemeral
+# range: an outbound connection anywhere on the host takes a port there, and its TIME_WAIT keeps
+# it for minutes, so a fixed range inside it makes a port scenario fail by chance.
+port_block() {
+  python3 - "$1" <<'PY'
+import errno, random, socket, sys
+n = int(sys.argv[1])
+try:
+    elo, ehi = map(int, open("/proc/sys/net/ipv4/ip_local_port_range").read().split())
+except Exception:
+    elo, ehi = 32768, 60999
+spans = [(a, b) for a, b in ((20000, min(elo, 65536) - 1), (max(ehi, 19999) + 1, 65535)) if b - a + 1 >= n]
+def free(p):
+    for fam, host in ((socket.AF_INET, "0.0.0.0"), (socket.AF_INET6, "::")):
+        try:
+            s = socket.socket(fam, socket.SOCK_STREAM)
+        except OSError:
+            continue
+        try:
+            if fam == socket.AF_INET6:
+                s.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+            s.bind((host, p))
+        except OSError as e:
+            if e.errno in (errno.EADDRINUSE, errno.EACCES):
+                return False
+        finally:
+            s.close()
+    return True
+for _ in range(500):
+    a, b = random.choice(spans)
+    start = random.randint(a, b - n + 1)
+    if all(free(p) for p in range(start, start + n)):
+        print(start)
+        sys.exit(0)
+sys.exit("no free block of %d ports outside the ephemeral range %d-%d" % (n, elo, ehi))
+PY
+}
 
 # ================================================================ U2.1 three kinds on the host
 scenario "gate steps: integration, replay and static pass on the host; evidence.json, kind counts, identity and seal"
@@ -1192,7 +1298,7 @@ assert_grep '"verdict": "pass"' "$EJ" "the late forgery landed"
 
 # ================================================================ U2.9 integrate in a sandbox
 scenario "integrate with INTEGRATE_GATE_WHERE=sandbox gates a fresh sandbox of the merge commit and removes it"
-SBX_STEPS="GATE_STEPS=(\"static|lint|test -f app.txt && git rev-parse HEAD > $T/sbx-head\" \"integration|pg|touch $T/sbx-pg|sandbox-only\")"
+SBX_STEPS="GATE_STEPS=(\"static|lint|test -f tests/test_a.py && git rev-parse HEAD > $T/sbx-head\" \"integration|pg|touch $T/sbx-pg|sandbox-only\")"
 mk_irepo; istatus irepo-0000000a:7; iconfig 'GATE=""' 'INTEGRATE_GATE_WHERE=sandbox' "$SBX_STEPS"
 sb_do irepo-0000000a "echo 'app v2' > app.txt" "milestone 7 work"; sb_report irepo-0000000a 7
 rm -f "$FAKE_DIR/agent-sandbox.calls" "$T/sbx-head" "$T/sbx-pg"
@@ -1264,8 +1370,9 @@ cp "$IR/logs/milestones/ports.registry" "$T/registry.\$1"
 for i in \$(seq 300); do [ -e "$T/registry.\$2" ] && break; sleep 0.1; done   # neither ends before both looked
 test -e "$T/ports.\$2"
 EOF
-iconfig "GATE=\"bash $T/portstep.sh a b\"" 'GATE_PORT_RANGE=41100-41139'
-printf '%s\n' 'REPORT_DIR=docs/reports' "GATE=\"bash $T/portstep.sh b a\"" 'GATE_PORT_RANGE=41100-41139' > "$IR2/.milestones/config"
+PB0="$(port_block 40)"; PB9=$(( PB0 + 39 ))
+iconfig "GATE=\"bash $T/portstep.sh a b\"" "GATE_PORT_RANGE=$PB0-$PB9"
+printf '%s\n' 'REPORT_DIR=docs/reports' "GATE=\"bash $T/portstep.sh b a\"" "GATE_PORT_RANGE=$PB0-$PB9" > "$IR2/.milestones/config"
 set +e
 (cd "$IR" && TMPDIR="$ITMP" "$DRIVER" integrate irepo-0000000a) > "$T/pa.out" 2>&1 & PA=$!
 (cd "$IR2" && TMPDIR="$ITMP2" "$DRIVER" integrate irepo-0000000a) > "$T/pb.out" 2>&1 & PB=$!
@@ -1275,28 +1382,60 @@ assert_eq "$RA $RB" "0 0" "both gates pass ($(tail -n 2 "$T/pa.out" | tr '\n' ' 
 ALL="$(cat "$T/ports.a" "$T/ports.b" 2>/dev/null | tr ' ' '\n' | grep -c . || true)"
 assert_eq "$ALL" 8 "eight ports handed out"
 assert_eq "$(cat "$T/ports.a" "$T/ports.b" 2>/dev/null | tr ' ' '\n' | grep . | sort -u | wc -l)" 8 "no port handed to both runs"
-assert_eq "$(cat "$T/ports.a" "$T/ports.b" 2>/dev/null | tr ' ' '\n' | grep . | awk '$1 < 41100 || $1 > 41139' | wc -l)" 0 "all inside GATE_PORT_RANGE"
+assert_eq "$(cat "$T/ports.a" "$T/ports.b" 2>/dev/null | tr ' ' '\n' | grep . | awk -v lo="$PB0" -v hi="$PB9" '$1 < lo || $1 > hi' | wc -l)" 0 "all inside GATE_PORT_RANGE"
 assert_eq "$(cat "$T/registry.a" "$T/registry.b" 2>/dev/null | grep -c '^[0-9]' || true)" 16 "while both ran, the registry held all eight, seen from each run"
 assert_eq "$(grep -c '^[0-9]' "$IR/logs/milestones/ports.registry" 2>/dev/null || true)" 0 "both released their ports"
 
 # ================================================================ U2.11 bound and registered ports
 scenario "ports: a bound port and a live registration are skipped; a dead holder's registration is pruned"
 mk_irepo; istatus irepo-0000000a:7
-iconfig "GATE=\"echo \\\$GATE_PORT_1 \\\$GATE_PORT_2 \\\$GATE_PORT_3 \\\$GATE_PORT_4 > $T/ports.c\"" 'GATE_PORT_RANGE=41150-41155'
+P0="$(port_block 6)"; P5=$(( P0 + 5 ))
+iconfig "GATE=\"echo \\\$GATE_PORT_1 \\\$GATE_PORT_2 \\\$GATE_PORT_3 \\\$GATE_PORT_4 > $T/ports.c\"" "GATE_PORT_RANGE=$P0-$P5"
 sb_do irepo-0000000a "echo 'app v2' > app.txt" "milestone 7 work"; sb_report irepo-0000000a 7
 rm -f "$T/ports.c" "$T/bound"
 python3 -c 'import socket, sys, time
-s = socket.socket(); s.bind(("127.0.0.1", 41150)); s.listen(1)
-open(sys.argv[1], "w").close(); time.sleep(60)' "$T/bound" & LISTENER=$!
+s = socket.socket(); s.bind(("127.0.0.1", int(sys.argv[2]))); s.listen(1)
+open(sys.argv[1], "w").close(); time.sleep(60)' "$T/bound" "$P0" & LISTENER=$!
 for i in $(seq 50); do [[ -e "$T/bound" ]] && break; sleep 0.1; done
 true & DEAD=$!; wait "$DEAD"
 mkdir -p "$IR/logs/milestones"
-printf '41151 other-run %s 2026-09-17T00:00:00\n41152 dead-run %s 2026-09-17T00:00:00\n' "$$" "$DEAD" > "$IR/logs/milestones/ports.registry"
+printf '%s other-run %s 2026-09-17T00:00:00\n%s dead-run %s 2026-09-17T00:00:00\n' $(( P0 + 1 )) "$$" $(( P0 + 2 )) "$DEAD" > "$IR/logs/milestones/ports.registry"
 run_int irepo-0000000a
 kill "$LISTENER" 2>/dev/null || true; wait "$LISTENER" 2>/dev/null || true
 assert_eq "$IRC" 0 "the gate passes ($(tail -n 2 "$T/int.out" | tr '\n' ' '))"
-assert_eq "$(tr ' ' '\n' < "$T/ports.c" 2>/dev/null | grep . | sort | tr '\n' ' ')" "41152 41153 41154 41155 " "the bound 41150 and the live 41151 are skipped; the dead holder's 41152 is reused"
-assert_eq "$(grep '^[0-9]' "$IR/logs/milestones/ports.registry" | cut -d' ' -f1-2)" "41151 other-run" "only the live registration remains"
+assert_eq "$(tr ' ' '\n' < "$T/ports.c" 2>/dev/null | grep . | sort | tr '\n' ' ')" "$(( P0 + 2 )) $(( P0 + 3 )) $(( P0 + 4 )) $P5 " "the bound first port and the live second are skipped; the dead holder's third is reused"
+assert_eq "$(grep '^[0-9]' "$IR/logs/milestones/ports.registry" | cut -d' ' -f1-2)" "$(( P0 + 1 )) other-run" "only the live registration remains"
+
+scenario "ports: a range with no four free ports fails before any bundle and says why, port by port, in chain.log"
+mk_irepo; istatus irepo-0000000a:7
+P0="$(port_block 5)"; P4=$(( P0 + 4 ))
+iconfig "GATE=\"touch $T/exhaust-ran\"" "GATE_PORT_RANGE=$P0-$P4"
+sb_do irepo-0000000a "echo 'app v2' > app.txt" "milestone 7 work"; sb_report irepo-0000000a 7
+rm -f "$T/exhaust-ran" "$T/bound"
+python3 -c 'import socket, sys, time
+s = socket.socket(); s.bind(("127.0.0.1", int(sys.argv[2]))); s.listen(1)
+open(sys.argv[1], "w").close(); time.sleep(60)' "$T/bound" "$P4" & LISTENER=$!
+for i in $(seq 50); do [[ -e "$T/bound" ]] && break; sleep 0.1; done
+mkdir -p "$IR/logs/milestones"
+for i in 0 1 2 3; do echo "$(( P0 + i )) other-run $$ 2026-09-17T00:00:00"; done > "$IR/logs/milestones/ports.registry"
+RPRE="$(remote_head)"
+run_int irepo-0000000a
+kill "$LISTENER" 2>/dev/null || true; wait "$LISTENER" 2>/dev/null || true
+assert_eq "$IRC" 1 "integrate fails with 1"
+assert_eq "$(remote_head)" "$RPRE" "nothing pushed"
+[[ -e "$T/exhaust-ran" ]] && fail "a step ran without ports" || pass "no step ran"
+[[ -z "$(ls -A "$IR/logs/milestones/evidence" 2>/dev/null)" ]] && pass "no bundle directory is left" || fail "a bundle was left: $(ls "$IR/logs/milestones/evidence")"
+assert_grep "^milestone 7: gate could not start: no ports: no four free, unregistered ports in GATE_PORT_RANGE=$P0-$P4 \\(5 ports\\): registered to live runs in [^ ]+ports.registry: 4 \\($P0 $(( P0 + 1 )) $(( P0 + 2 )) $(( P0 + 3 ))\\); in use on this host \\(a listener, a connection or TIME_WAIT\\): 1 \\($P4\\); free: none; dead registrations pruned: 0; no gate step ran$" "$ICHAIN" "chain.log names the registered and the bound ports"
+assert_grep "host gate FAILED; evidence: none \\(could not start: no ports: no four free" "$ICHAIN" "integrate's failure line carries the reason"
+read -r ELO EHI < /proc/sys/net/ipv4/ip_local_port_range
+mk_irepo; istatus irepo-0000000a:7
+iconfig "GATE_PORT_RANGE=$ELO-$(( ELO + 3 ))"
+sb_do irepo-0000000a "echo 'app v2' > app.txt" "milestone 7 work"; sb_report irepo-0000000a 7
+mkdir -p "$IR/logs/milestones"
+for i in 0 1 2 3; do echo "$(( ELO + i )) other-run $$ 2026-09-17T00:00:00"; done > "$IR/logs/milestones/ports.registry"
+run_int irepo-0000000a
+assert_eq "$IRC" 1 "an exhausted range inside the ephemeral range fails too"
+assert_grep "overlaps the kernel's ephemeral range $ELO-$EHI" "$ICHAIN" "the reason says the range overlaps the ephemeral range"
 
 # ================================================================ U3 mutate
 # The sandbox branch changes app.txt to v2 and adds lib.txt; the steps check both. A
@@ -1462,7 +1601,7 @@ g rm -q .milestones/STATUS.md; g commit -q -m "no status"
 run_mut 7 "$(mk_patch nosb app.txt 'app v2' 'app v3')"
 assert_eq "$MRC" 2 "no sandbox named: exits 2"
 assert_grep '--sandbox' "$T/mut.out" "the error names --sandbox"
-g branch -q older "$(g rev-list --max-parents=0 HEAD)"
+g branch -q older origin/main   # the pushed base, behind main by the STATUS commits (its root lacks the owner's approvals)
 run_mut 7 "$(mk_patch withsb app.txt 'app v2' 'app v3')" --sandbox irepo-0000000a --ref older
 assert_eq "$MRC" 0 "with --sandbox and --ref it runs ($(tail -n 3 "$T/mut.out" | tr '\n' ' '))"
 BSHA="$(jq -r .sha "$IR/$(rec .baseline_bundle)/evidence.json" 2>/dev/null || true)"
@@ -1480,6 +1619,268 @@ assert_eq "$(grep -c '^rm irepo-6c6c6c6c' "$FAKE_DIR/agent-sandbox.calls")" 2 "e
 [[ -e "$FAKE_WS_ROOT/irepo-6c6c6c6c" ]] && fail "the sandbox worktree is still there" || pass "the sandbox worktree is gone"
 assert_eq "$(jq -r '[.produced_by, .where, .verdict] | join(" ")' "$IR/$(rec .patched_bundle)/evidence.json" 2>/dev/null)" "mutate sandbox-mutate fail" "the patched bundle is where=sandbox-mutate"
 assert_eq "$(jq -r .sha "$IR/$(rec .baseline_bundle)/evidence.json" 2>/dev/null | xargs -I{} git -C "$IR" rev-parse {}^2 2>/dev/null)" "$(g rev-parse agent-sandbox/irepo-0000000a)" "the sandbox gated the temporary merge"
+
+# ================================================================ U7 acceptance, approvals, test-change hits, fail-closed scan
+ACC="$IR/.milestones/acceptance/7.json"
+APPR="$IR/.milestones/approvals/7.md"
+acc() { jq -r "$1" "$ACC" 2>/dev/null || true; }
+# Milestone 15's exit paragraph from the demo spec: the chip clause holds semicolons inside parentheses.
+M15_EXIT='Exit: drawing a rising curve reorders the set so energy levels are non-decreasing across
+the first two thirds (asserted on the returned turn) with the same tracks; each of the four
+chips produces the expected operations under recorded runs (explicit removed; three added;
+BPM range tightened with outliers gone; the two lowest-energy tracks last); a free-text
+instruction round-trips with a "VS" line; polish adds the model judges to the scores line;
+the spend guard refuses after the configured ceiling and the dock shows the reset time.'
+mkdir -p "$T/failgit"
+# A git that fails (exit 128) when its argv matches FAILGIT, for the fail-closed scenarios.
+# shellcheck disable=SC2016
+printf '#!/usr/bin/env bash\nif [[ -n "${FAILGIT:-}" && "$*" =~ $FAILGIT ]]; then echo "fatal: simulated failure" >&2; exit 128; fi\nexec "%s" "$@"\n' "$REAL_GIT" > "$T/failgit/git"
+chmod +x "$T/failgit/git"
+APPROVAL_RE='^- approved [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}([+-][0-9]{2}:[0-9]{2}|Z) milestone=7 kind=[a-z-]+ hit=[a-z-]+ path=("[^"]+"|-) blob=([0-9a-f]{40}|none|-) hash=([0-9a-f]{64}|-) criterion=([0-9]+\.c[0-9]+|-) budget=([A-Za-z0-9_.-]+|-) confirm="approve 7 [a-z-]+"$'
+
+scenario "accept --init: criteria from the Exit paragraph, split at sentence ends and depth-zero semicolons; stable ids; no overwrite without --force"
+mk_irepo nowaive
+printf '\n## Milestone 15 — set, part two\n\nBuild: the curve editor.\n\n%s\n\n## Milestone 16\n\nExit: first works. Second holds (a; b. c) e.g. here; third.\n\n## Milestone 17\n\nno exit paragraph.\n' "$M15_EXIT" >> "$IR/docs/spec/11-milestones.md"
+idrv accept 15 --init
+assert_eq "$DRC" 0 "accept 15 --init exits 0 ($(tail -n 2 "$T/drv.out" | tr '\n' ' '))"
+F15="$IR/.milestones/acceptance/15.json"
+assert_eq "$(jq -r '.criteria | length' "$F15" 2>/dev/null)" 5 "milestone 15 has five criteria"
+assert_eq "$(jq -r '.criteria[1].text' "$F15" 2>/dev/null)" "each of the four chips produces the expected operations under recorded runs (explicit removed; three added; BPM range tightened with outliers gone; the two lowest-energy tracks last)" "the chip clause, semicolons inside its parentheses, is one criterion"
+assert_eq "$(jq -r '.criteria[2].text' "$F15" 2>/dev/null)" 'a free-text instruction round-trips with a "VS" line' "the next clause is its own criterion"
+assert_eq "$(jq -r '.criteria[4].text' "$F15" 2>/dev/null)" "the spend guard refuses after the configured ceiling and the dock shows the reset time" "the last criterion loses its full stop"
+assert_eq "$(jq -r '[.criteria[].id] | join(" ")' "$F15" 2>/dev/null)" "15.c1 15.c2 15.c3 15.c4 15.c5" "ids N.c<i>"
+assert_eq "$(jq -c '[.milestone, .source.file, ([.criteria[].evidence] | unique), ([.criteria[].context] | unique)]' "$F15" 2>/dev/null)" '[15,"docs/spec/11-milestones.md",[null],[[]]]' "milestone, source file, null evidence, empty context"
+assert_eq "$(jq -r .source.blob "$F15" 2>/dev/null)" "$(git -C "$IR" hash-object docs/spec/11-milestones.md)" "the source blob id is the milestones file's"
+SUM15="$(sha_of "$F15")"
+idrv accept 15 --init
+assert_eq "$DRC" 2 "a second --init refuses"
+assert_grep 'force' "$T/drv.out" "and names --force"
+assert_eq "$(sha_of "$F15")" "$SUM15" "the file is unchanged"
+idrv accept 15 --init --force
+assert_eq "$DRC" 0 "--force rewrites"
+assert_eq "$(jq -r '[.criteria[].id] | join(" ")' "$F15" 2>/dev/null)" "15.c1 15.c2 15.c3 15.c4 15.c5" "the same ids after --force"
+idrv accept 16 --init
+assert_eq "$(jq -c '[.criteria[].text]' "$IR/.milestones/acceptance/16.json" 2>/dev/null)" '["first works","Second holds (a; b. c) e.g. here","third"]' "a lowercase word after a full stop and a parenthesis keep a criterion whole"
+idrv accept 17 --init
+assert_eq "$DRC" 2 "a section with no Exit paragraph refuses"
+[[ -e "$IR/.milestones/acceptance/17.json" ]] && fail "a record was written for 17" || pass "no record for 17"
+set +e; (cd "$IR" && PATH="$T/failgit:$PATH" FAILGIT='^hash-object' "$DRIVER" accept 8 --init) > "$T/drv.out" 2>&1; DRC=$?; set -e
+assert_eq "$DRC" 2 "a failing git hash-object refuses accept --init"
+[[ -e "$IR/.milestones/acceptance/8.json" ]] && fail "a record was written after a git failure" || pass "no record after a git failure"
+
+scenario "integrate: no acceptance record, then empty criteria, refuses with the sealed bundle and the accept commands; accept rejects bad evidence; evaluator context is not evidence"
+mk_irepo nowaive; istatus irepo-0000000a:7
+iconfig 'GATE=""' 'GATE_STEPS=("replay|rec|echo tests/test_app.py::test_app_reports_v2 PASSED; echo tests/test_app.py::test_report PASSED")'
+sb_do irepo-0000000a "echo 'app v2' > app.txt" "milestone 7 work"; sb_report irepo-0000000a 7
+RPRE="$(remote_head)"
+run_int irepo-0000000a
+assert_eq "$IRC" 2 "no acceptance record: refused with 2 ($(tail -n 2 "$T/int.out" | tr '\n' ' '))"
+REL="$(bundle_of "$ICHAIN")"
+assert_grep '^gate pass exit=0 milestone=7 ' "$ICHAIN" "the gate itself passed"
+assert_grep 'refused: acceptance incomplete' "$T/int.out" "the refusal says acceptance is incomplete"
+assert_grep "sealed bundle: $REL$" "$T/int.out" "the sealed bundle path is printed"
+assert_grep "accept 7 --init$" "$T/int.out" "the init command is printed"
+assert_grep "accept 7 --criterion 7\.c1 --evidence bundle:$REL#<step>:<test id>" "$T/int.out" "the evidence command for 7.c1 names the bundle"
+assert_grep "accept 7 --criterion 7\.c2 --evidence bundle:$REL#<step>:<test id>" "$T/int.out" "and for 7.c2"
+assert_grep "approve 7 criterion-waiver 7\.c1" "$T/int.out" "the waiver route is printed"
+assert_eq "$(remote_head)" "$RPRE" "nothing pushed"
+assert_eq "$(g rev-list --merges --count origin/main..HEAD)" 1 "the merge stays local"
+idrv accept 7 --init
+# the acceptance record and a mutation ledger are tracked: later edits to them must not trip the clean-tree checks
+mkdir -p "$IR/.milestones/mutations"; echo '{}' > "$IR/.milestones/mutations/7.jsonl"
+g add -f .milestones/acceptance/7.json .milestones/mutations/7.jsonl; g commit -q -m "acceptance record for 7"
+run_int irepo-0000000a
+assert_eq "$IRC" 2 "empty criteria: refused with 2"
+REL="$(bundle_of "$ICHAIN")"; B="$IR/$REL"
+assert_grep 'unmet 7\.c1: no evidence' "$T/int.out" "names 7.c1"
+assert_grep 'unmet 7\.c2: no evidence' "$T/int.out" "names 7.c2"
+assert_eq "$(remote_head)" "$RPRE" "nothing pushed"
+forge() {  # name jq-filter [unsealed]: a copy of the bundle, rewritten, sealed in chain.log unless "unsealed"
+  local d="$IR/logs/milestones/evidence/$1"
+  rm -rf "$d"; cp -a "$B" "$d"
+  jq "$2" "$B/evidence.json" > "$d/evidence.json"
+  [[ "${3:-}" == unsealed ]] || echo "seal $(sha_of "$d/evidence.json") logs/milestones/evidence/$1" >> "$ICHAIN"
+  echo "logs/milestones/evidence/$1"
+}
+TID='tests/test_app.py::test_app_reports_v2'
+check_reject() {  # label evidence reason-regex
+  idrv accept 7 --criterion 7.c1 --evidence "$2"
+  assert_eq "$DRC" 2 "accept rejects $1"
+  assert_grep "$3" "$T/drv.out" "  for the stated reason: $1"
+}
+check_reject "a bundle that does not exist" "bundle:logs/milestones/evidence/7-host-integrate-nope#rec:$TID" 'no bundle'
+check_reject "an unsealed bundle" "bundle:$(forge unsealed . unsealed)#rec:$TID" 'unsealed or altered'
+check_reject "a dirty bundle" "bundle:$(forge dirty '.dirty = true')#rec:$TID" 'is dirty'
+check_reject "a mutate bundle" "bundle:$(forge mutate '.produced_by = "mutate" | .where = "host-mutate"')#rec:$TID" 'produced by mutate'
+check_reject "a check bundle" "bundle:$(forge check '.produced_by = "check" | .where = "local"')#rec:$TID" 'produced by check'
+check_reject "a gate bundle claiming host-integrate" "bundle:$(forge gatewhere '.produced_by = "gate"')#rec:$TID" 'produced by gate'
+check_reject "a failed step" "bundle:$(forge failed '.steps[0].status = "fail" | .steps[0].exit = 1')#rec:$TID" 'did not pass'
+check_reject "a step name the bundle lacks" "bundle:$REL#lint:$TID" 'no step named lint'
+check_reject "a test id absent from the step log" "bundle:$REL#rec:tests/test_app.py::test_missing" 'absent from step rec.s log: tests/test_app.py::test_missing$'
+check_reject "a test id that is only a prefix of a logged one" "bundle:$REL#rec:tests/test_app.py::test_app" 'absent from step rec.s log: tests/test_app.py::test_app$'
+TL="$(forge taillog .)"; echo "tests/test_app.py::test_added_later PASSED" >> "$IR/$TL/steps/1-rec.log"
+check_reject "a test id appended to a sealed bundle's log" "bundle:$TL#rec:tests/test_app.py::test_added_later" 'does not match the sha256 sealed'
+check_reject "a bundle path outside the evidence directory" "bundle:logs/milestones/evidence/../evidence/$(basename "$REL")/..#rec:$TID" 'not a bundle directly under'
+assert_eq "$(acc '[.criteria[].evidence] | unique | tostring')" "[null]" "no rejected evidence was recorded"
+idrv accept 7 --criterion 7.c9 --evidence "bundle:$REL#rec:$TID"
+assert_eq "$DRC" 2 "an unknown criterion id is refused"
+idrv accept 7 --criterion 7.c2 --context "evaluator:met; the report file exists"
+assert_eq "$DRC" 0 "evaluator context is recorded ($(tail -n 1 "$T/drv.out"))"
+assert_eq "$(acc '.criteria[1] | [(.evidence | tostring), .context[0].source, .context[0].text] | join("|")')" "null|evaluator|met; the report file exists" "context appended, evidence still null"
+idrv accept 7 --criterion 7.c1 --evidence "bundle:$REL#rec:$TID,tests/test_app.py::test_report"
+assert_eq "$DRC" 0 "a sealed integrate bundle with a passed step and logged test ids is accepted ($(tail -n 1 "$T/drv.out"))"
+assert_eq "$(acc '.criteria[0].evidence | [.kind, .bundle, .step, (.tests | join(","))] | join(" ")')" "bundle $REL rec $TID,tests/test_app.py::test_report" "the evidence names bundle, step and tests"
+assert_eq "$(acc '.criteria[0].evidence | [.tree, .definition_hash] | join(" ")')" "$(jq -r '[.tree, .definition_hash] | join(" ")' "$B/evidence.json")" "the evidence carries the bundle's tree and definition hash"
+echo '{"more": 1}' >> "$IR/.milestones/mutations/7.jsonl"
+run_int irepo-0000000a
+assert_eq "$IRC" 2 "an evaluator context alone leaves 7.c2 unmet"
+assert_grep 'unmet 7\.c2' "$T/int.out" "names 7.c2"
+assert_not_grep 'unmet 7\.c1' "$T/int.out" "7.c1 is met by its bundle"
+assert_not_grep 'tracked changes|tree changed' "$T/int.out" "edits under .milestones/acceptance/ and .milestones/mutations/ do not trip the clean-tree checks"
+idrv accept 7 --criterion 7.c2 --evidence "bundle:$REL#rec:tests/test_app.py::test_report"
+assert_eq "$DRC" 0 "7.c2 accepted"
+run_int irepo-0000000a
+assert_eq "$IRC" 0 "every criterion has evidence on the gated tree: pushed ($(tail -n 2 "$T/int.out" | tr '\n' ' '))"
+assert_eq "$(remote_head)" "$(g rev-parse HEAD)" "the remote has the STATUS commit"
+
+scenario "accept: a caught mutation citing the criterion is evidence; a missed one, one citing another criterion or one with a broken seal is not"
+mk_irepo nowaive; istatus irepo-0000000a:7
+sb_do irepo-0000000a "echo 'app v2' > app.txt && echo lib > lib.txt && echo other > other.txt" "milestone 7 work"
+sb_report irepo-0000000a 7
+mstatus irepo-0000000a; iconfig 'GATE=""' "$M_STEPS"
+idrv accept 7 --init
+iapprove 7 criterion-waiver 7.c2
+assert_eq "$DRC $ARC" "0 0" "init, and 7.c2 waived by the owner"
+run_mut 7 "$(mk_patch u7caught app.txt 'app v2' 'app v3' '7.c1')"
+assert_eq "$MRC" 0 "the mutation is caught"
+run_mut 7 "$(mk_patch u7missed other.txt other changed '7.c2')"
+assert_eq "$MRC" 1 "the second is missed"
+idrv accept 7 --criterion 7.c2 --evidence mutation:2
+assert_eq "$DRC" 2 "a missed mutation is rejected"
+assert_grep "verdict is missed" "$T/drv.out" "  because it was missed"
+idrv accept 7 --criterion 7.c2 --evidence mutation:1
+assert_eq "$DRC" 2 "a caught mutation citing 7.c1 is rejected for 7.c2"
+assert_grep "cites criterion '7\.c1', not 7\.c2" "$T/drv.out" "  because it cites 7.c1"
+idrv accept 7 --criterion 7.c1 --evidence mutation:9
+assert_eq "$DRC" 2 "a record line that does not exist is rejected"
+assert_grep "selects 0 readable records" "$T/drv.out" "  because no record is selected"
+FORGED="$(sed -n 1p "$MREC" | jq -c '.patched_seal = "0000000000000000000000000000000000000000000000000000000000000000"')"
+echo "$FORGED" >> "$MREC"
+idrv accept 7 --criterion 7.c1 --evidence mutation:3
+assert_eq "$DRC" 2 "a record whose seal does not match the chain is rejected"
+assert_grep "patched bundle .* does not match the seal the record holds" "$T/drv.out" "  because of the seal"
+idrv accept 7 --criterion 7.c1 --evidence "mutation:$(sed -n 1p "$MREC" | jq -r .patched_seal)"
+assert_eq "$DRC" 0 "the caught record, named by its patched seal, is accepted ($(tail -n 1 "$T/drv.out"))"
+assert_eq "$(acc '.criteria[0].evidence | [.kind, .tree, .definition_hash] | join(" ")')" "mutation $(sed -n 1p "$MREC" | jq -r '[.tree, .definition_hash] | join(" ")')" "the evidence carries the record's tree and definition hash"
+run_int irepo-0000000a
+assert_eq "$IRC" 0 "a caught mutation plus a waiver complete acceptance ($(tail -n 2 "$T/int.out" | tr '\n' ' '))"
+
+scenario "approve: stdin not a terminal or a wrong confirmation writes nothing; a waiver typed at a terminal completes acceptance"
+mk_irepo nowaive; istatus irepo-0000000a:7
+sb_do irepo-0000000a "echo 'app v2' > app.txt" "milestone 7 work"; sb_report irepo-0000000a 7
+idrv accept 7 --init
+PRE="$(g rev-parse HEAD)"
+set +e; (cd "$IR" && echo "approve 7 criterion-waiver" | "$DRIVER" approve 7 criterion-waiver 7.c1 7.c2) > "$T/drv.out" 2>&1; DRC=$?; set -e
+assert_eq "$DRC" 2 "a pipe on stdin is refused"
+assert_grep 'terminal' "$T/drv.out" "the refusal names the terminal"
+set +e; (cd "$IR" && "$DRIVER" approve 7 criterion-waiver 7.c1 < /dev/null) > "$T/drv.out" 2>&1; DRC=$?; set -e
+assert_eq "$DRC" 2 "/dev/null on stdin is refused"
+IAPPROVE_TYPE="approve 7 weakening" iapprove 7 criterion-waiver 7.c1 7.c2
+assert_eq "$ARC" 2 "a confirmation that is not 'approve 7 criterion-waiver' is refused"
+assert_grep "confirmation typed was not" "$T/approve.out" "  because of the confirmation"
+iapprove 7 criterion-waiver 7.c9
+assert_eq "$ARC" 2 "a criterion the acceptance record lacks is refused"
+assert_grep "no criterion 7\.c9" "$T/approve.out" "  because the id is unknown"
+[[ -e "$APPR" ]] && fail "an approvals file was written" || pass "no approvals file"
+assert_eq "$(g rev-parse HEAD)" "$PRE" "no commit"
+run_int irepo-0000000a
+assert_eq "$IRC" 2 "without the waiver integrate refuses"
+iapprove 7 criterion-waiver 7.c1 7.c2
+assert_eq "$ARC" 0 "the waiver typed at a terminal is written ($(tail -n 2 "$T/approve.out" | tr '\n' ' '))"
+assert_eq "$(g show --name-only --format= HEAD)" ".milestones/approvals/7.md" "the commit holds the approvals file alone"
+assert_eq "$(grep -c '^- approved ' "$APPR")" 2 "one entry per criterion"
+assert_eq "$(grep -Ec "$APPROVAL_RE" "$APPR")" 2 "entries in the documented line format"
+assert_grep '^- approved .* kind=criterion-waiver hit=- path=- blob=- hash=- criterion=7\.c2 budget=- confirm="approve 7 criterion-waiver"$' "$APPR" "the waiver entry names the criterion and the typed confirmation"
+echo "- approved by hand" >> "$APPR"
+iapprove 7 budget gate-failures
+assert_eq "$ARC" 2 "approve refuses while the approvals file has uncommitted edits"
+assert_grep "uncommitted edits" "$T/approve.out" "  because of the edits"
+g checkout -q -- .milestones/approvals/7.md
+iapprove 7 budget gate-failures
+assert_eq "$ARC" 0 "a budget approval"
+assert_grep '^- approved .* kind=budget hit=- path=- blob=- hash=- criterion=- budget=gate-failures confirm="approve 7 budget"$' "$APPR" "names the budget"
+iapprove 7 gate-definition
+assert_eq "$ARC" 0 "a gate-definition approval"
+assert_grep '^- approved .* kind=gate-definition hit=- path=- blob=- hash=[0-9a-f]{64} criterion=- budget=- confirm="approve 7 gate-definition"$' "$APPR" "carries the definition hash"
+run_int irepo-0000000a
+assert_eq "$IRC" 0 "the waivers complete acceptance: pushed ($(tail -n 2 "$T/int.out" | tr '\n' ' '))"
+
+scenario "approvals: a weakening approval binds to the blob; a later change to the file is unapproved again"
+mk_irepo; istatus irepo-0000000a:7
+sb_do irepo-0000000a "sed -i '1i import pytest\n@pytest.mark.skip' tests/test_a.py" "skip a test"; sb_report irepo-0000000a 7
+for k in skip-marker test-change; do iapprove 7 weakening "$k" tests/test_a.py --sandbox irepo-0000000a; assert_eq "$ARC" 0 "approve $k"; done
+assert_grep "kind=weakening hit=skip-marker path=\"tests/test_a\.py\" blob=$(g rev-parse agent-sandbox/irepo-0000000a:tests/test_a.py) " "$APPR" "the entry binds the candidate's blob"
+sb_do irepo-0000000a "echo '# one more' >> tests/test_a.py" "change the test again"
+RPRE="$(remote_head)"
+run_int irepo-0000000a
+assert_eq "$IRC" 2 "the file at another blob is unapproved"
+assert_grep '^    skip-marker tests/test_a\.py$' "$T/int.out" "names the skip marker"
+assert_grep '^    test-change tests/test_a\.py$' "$T/int.out" "and the test change"
+assert_grep "approve 7 weakening skip-marker tests/test_a\.py" "$T/int.out" "the refusal prints the approve command"
+assert_eq "$(remote_head)" "$RPRE" "nothing pushed"
+for k in skip-marker test-change; do iapprove 7 weakening "$k" tests/test_a.py; assert_eq "$ARC" 0 "re-approve $k at the merged head"; done
+run_int irepo-0000000a
+assert_eq "$IRC" 0 "approvals at the current blob proceed ($(tail -n 2 "$T/int.out" | tr '\n' ' '))"
+
+scenario "approvals: a hand-written line, malformed and committed or well-formed and uncommitted, approves nothing"
+mk_irepo; istatus irepo-0000000a:7
+sb_do irepo-0000000a "git rm -q tests/test_a.py" "drop a test"; sb_report irepo-0000000a 7
+echo "- approved weakening deleted-test tests/test_a.py" >> "$APPR"
+g commit -q -am "approvals by hand"
+printf -- '- approved 2026-09-17T10:00:00+00:00 milestone=7 kind=weakening hit=deleted-test path="tests/test_a.py" blob=none hash=- criterion=- budget=- confirm="approve 7 weakening"\n' >> "$APPR"
+grep -Eq "$APPROVAL_RE" "$APPR" && pass "the uncommitted line is in the documented format" || fail "fixture line not in format"
+run_int irepo-0000000a
+assert_eq "$IRC" 2 "refused with 2"
+assert_grep '^    deleted-test tests/test_a\.py$' "$T/int.out" "the deleted test is still unapproved"
+
+scenario "scan: a modified existing test is a test-change hit; an added test is not"
+mk_irepo; istatus irepo-0000000a:7
+sb_do irepo-0000000a "echo '# note' >> tests/test_a.py && printf 'def test_b():\n    assert True\n' > tests/test_b.py" "touch tests"; sb_report irepo-0000000a 7
+run_int irepo-0000000a
+assert_eq "$IRC" 2 "refused with 2"
+assert_grep '^    test-change tests/test_a\.py$' "$T/int.out" "the modified test is a test-change hit"
+assert_not_grep 'test_b\.py' "$T/int.out" "the added test is not a hit"
+
+scenario "scan: a branch editing a script a gate step names is a gate-config hit"
+mk_irepo; istatus irepo-0000000a:7
+mkdir -p "$IR/scripts"; echo true > "$IR/scripts/check.sh"; g add scripts; g commit -q -m "check script"; g push -q 2>/dev/null
+iconfig 'GATE=""' 'GATE_STEPS=("static|check|bash scripts/check.sh")'
+sb_do irepo-0000000a "echo 'exit 0' >> scripts/check.sh" "edit the check"; sb_report irepo-0000000a 7
+run_int irepo-0000000a
+assert_eq "$IRC" 2 "refused with 2"
+assert_grep '^    gate-config scripts/check\.sh$' "$T/int.out" "the named script is a gate-config hit"
+iapprove 7 gate-config scripts/check.sh --sandbox irepo-0000000a
+assert_eq "$ARC" 0 "approve 7 gate-config scripts/check.sh"
+run_int irepo-0000000a
+assert_eq "$IRC" 0 "approved: proceeds ($(tail -n 2 "$T/int.out" | tr '\n' ' '))"
+
+scenario "scan fails closed: an unresolvable base, a failing name-status diff or an unreadable base blob refuses"
+for variant in base namestatus blob; do
+  mk_irepo; istatus irepo-0000000a:7
+  sb_do irepo-0000000a "sed -i 's/assert x == 3/assert x >= 3/' tests/test_a.py" "loosen"; sb_report irepo-0000000a 7
+  iapprove 7 weakening test-change tests/test_a.py --sandbox irepo-0000000a
+  RPRE="$(remote_head)"; FG=""
+  case "$variant" in
+    base)       FG='^rev-parse --verify -q [0-9a-f]{40}\^\{commit\}$' ;;
+    namestatus) FG='^-c core.quotePath=false diff --no-renames --name-status' ;;
+    blob)       BLOB="$(g rev-parse origin/main:tests/test_a.py)"; rm -f "$IR/.git/objects/${BLOB:0:2}/${BLOB:2}" ;;
+  esac
+  set +e; (cd "$IR" && PATH="$T/failgit:$PATH" FAILGIT="$FG" TMPDIR="$ITMP" "$DRIVER" integrate irepo-0000000a) > "$T/int.out" 2>&1; IRC=$?; set -e
+  assert_eq "$IRC" 2 "($variant) refused with 2 ($(tail -n 2 "$T/int.out" | tr '\n' ' '))"
+  assert_grep 'weakening scan failed' "$T/int.out" "($variant) the refusal says the scan failed"
+  assert_not_grep '^gate ' "$ICHAIN" "($variant) no gate ran"
+  assert_eq "$(remote_head)" "$RPRE" "($variant) nothing pushed"
+done
 
 # ================================================================ U8 init
 NR_="$T/newrepo"

@@ -21,6 +21,10 @@
 #   run-milestones.sh integrate app-1a2b3c4d [6]  # merge, check, gate on the host, record STATUS.md, push
 #   run-milestones.sh mutate 6 .milestones/mutations/6-drop-limit.patch [--ref REF] [--steps api,lint]
 #                                                # does the gate catch a planted defect in what integrate would gate
+#   run-milestones.sh accept 6 --init            # the exit criteria of milestone 6 into .milestones/acceptance/6.json
+#   run-milestones.sh accept 6 --criterion 6.c2 --evidence bundle:<bundle>#<step>:<test id>[,<test id>...]
+#   run-milestones.sh accept 6 --criterion 6.c3 --evidence mutation:<line or patched seal> [--context evaluator:<text>]
+#   run-milestones.sh approve 6 <kind> <item...>  # an owner approval, typed at a terminal (kinds below)
 #
 # One milestone per invocation: the supervisor reviews between milestones, so the
 # driver refuses `run-milestones.sh 5 6`. The launch returns as soon as systemd accepts
@@ -105,7 +109,8 @@
 # seed_kept paths. The bundle, always on the host, is
 #   logs/milestones/evidence/<milestone>-<where>-<stamp>/
 #     evidence.json  dirty.patch  untracked.txt  steps/<i>-<name>.log  steps/env.log
-# evidence.json is written after the last step, and its sha256 is logged as the seal. Its
+# evidence.json is written after the last step (each step's log_sha256 in it), and its sha256 is
+# logged as the seal. Its
 # produced_by names the verb that made it (gate, integrate, check, mutate); only an
 # integrate bundle is ever delivery evidence.
 # Each run appends to its gate log and chain.log:
@@ -122,7 +127,8 @@
 #
 # integrate <id> [N], run from the host checkout on the integration branch. N is the
 # sandbox record's milestone tag, else the positional number; the two must agree. In order:
-#   1. refuse on tracked changes, a detached HEAD, a branch other than INTEGRATION_BRANCH,
+#   1. refuse on tracked changes outside METADATA_ALLOWLIST (STATUS.md, events.jsonl, grades.jsonl,
+#      acceptance/, approvals/, mutations/ under .milestones/), a detached HEAD, a branch other than INTEGRATION_BRANCH,
 #      no agent-sandbox/<id> branch, no upstream, a branch behind its upstream, or a branch
 #      ahead of its upstream with a commit that is not (a) reachable from agent-sandbox/<id>,
 #      (b) an earlier merge of that branch or a descendant of one, or (c) a non-merge commit
@@ -133,16 +139,22 @@
 #      merge would overwrite it), or does not add or change a non-empty REPORT_DIR/milestone-N.md;
 #   3. merge --no-ff --no-overwrite-ignore agent-sandbox/<id> (skipped when already merged;
 #      a conflict aborts);
-#   4. the weakening scan over @{upstream}..HEAD: every hit's path (skip-marker,
-#      removed-assert, deleted-test, snapshot, gate-config) must appear whole in the
-#      "Test expectation changes" section of REPORT_DIR/milestone-N.md at HEAD;
+#   4. the weakening scan over @{upstream}..HEAD: every hit (skip-marker, removed-assert,
+#      deleted-test, test-change, snapshot, gate-config; see weakening_hits) needs an owner
+#      approval of its kind, path and current blob in .milestones/approvals/N.md as committed at
+#      HEAD. The report approves nothing. Any git error in the scan refuses (fails closed);
 #   5. EVALUATE_N=1: .milestones/evaluation-N.md committed, no "owner action required" line;
 #   6. the gate steps under GATE_TIMEOUT: INTEGRATE_GATE_WHERE=host in a temporary detached
 #      worktree of HEAD seeded with SEED_PATHS (where=host-integrate); =sandbox in a fresh
 #      `agent-sandbox run <repo> --new` tagged purpose=integration-gate, refused unless its
 #      HEAD is the merge commit, removed on every exit path (where=sandbox-integration); then
 #      refuse unless the bundle still matches its seal and HEAD is still the gated commit on
-#      the same branch with no tracked change;
+#      the same branch with no tracked change outside METADATA_ALLOWLIST;
+#   6b. acceptance (acceptance_complete): every criterion of .milestones/acceptance/N.json has
+#      evidence recorded on the gated tree and definition hash with its seals intact, or a
+#      criterion-waiver approval at HEAD. Otherwise it prints "refused: acceptance incomplete",
+#      the sealed bundle and the exact accept and approve commands, keeps the merge local and
+#      exits 2 (run accept, then integrate again);
 #   7. upsert the STATUS.md row (Lane, Sandbox, Merged = gated sha, Gate = pass <sha> tree=
 #      def= and the kind counts), commit only that
 #      file, check the commit's parent is the gated sha, and push that commit to the
@@ -150,13 +162,33 @@
 # A refusal or failure after step 3 pushes nothing. When this run made the merge, it keeps
 # the merge local and logs the pre-merge sha with the `git reset --hard` that drops it; on
 # an already-merged re-run it logs `git log --oneline <upstream>..HEAD` instead, because a
-# reset would also drop fix-forward commits. Exit 2 refused, 1 gate or push failed.
+# reset would also drop fix-forward commits. Exit 2 refused (acceptance incomplete included), 1
+# gate or push failed. A gate that could not start (no ports, no worktree) writes no bundle and
+# logs why in chain.log; the failure line reads "evidence: none (could not start: <why>)".
+#
+# accept N --init [--force]: the "Exit:" paragraph of milestone N's section, split at sentence
+# ends and at semicolons outside (), [], {} and `code`, into .milestones/acceptance/N.json with
+# ids N.c1.. and null evidence; refuses to replace the file without --force.
+# accept N --criterion N.c<i> --evidence bundle:<bundle>#<step>:<test ids>: the bundle must be
+# sealed, milestone N's, produced_by=integrate (host-integrate or sandbox-integration), dirty=false,
+# the step passed, its log matching its sealed sha256 and naming every test id as a whole token.
+# --evidence mutation:<line of .milestones/mutations/N.jsonl, 1-based, or its patched_seal>: verdict
+# caught, citing the criterion (id, index, "<id or index>: ..." or text), both seals intact.
+# --context evaluator:<text> appends reviewer-grade context, never evidence. Exit 2 on a refusal.
+#
+# approve N <kind> <item...> [--sandbox ID | --ref REF]: refused unless stdin is a terminal; the
+# owner types "approve N <kind>" exactly. Kinds: criterion-waiver <N.c<i>...>; weakening <hit kind>
+# <path...>; gate-config <path...>; gate-definition (the current definition hash); budget <name...>.
+# Blob ids come from --ref, else the unmerged sandbox branch (--sandbox, else the STATUS.md cell),
+# else HEAD. One line per item is appended to .milestones/approvals/N.md in the format at
+# APPROVAL_LINE_RE, and that file alone is committed; it refuses while the file has uncommitted
+# edits. Readers use the committed file and ignore any line not in that exact format.
 #
 # mutate N <patch> [--ref REF] [--steps name,name] [--sandbox ID], from the host checkout.
 # The sandbox is the Sandbox cell of milestone N's STATUS.md row, else --sandbox. In order:
 #   1. integrate's candidate checks on agent-sandbox/<id>: its range touches no .milestones/
 #      path and no path ignored in the host checkout, and every weakening or gate-config hit
-#      is approved (today: listed in the report's "Test expectation changes" section);
+#      is approved in .milestones/approvals/N.md (unapproved_hits, as integrate);
 #   2. the patch carries a "# criterion: <exit criterion text or index>" line before its
 #      first diff, and changes no GATE_DEFINITION_GLOBS file, no .milestones/ path, no path
 #      outside the repository and no file a step, GATE_SETUP or GATE_ENV command names;
@@ -404,7 +436,7 @@ gate_definition_hash() {
 file_size() { if [[ -f "$1" ]]; then wc -c < "$1" | tr -d ' '; else echo 0; fi; }
 
 # ---- ports: a host gate run's GATE_PORT_1..4
-PORTS=(); PORT_TOKEN=""
+PORTS=(); PORT_TOKEN=""; PORT_WHY=""
 free_ports() {
   # free_ports <count> <candidate>...: the first <count> candidates nothing is bound to, by a
   # bind on every address (IPv4 and IPv6); /dev/tcp connects when python3 is absent.
@@ -451,16 +483,18 @@ alloc_ports() {
   # registered until release_ports, because an app binds it minutes later. Registry lines:
   # "<port> <token> <pid> <at>"; a line whose pid is gone is pruned.
   local token="$1" reg="$LOGS/ports.registry" lo hi fd p tok pid at span start i got
-  local keep=() cands=() held=" "
-  if [[ ! "$GATE_PORT_RANGE" =~ ^([0-9]+)-([0-9]+)$ ]]; then log "GATE_PORT_RANGE='$GATE_PORT_RANGE': want <low>-<high>"; return 1; fi
+  PORT_WHY=""
+  local keep=() cands=() held=" " inrange=() busy=() pruned=0 eph why
+  if [[ ! "$GATE_PORT_RANGE" =~ ^([0-9]+)-([0-9]+)$ ]]; then PORT_WHY="GATE_PORT_RANGE='$GATE_PORT_RANGE': want <low>-<high>"; log "$PORT_WHY"; return 1; fi
   lo="${BASH_REMATCH[1]}"; hi="${BASH_REMATCH[2]}"
-  if (( lo < 1024 || hi > 65535 || hi - lo < 3 )); then log "GATE_PORT_RANGE=$GATE_PORT_RANGE: want four or more ports within 1024-65535"; return 1; fi
+  if (( lo < 1024 || hi > 65535 || hi - lo < 3 )); then PORT_WHY="GATE_PORT_RANGE=$GATE_PORT_RANGE: want four or more ports within 1024-65535"; log "$PORT_WHY"; return 1; fi
   exec {fd}>> "$reg.lock"
-  if ! flock -w 60 "$fd"; then exec {fd}>&-; log "could not lock $reg within 60s"; return 1; fi
+  if ! flock -w 60 "$fd"; then exec {fd}>&-; PORT_WHY="could not lock $reg within 60s"; log "$PORT_WHY"; return 1; fi
   if [[ -f "$reg" ]]; then
     while read -r p tok pid at; do
-      if [[ ! "$p" =~ ^[0-9]+$ || ! "$pid" =~ ^[0-9]+$ ]] || ! kill -0 "$pid" 2> /dev/null; then continue; fi
+      if [[ ! "$p" =~ ^[0-9]+$ || ! "$pid" =~ ^[0-9]+$ ]] || ! kill -0 "$pid" 2> /dev/null; then pruned=$(( pruned + 1 )); continue; fi
       keep+=("$p $tok $pid $at"); held+="$p "
+      (( p < lo || p > hi )) || inrange+=("$p")
     done < "$reg"
   fi
   span=$(( hi - lo + 1 )); start=$(( RANDOM % span ))
@@ -471,8 +505,18 @@ alloc_ports() {
   got=""; (( ${#cands[@]} )) && got="$(free_ports 4 "${cands[@]}")"
   read -r -a PORTS <<< "$got"
   if (( ${#PORTS[@]} < 4 )); then
+    # Say why, port by port: fewer than four were found, so every candidate was probed.
+    for p in "${cands[@]}"; do [[ " $got " == *" $p "* ]] || busy+=("$p"); done
+    why="no four free, unregistered ports in GATE_PORT_RANGE=$GATE_PORT_RANGE ($span ports):"
+    why+=" registered to live runs in $reg: $(( ${#inrange[@]} ))${inrange[*]:+ ($(printf '%s\n' "${inrange[@]}" | sort -n | tr '\n' ' ' | sed 's/ $//'))};"
+    why+=" in use on this host (a listener, a connection or TIME_WAIT): ${#busy[@]}${busy[*]:+ ($(printf '%s\n' "${busy[@]}" | sort -n | tr '\n' ' ' | sed 's/ $//'))};"
+    why+=" free: ${got:-none}; dead registrations pruned: $pruned"
+    eph="$(cat /proc/sys/net/ipv4/ip_local_port_range 2> /dev/null | tr -s ' \t' '-' || true)"
+    if [[ "$eph" =~ ^([0-9]+)-([0-9]+)$ ]] && (( lo <= BASH_REMATCH[2] && hi >= BASH_REMATCH[1] )); then
+      why+="; the range overlaps the kernel's ephemeral range $eph, where outbound connections take ports: pick one outside it"
+    fi
     PORTS=(); exec {fd}>&-
-    log "no four free, unregistered ports in GATE_PORT_RANGE=$GATE_PORT_RANGE"; return 1
+    PORT_WHY="$why"; log "$why"; return 1
   fi
   at="$(date -Is)"
   { if (( ${#keep[@]} )); then printf '%s\n' "${keep[@]}"; fi
@@ -612,7 +656,7 @@ write_evidence() {
   # write_evidence <file> key=value... -- <kind name command flag status exit ms log>...
   # Writes evidence.json and prints the kind counts for the evidence line.
   python3 - "$@" <<'PY'
-import json, sys
+import hashlib, json, os, sys
 a = sys.argv[1:]
 path = a.pop(0)
 cut = a.index("--")
@@ -621,10 +665,13 @@ r = a[cut + 1:]
 steps = []
 for i in range(0, len(r), 8):
     kind, name, cmd, flag, status, ex, ms, log = r[i:i + 8]
+    lp = os.path.join(os.path.dirname(path), log) if log else ""
+    # The step log's sha256 is sealed with evidence.json, so a line added to the log later shows.
+    lsha = hashlib.sha256(open(lp, "rb").read()).hexdigest() if lp and os.path.isfile(lp) else None
     steps.append({"index": i // 8 + 1, "name": name, "kind": kind, "command": cmd,
                   "sandbox_only": flag == "sandbox-only", "status": status,
                   "exit": int(ex) if ex else None, "duration_ms": int(ms) if ms else None,
-                  "log": log or None})
+                  "log": log or None, "log_sha256": lsha})
 counts = {}
 for k in ("integration", "replay", "static"):
     mine = [s for s in steps if s["kind"] == k]
@@ -659,6 +706,10 @@ PY
 
 # ---- one gate run
 GATE_RC=0; GATE_BUNDLE=""; GATE_FAILED_STEP=""; GATE_COUNTS=""; GATE_TREE=""; GATE_DEF=""; GATE_ADMISSION=0
+# GATE_NOSTART: why the last gate run wrote no bundle (empty when it wrote one). Every such
+# path also logs that reason to chain.log.
+GATE_NOSTART=""
+gate_nostart() { GATE_NOSTART="$1"; log "milestone $2: gate could not start: $1; no gate step ran"; }
 # Set by a caller for its next gate_run: GATE_SELECT holds step names (space separated; empty
 # runs every step, and setup always runs), the rest are recorded "not run: not selected".
 # GATE_KEEP_GOING=1 runs the later steps after a failure (mutate's patched run needs to
@@ -671,7 +722,8 @@ gate_run() {
   #   the host sees it. evidence.json's produced_by follows where: sandbox -> gate,
   #   *-integrate/*-integration -> integrate, local -> check, *-mutate -> mutate.
   # Returns GATE_RC: 0, or the failing step's exit. Returns 1 with no bundle when the run
-  # could not start (unreadable tree, no ports). Sets GATE_BUNDLE, GATE_FAILED_STEP,
+  # could not start (unreadable tree, no ports), with the reason in GATE_NOSTART and chain.log.
+  # Sets GATE_BUNDLE, GATE_FAILED_STEP,
   # GATE_COUNTS, GATE_TREE, GATE_DEF and GATE_ADMISSION (a step enter not admitted).
   local where="$1" n="$2" dir="$3" sha="$4" sb="${5:-}" route=host target="$3" produced_by
   case "$where" in sandbox|sandbox-integration|sandbox-mutate) route=sandbox; target="$sb" ;; esac
@@ -680,24 +732,25 @@ gate_run() {
     host-integrate|sandbox-integration) produced_by=integrate ;;
     local) produced_by=check ;;
     host-mutate|sandbox-mutate) produced_by=mutate ;;
-    *) log "milestone $n: unknown gate location '$where'; no gate step ran"; return 1 ;;
+    *) gate_nostart "unknown gate location '$where'" "$n"; return 1 ;;
   esac
-  GATE_RC=0; GATE_BUNDLE=""; GATE_FAILED_STEP=""; GATE_COUNTS=""; GATE_ADMISSION=0; SB_STDOUT=""; SB_RUNDIR=""
+  GATE_RC=0; GATE_BUNDLE=""; GATE_FAILED_STEP=""; GATE_COUNTS=""; GATE_ADMISSION=0; SB_STDOUT=""; SB_RUNDIR=""; GATE_NOSTART=""
   arm_cleanup
   GATE_TREE="$(git -C "$dir" rev-parse --verify -q "$sha^{tree}" 2> /dev/null)" \
-    || { log "milestone $n: cannot read the tree of ${sha:0:12} in $dir; no gate step ran"; return 1; }
+    || { gate_nostart "cannot read the tree of ${sha:0:12} in $dir" "$n"; return 1; }
   GATE_DEF="$(gate_definition_hash)"
   local stamp b i=1
   stamp="$(date +%Y%m%dT%H%M%S)"; mkdir -p "$LOGS/evidence"
   b="$LOGS/evidence/$n-$where-$stamp"
   until mkdir "$b" 2> /dev/null; do
     i=$(( i + 1 )); b="$LOGS/evidence/$n-$where-$stamp.$i"
-    (( i < 100 )) || { log "milestone $n: cannot create an evidence directory under $LOGS/evidence; no gate step ran"; return 1; }
+    (( i < 100 )) || { gate_nostart "cannot create an evidence directory under $LOGS/evidence" "$n"; return 1; }
   done
-  mkdir -p "$b/steps"
-  GATE_TMP="$(mktemp -d "${TMPDIR:-/tmp}/gate-$PROJECT-$n.XXXXXX")"; mkdir -p "$GATE_TMP/tmp"
+  if ! mkdir -p "$b/steps" || ! GATE_TMP="$(mktemp -d "${TMPDIR:-/tmp}/gate-$PROJECT-$n.XXXXXX")" || ! mkdir -p "$GATE_TMP/tmp"; then
+    rm -rf "$b"; gate_nostart "cannot create the bundle's steps/ or a temporary directory under ${TMPDIR:-/tmp}" "$n"; return 1
+  fi
   if [[ "$route" == host ]] && ! alloc_ports "$(basename "$b")"; then
-    rm -rf "$b"; log "milestone $n: no gate step ran"; return 1
+    rm -rf "$b"; gate_nostart "no ports: ${PORT_WHY:-alloc_ports failed without a reason}" "$n"; return 1
   fi
   GATE_BUNDLE="$b"
 
@@ -834,6 +887,8 @@ sandbox_call() {
 
 # ---------------------------------------------------------------- arguments
 MUTATE_PATCH=""; MUTATE_REF=""; MUTATE_STEPS=""; MUTATE_EXIT=2
+ACCEPT_INIT=0; ACCEPT_FORCE=0; ACCEPT_CRITERION=""; ACCEPT_EVIDENCE=""; ACCEPT_CONTEXT=""
+APPROVE_KIND=""; APPROVE_ITEMS=()
 VERB=""; INTEGRATE_ID=""; SANDBOX=""; DEPLOY=0; NOTE=""; CONTINUE=""; INSIDE=""; UNIT=""; GATE_ONLY=0; ISSUE=0
 MILESTONES=(); RES=(); TAGS=(); AGENT_OPTS=()
 while (($#)); do
@@ -841,6 +896,17 @@ while (($#)); do
     status|resume|config|prompt) VERB="$1"; shift ;;
     init) die "init takes no other arguments: run-milestones.sh init" ;;
     integrate) VERB=integrate; shift; INTEGRATE_ID="${1-}"; if (($#)); then shift; fi ;;   # the next argument is the id
+    accept) VERB=accept; shift
+            if (($#)) && [[ "$1" =~ ^[0-9]+$ ]]; then MILESTONES+=("$1"); shift; fi ;;
+    approve) VERB=approve; shift   # approve N <kind> <item...>: items may start with a digit (7.c1)
+            if (($#)) && [[ "$1" =~ ^[0-9]+$ ]]; then MILESTONES+=("$1"); shift; fi
+            if (($#)) && [[ "$1" != --* ]]; then APPROVE_KIND="$1"; shift; fi
+            while (($#)) && [[ "$1" != --* ]]; do APPROVE_ITEMS+=("$1"); shift; done ;;
+    --init) ACCEPT_INIT=1; shift ;;
+    --force) ACCEPT_FORCE=1; shift ;;
+    --criterion|--evidence|--context) (($# >= 2)) || die "$1 needs a value"
+            case "$1" in --criterion) ACCEPT_CRITERION="$2" ;; --evidence) ACCEPT_EVIDENCE="$2" ;; *) ACCEPT_CONTEXT="$2" ;; esac
+            shift 2 ;;
     mutate) VERB=mutate; shift   # mutate N <patch>: the patch path may start with a digit
             if (($#)) && [[ "$1" =~ ^[0-9]+$ ]]; then MILESTONES+=("$1"); shift; fi
             if (($#)) && [[ "$1" != --* ]]; then MUTATE_PATCH="$1"; shift; fi ;;
@@ -1153,6 +1219,13 @@ do_resume() {
 # pushes. Every refusal and failure pushes nothing; after the merge it keeps the merge
 # local and logs the pre-merge sha for a manual reset.
 SANDBOX_ID_RE='^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$'   # agent-sandbox's own id rule
+# Host metadata written beside a gate, never code: integrate's clean-tree checks ignore these paths
+# (a trailing "/" is a directory). Defined once; the delivery guard reads the same list.
+METADATA_ALLOWLIST=(.milestones/STATUS.md .milestones/events.jsonl .milestones/grades.jsonl
+  .milestones/acceptance/ .milestones/approvals/ .milestones/mutations/)
+METADATA_EXCLUDES=()
+for _p in "${METADATA_ALLOWLIST[@]}"; do METADATA_EXCLUDES+=(":(top,exclude)${_p%/}"); done
+unset _p
 STATUS_HEADER='| Milestone | Lane | Sandbox | Merged | Gate | Unmet criteria | Open blockers | Next action |'
 
 # Defaults for the weakening scan, overridable in config. A glob with no "/" matches the
@@ -1215,43 +1288,144 @@ sandbox_workspace() {
   echo "$ws"
 }
 
-report_expectation_section() {
-  # The body of every heading containing "Test expectation changes" (any level, case
-  # insensitive) in <text on stdin>, up to the next heading of the same or a higher level.
-  awk '
-    match($0, /^#+[ \t]/) {
-      lvl = RLENGTH - 1
-      if (on && lvl <= onl) on = 0
-      if (tolower($0) ~ /test expectation changes/) { on = 1; onl = lvl; next }
-    }
-    on'
-}
+WEAKENING_KINDS="skip-marker removed-assert deleted-test snapshot test-change"
 
 weakening_hits() {
   # weakening_hits <base> [<head>, default HEAD]: "<kind> <path>" per hit in the diff <base>..<head>:
   #   skip-marker     an added line matching TEST_WEAKENING_PATTERN in a TEST_GLOBS file
   #   removed-assert  a removed line matching TEST_ASSERT_PATTERN in a TEST_GLOBS file
   #   deleted-test    a deleted TEST_GLOBS file
+  #   test-change     a modified existing TEST_GLOBS file (an added test file is not a hit; a
+  #                   deleted one is deleted-test)
   #   snapshot        a modified or deleted SNAPSHOT_GLOBS file (a new baseline is not a change)
   #   gate-config     an added, modified or deleted GATE_DEFINITION_GLOBS file (the runner's
-  #                   config or the gate recipe can narrow the suite without touching a test)
+  #                   config or the gate recipe can narrow the suite without touching a test), or a
+  #                   path a step command, GATE_SETUP or GATE_ENV names as a word (gate_named_paths)
   # The line checks are limited to test files so application code (an iterator's .skip(,
   # a production assert) and the report quoting a marker are not hits.
-  local base="$1" head="${2:-HEAD}" status path body
-  while IFS= read -r -d '' status && IFS= read -r -d '' path; do
+  # Fails closed: a git or reader error prints "error: <why>" as the last line and returns 1, so
+  # no caller can read a failed scan as a scan with no hits.
+  local base="$1" head="${2:-HEAD}" status path body named names rc=0 i
+  local entries=()
+  if ! git rev-parse --verify -q "$base^{commit}" > /dev/null; then echo "error: the scan base '$base' does not resolve to a commit"; return 1; fi
+  if ! git rev-parse --verify -q "$head^{commit}" > /dev/null; then echo "error: the scan head '$head' does not resolve to a commit"; return 1; fi
+  named="$(gate_named_paths)" || { echo "error: could not read the paths the gate commands name"; return 1; }
+  names="$(mktemp "${TMPDIR:-/tmp}/scan-names.XXXXXX")" || { echo "error: could not create a temporary file"; return 1; }
+  git -c core.quotePath=false diff --no-renames --name-status -z "$base" "$head" > "$names" || rc=$?
+  if (( rc )); then rm -f "$names"; echo "error: git diff --name-status ${base:0:12} ${head:0:12} failed (exit $rc)"; return 1; fi
+  mapfile -d '' -t entries < "$names" || rc=$?
+  rm -f "$names"
+  if (( rc )) || (( ${#entries[@]} % 2 )); then echo "error: could not read the name-status list of ${base:0:12}..${head:0:12}"; return 1; fi
+  for (( i = 0; i < ${#entries[@]}; i += 2 )); do
+    status="${entries[i]}"; path="${entries[i + 1]}"
     if path_matches "$path" "$SNAPSHOT_GLOBS" && [[ "$status" != A ]]; then
       echo "snapshot $path"
     fi
-    if path_matches "$path" "$GATE_DEFINITION_GLOBS"; then echo "gate-config $path"; fi
+    if path_matches "$path" "$GATE_DEFINITION_GLOBS" || grep -qxF -- "$path" <<< "$named"; then echo "gate-config $path"; fi
     path_matches "$path" "$TEST_GLOBS" || continue
     if [[ "$status" == D ]]; then echo "deleted-test $path"; continue; fi
-    body="$(git -c core.quotePath=false diff --no-color --no-ext-diff --no-renames --unified=0 "$base" "$head" -- "$path" \
-      | awk '/^@@/ { b = 1; next } /^diff --git / { b = 0 } b')"
+    if [[ "$status" == M || "$status" == T ]]; then echo "test-change $path"; fi
+    rc=0
+    body="$(git -c core.quotePath=false diff --no-color --no-ext-diff --no-renames --unified=0 "$base" "$head" -- ":(literal)$path" \
+      | awk '/^@@/ { b = 1; next } /^diff --git / { b = 0 } b')" || rc=$?
+    if (( rc )); then echo "error: git diff of $path between ${base:0:12} and ${head:0:12} failed (exit $rc)"; return 1; fi
     # grep reads a here-string, never a pipe: `sed | grep -q` under pipefail fails when grep
     # exits at its first match while sed still writes, which hides a hit in a large diff.
     if grep -Eq -- "$TEST_WEAKENING_PATTERN" <<< "$(sed -n 's/^+//p' <<< "$body")"; then echo "skip-marker $path"; fi
     if grep -Eq -- "$TEST_ASSERT_PATTERN" <<< "$(sed -n 's/^-//p' <<< "$body")"; then echo "removed-assert $path"; fi
-  done < <(git -c core.quotePath=false diff --no-renames --name-status -z "$base" "$head")
+  done
+}
+
+path_blob() {
+  # path_blob <commit> <path>: the object id <path> has at <commit>, "none" when it is absent.
+  # Returns 1 on a git error, never "none".
+  local out line meta p
+  out="$(GIT_LITERAL_PATHSPECS=1 git ls-tree --full-tree -z "$1" -- "$2" | tr '\0' '\n')" || return 1
+  while IFS= read -r line; do
+    [[ -n "$line" ]] || continue
+    meta="${line%%$'\t'*}"; p="${line#*$'\t'}"
+    if [[ "$p" == "$2" ]]; then
+      read -r _ _ p <<< "$meta"
+      [[ "$p" =~ ^[0-9a-f]{40,64}$ ]] || return 1
+      echo "$p"; return 0
+    fi
+  done <<< "$out"
+  echo none
+}
+
+# ---- owner approvals (R31): .milestones/approvals/N.md, written only by `approve`
+# One entry per line, every field present, "-" where a field does not apply:
+#   - approved <iso time> milestone=<N> kind=<kind> hit=<hit kind|-> path="<path>"|- blob=<object id|none|-> hash=<sha256|-> criterion=<N.c<i>|-> budget=<name|-> confirm="approve <N> <kind>"
+# kinds and their fields: criterion-waiver (criterion), weakening (hit, path, blob), gate-config
+# (path, blob), gate-definition (hash: the gate definition hash), budget (budget). blob is the
+# path's object id at the candidate head, "none" for a deleted path. Readers take the file as
+# committed at the commit they check, and ignore every line not in exactly this form.
+APPROVAL_LINE_RE='^- approved ([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}([+-][0-9]{2}:[0-9]{2}|Z)) milestone=([0-9]+) kind=(criterion-waiver|weakening|gate-config|gate-definition|budget) hit=([a-z-]+) path=("[^"]+"|-) blob=([0-9a-f]{40}|[0-9a-f]{64}|none|-) hash=([0-9a-f]{64}|-) criterion=([0-9]+\.c[0-9]+|-) budget=([A-Za-z0-9_.-]+|-) confirm="approve ([0-9]+) ([a-z-]+)"$'
+
+approval_entries() {
+  # approval_entries <n> <commit>: the valid entries of .milestones/approvals/<n>.md as committed
+  # at <commit>, one per line, tab separated: kind hit path blob hash criterion budget. Nothing
+  # when the file is absent there; returns 1 on a git error.
+  local n="$1" at="$2" af=".milestones/approvals/$1.md" have text line m kind hit path blob hash crit budget cn ck
+  have="$(GIT_LITERAL_PATHSPECS=1 git ls-tree --full-tree --name-only "$at" -- "$af")" || return 1
+  [[ -n "$have" ]] || return 0
+  text="$(git cat-file blob "$at:$af")" || return 1
+  while IFS= read -r line; do
+    [[ "$line" =~ $APPROVAL_LINE_RE ]] || continue
+    m="${BASH_REMATCH[3]}"; kind="${BASH_REMATCH[4]}"; hit="${BASH_REMATCH[5]}"; path="${BASH_REMATCH[6]}"
+    blob="${BASH_REMATCH[7]}"; hash="${BASH_REMATCH[8]}"; crit="${BASH_REMATCH[9]}"; budget="${BASH_REMATCH[10]}"
+    cn="${BASH_REMATCH[11]}"; ck="${BASH_REMATCH[12]}"
+    [[ "$m" == "$n" && "$cn" == "$n" && "$ck" == "$kind" ]] || continue
+    [[ "$path" == - ]] || path="${path:1:${#path}-2}"
+    case "$kind" in
+      criterion-waiver) [[ "$hit|$path|$blob|$hash|$budget" == "-|-|-|-|-" && "$crit" == "$n".c* ]] || continue ;;
+      weakening)        [[ " $WEAKENING_KINDS " == *" $hit "* && "$path" != - && "$blob" != - && "$hash|$crit|$budget" == "-|-|-" ]] || continue ;;
+      gate-config)      [[ "$hit" == - && "$path" != - && "$blob" != - && "$hash|$crit|$budget" == "-|-|-" ]] || continue ;;
+      gate-definition)  [[ "$hit|$path|$blob|$crit|$budget" == "-|-|-|-|-" && "$hash" != - ]] || continue ;;
+      budget)           [[ "$hit|$path|$blob|$hash|$crit" == "-|-|-|-|-" && "$budget" != - ]] || continue ;;
+    esac
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$kind" "$hit" "$path" "$blob" "$hash" "$crit" "$budget"
+  done <<< "$text"
+}
+
+HITS=""; UNAPPROVED=""; SCAN_ERROR=""
+unapproved_hits() {
+  # unapproved_hits <base> <head> <milestone>: HITS gets every hit weakening_hits finds in
+  # <base>..<head>, UNAPPROVED the ones no owner approval covers, one "<kind> <path>" per line.
+  # The one place approval is decided: a hit is approved when .milestones/approvals/<milestone>.md,
+  # as committed at <head>, holds a valid entry for it (kind=weakening with hit=<kind>, or
+  # kind=gate-config) naming its path at the object id the path has at <head> ("none" when
+  # deleted), so a later change to the file is unapproved again. Nothing the candidate branch
+  # writes (its report, a section in it) approves anything. Returns 1 with SCAN_ERROR set when
+  # any read fails: an error never passes.
+  local base="$1" head="$2" n="$3" out rc=0 approvals kind path blob want
+  HITS=""; UNAPPROVED=""; SCAN_ERROR=""
+  out="$(weakening_hits "$base" "$head")" || rc=$?
+  if (( rc )); then
+    SCAN_ERROR="$(grep '^error: ' <<< "$out" | tail -n 1 || true)"; SCAN_ERROR="${SCAN_ERROR#error: }"
+    SCAN_ERROR="${SCAN_ERROR:-the scan exited $rc}"; return 1
+  fi
+  HITS="$(grep -v '^$' <<< "$out" | sort -u || true)"
+  [[ -n "$HITS" ]] || return 0
+  approvals="$(approval_entries "$n" "$head")" \
+    || { SCAN_ERROR="could not read .milestones/approvals/$n.md at ${head:0:12}"; return 1; }
+  approvals="$(cut -f1-4 <<< "$approvals")"
+  while read -r kind path; do
+    blob="$(path_blob "$head" "$path")" || { SCAN_ERROR="could not read the object id of $path at ${head:0:12}"; return 1; }
+    if [[ "$kind" == gate-config ]]; then want="gate-config"$'\t'"-"; else want="weakening"$'\t'"$kind"; fi
+    want+=$'\t'"$path"$'\t'"$blob"
+    grep -qxF -- "$want" <<< "$approvals" || UNAPPROVED+="$kind $path"$'\n'
+  done <<< "$HITS"
+  UNAPPROVED="${UNAPPROVED%$'\n'}"
+}
+
+approve_commands() {
+  # approve_commands <n>: the approve command for each "<kind> <path>" line on stdin.
+  local n="$1" kind path
+  while read -r kind path; do
+    if [[ "$kind" == gate-config ]]; then echo "$SELF approve $n gate-config $(printf '%q' "$path")"
+    else echo "$SELF approve $n weakening $kind $(printf '%q' "$path")"; fi
+  done
 }
 
 # ---- candidate preconditions, shared by integrate and mutate
@@ -1283,43 +1457,6 @@ candidate_range_refusal() {
   if (( ${#ignored[@]} )); then
     CANDIDATE_REFUSAL="$sbranch adds or changes paths ignored in this checkout, which a merge would overwrite: ${ignored[*]}"; return 1
   fi
-}
-
-unapproved_hits() {
-  # unapproved_hits <base> <head> <report path>: HITS gets every weakening and gate-config hit
-  # in <base>..<head>, UNAPPROVED the ones nothing approves, one "<kind> <path>" per line.
-  # The one place approval is decided: today a hit is approved when its path appears whole in
-  # the "Test expectation changes" section of <report> at <head>.
-  local base="$1" head="$2" report="$3" section="" kind path
-  HITS="$(weakening_hits "$base" "$head" | sort -u)"; UNAPPROVED=""
-  [[ -n "$HITS" ]] || return 0
-  section="$(git show "$head:$report" 2>/dev/null | report_expectation_section || true)"
-  while read -r kind path; do
-    section_lists "$path" "$section" || UNAPPROVED+="$kind $path"$'\n'
-  done <<< "$HITS"
-  UNAPPROVED="${UNAPPROVED%$'\n'}"
-}
-HITS=""; UNAPPROVED=""
-
-section_lists() {
-  # section_lists <path> <section text>: the path appears whole, bounded on each side by
-  # the line's start or end or a character that cannot continue a path (a space, a
-  # backtick, a colon); a trailing sentence period is allowed. pkg/a_test.go does not
-  # list a_test.go, and a_test.go.orig does not either.
-  P="$1" awk '
-    function pathch(c) { return c != "" && c ~ /[A-Za-z0-9._\/-]/ }
-    BEGIN { p = ENVIRON["P"]; n = length(p); if (n == 0) exit }
-    {
-      line = $0; from = 0
-      while ((i = index(substr(line, from + 1), p)) > 0) {
-        j = from + i
-        pre = (j > 1) ? substr(line, j - 1, 1) : ""
-        post = substr(line, j + n, 1); post2 = substr(line, j + n + 1, 1)
-        if (!pathch(pre) && (!pathch(post) || (post == "." && !pathch(post2)))) { found = 1; exit }
-        from = j
-      }
-    }
-    END { exit !found }' <<< "$2"
 }
 
 status_upsert() {
@@ -1377,7 +1514,9 @@ host_gate() {
   local n="$1" sha="$2" where="${3:-host-integrate}" rc=0
   arm_cleanup
   INTEGRATE_TREE="$(mktemp -d "${TMPDIR:-/tmp}/integrate-$PROJECT-$n.XXXXXX")"
-  git worktree add -q --detach "$INTEGRATE_TREE/tree" "$sha" > /dev/null || { log "  could not add a worktree of ${sha:0:12}"; return 1; }
+  GATE_NOSTART=""
+  git worktree add -q --detach "$INTEGRATE_TREE/tree" "$sha" > /dev/null \
+    || { GATE_NOSTART="could not add a worktree of ${sha:0:12}"; log "  $GATE_NOSTART"; return 1; }
   seed_worktree "$INTEGRATE_TREE/tree"
   log "  host gate in $INTEGRATE_TREE/tree (timeout $GATE_TIMEOUT)"
   gate_run "$where" "$n" "$INTEGRATE_TREE/tree" "$sha" || rc=$?
@@ -1448,7 +1587,9 @@ do_integrate() {
   [[ "$gwhere" == host ]] || glabel="sandbox-integration gate"
 
   # ---- preconditions: nothing below merges until all hold
-  [[ -z "$(git status --porcelain --untracked-files=no)" ]] || refuse "the host checkout has tracked changes; commit or stash them first"
+  local tracked
+  tracked="$(git status --porcelain --untracked-files=no -- . "${METADATA_EXCLUDES[@]}")" || refuse "git status failed in $REPO"
+  [[ -z "$tracked" ]] || refuse "the host checkout has tracked changes outside the metadata allowlist (${METADATA_ALLOWLIST[*]}); commit or stash them first"
   branch="$(git symbolic-ref --quiet --short HEAD)" || refuse "HEAD is detached; check out the integration branch"
   if [[ -n "${INTEGRATION_BRANCH:-}" && "$branch" != "$INTEGRATION_BRANCH" ]]; then
     refuse "on branch $branch, but INTEGRATION_BRANCH=$INTEGRATION_BRANCH"
@@ -1521,14 +1662,16 @@ do_integrate() {
   }
 
   # ---- weakening scan over everything about to be pushed
-  unapproved_hits "$upstream" HEAD "$report"
+  unapproved_hits "$upstream" HEAD "$n" || { kept "refused: the weakening scan failed: $SCAN_ERROR"; exit 2; }
   if [[ -n "$HITS" ]]; then
     if [[ -n "$UNAPPROVED" ]]; then
-      kept "refused: test weakening not listed in the 'Test expectation changes' section of $report:"
+      kept "refused: test weakening, test changes or gate-config changes with no owner approval of their current blob in .milestones/approvals/$n.md:"
       while IFS= read -r c; do log "    $c"; done <<< "$UNAPPROVED"
+      log "  the owner approves each at a terminal (a report section approves nothing):"
+      while IFS= read -r c; do log "    $c"; done < <(approve_commands "$n" <<< "$UNAPPROVED")
       exit 2
     fi
-    log "  weakening hits all listed in $report: $(tr '\n' ';' <<< "$HITS")"
+    log "  weakening hits all approved in .milestones/approvals/$n.md: $(tr '\n' ';' <<< "$HITS")"
   else
     log "  weakening scan: no hits in $upstream..HEAD"
   fi
@@ -1546,23 +1689,31 @@ do_integrate() {
 
   # ---- the gate, where INTEGRATE_GATE_WHERE says
   local grc=0 why=""
-  GATE_FAILED_STEP=""; GATE_REFUSED=""; GATE_BUNDLE=""
+  GATE_FAILED_STEP=""; GATE_REFUSED=""; GATE_BUNDLE=""; GATE_NOSTART=""
   if [[ "$gwhere" == sandbox ]]; then sandbox_integration_gate "$n" "$head" "$(resolve_lane "$n")" || grc=$?
   else host_gate "$n" "$head" || grc=$?; fi
   [[ -z "$GATE_REFUSED" ]] || { kept "refused: $GATE_REFUSED"; exit 2; }
   if (( grc )); then
     why="${GATE_FAILED_STEP:+ at $GATE_FAILED_STEP}"; (( grc != 124 )) || why+=" (timed out after $GATE_TIMEOUT)"
-    kept "$glabel FAILED$why; evidence: ${GATE_BUNDLE:-none}"
+    kept "$glabel FAILED$why; evidence: ${GATE_BUNDLE:-none${GATE_NOSTART:+ (could not start: $GATE_NOSTART)}}"
     exit 1
   fi
   bundle_sealed "$GATE_BUNDLE" || { kept "refused: $GATE_BUNDLE/evidence.json does not match its seal in chain.log"; exit 2; }
 
   # The checkout is shared: a commit or edit landing while the gate ran was never gated.
   if [[ "$(git rev-parse HEAD)" != "$head" || "$(git symbolic-ref --quiet --short HEAD || true)" != "$branch" \
-        || -n "$(git status --porcelain --untracked-files=no)" ]]; then
+        || -n "$(git status --porcelain --untracked-files=no -- . "${METADATA_EXCLUDES[@]}" || echo error)" ]]; then
     kept "refused: HEAD or the tracked tree changed while the $glabel ran; the gated commit is ${head:0:12}, HEAD is now $(git rev-parse --short=12 HEAD)"
     exit 2
   fi
+
+  # ---- acceptance: every exit criterion has evidence on this gated identity, or an owner waiver
+  if ! acceptance_complete "$n" "$GATE_TREE" "$GATE_DEF"; then
+    acceptance_refusal "$n" "${GATE_BUNDLE#"$REPO"/}"
+    log "  nothing pushed; $(recovery)"
+    exit 2
+  fi
+  log "  acceptance: every exit criterion of milestone $n has evidence on tree ${GATE_TREE:0:12} def=${GATE_DEF:0:12}, or an owner waiver"
 
   # ---- STATUS.md, then push
   local sha12="${head:0:12}" lane final
@@ -1736,7 +1887,7 @@ mutate_gate() {
   # sandbox-mutate: a fresh sandbox created from a temporary seeded worktree at <sha>,
   # removed after. Returns the run's exit; GATE_BUNDLE is empty when no bundle was written.
   local n="$1" sha="$2" where="$3" label="$4" rc=0 src
-  GATE_FAILED_STEP=""; GATE_REFUSED=""; GATE_BUNDLE=""; GATE_ADMISSION=0
+  GATE_FAILED_STEP=""; GATE_REFUSED=""; GATE_BUNDLE=""; GATE_ADMISSION=0; GATE_NOSTART=""
   if [[ "$where" == host-mutate ]]; then
     host_gate "$n" "$sha" host-mutate || rc=$?
     return "$rc"
@@ -1848,9 +1999,9 @@ do_mutate() {
   git update-ref "$bref" "$target" || merr "could not hold ${target:0:12} under $bref"
   log "  target ${target:0:12}: $sbranch merged into ${base_sha:0:12}${ref:+ (--ref $ref)}${branch:+ ($branch)}"
 
-  unapproved_hits "$against" "$target" "$REPORT_DIR/milestone-$n.md"
+  unapproved_hits "$against" "$target" "$n" || mrefuse "the weakening scan failed: $SCAN_ERROR"
   if [[ -n "$UNAPPROVED" ]]; then
-    log "mutate milestone $n refused: test weakening not listed in the 'Test expectation changes' section of $REPORT_DIR/milestone-$n.md:"
+    log "mutate milestone $n refused: test weakening, test changes or gate-config changes with no owner approval of their current blob in .milestones/approvals/$n.md:"
     while IFS= read -r p; do log "    $p"; done <<< "$UNAPPROVED"
     log "  no record written"; exit 2
   fi
@@ -1877,7 +2028,7 @@ do_mutate() {
   bbundle="$GATE_BUNDLE"; btree="$GATE_TREE"; bdef="$GATE_DEF"
   [[ -z "$GATE_REFUSED" ]] || merr "baseline: $GATE_REFUSED"
   [[ -n "$bbundle" || "$brc" != 3 ]] || merr "the baseline sandbox was not admitted"
-  [[ -n "$bbundle" ]] || merr "the baseline run could not start${GATE_FAILED_STEP:+ ($GATE_FAILED_STEP)}"
+  [[ -n "$bbundle" ]] || merr "the baseline run could not start${GATE_FAILED_STEP:+ ($GATE_FAILED_STEP)}${GATE_NOSTART:+: $GATE_NOSTART}"
   (( ! GATE_ADMISSION )) || merr "a baseline step was not admitted (evidence: ${bbundle#"$REPO"/})"
   (( brc == 0 )) || merr "the baseline failed (exit $brc${GATE_FAILED_STEP:+ at $GATE_FAILED_STEP}) on the unpatched target ${target:0:12}; a mutation needs a passing baseline (evidence: ${bbundle#"$REPO"/})"
   bundle_sealed "$bbundle" || merr "the baseline bundle ${bbundle#"$REPO"/} does not match its seal"
@@ -1892,7 +2043,7 @@ do_mutate() {
   pbundle="$GATE_BUNDLE"; pcounts="$GATE_COUNTS"
   [[ -z "$GATE_REFUSED" ]] || merr "patched: $GATE_REFUSED"
   [[ -n "$pbundle" || "$prc" != 3 ]] || merr "the patched sandbox was not admitted"
-  [[ -n "$pbundle" ]] || merr "the patched run could not start${GATE_FAILED_STEP:+ ($GATE_FAILED_STEP)}"
+  [[ -n "$pbundle" ]] || merr "the patched run could not start${GATE_FAILED_STEP:+ ($GATE_FAILED_STEP)}${GATE_NOSTART:+: $GATE_NOSTART}"
   (( ! GATE_ADMISSION )) || merr "a patched step was not admitted (evidence: ${pbundle#"$REPO"/})"
   bundle_sealed "$pbundle" || merr "the patched bundle ${pbundle#"$REPO"/} does not match its seal"
   [[ "$GATE_DEF" == "$bdef" ]] || merr "the gate definition changed between the baseline and patched runs"
@@ -1971,6 +2122,450 @@ PY
   done <<< "$events"
 }
 
+# ---------------------------------------------------------------- accept and approve
+# .milestones/acceptance/N.json, written by `accept`:
+#   {"schema": 1, "milestone": N, "source": {"file": MILESTONES_FILE, "blob": <its git blob id>},
+#    "criteria": [{"id": "N.c<i>", "text": "...", "evidence": null | {...}, "context": [...]}]}
+# evidence of a passing step:  {"kind": "bundle", "bundle", "step", "tests", "seal", "sha", "tree",
+#                               "definition_hash", "where", "recorded_at"}
+# evidence of a caught mutation: {"kind": "mutation", "record": <line>, "patch", "criterion",
+#                               "baseline_bundle", "baseline_seal", "patched_bundle", "patched_seal",
+#                               "tree", "definition_hash", "recorded_at"}
+# context: [{"source": "evaluator", "text", "at"}], reviewer-grade and never evidence. There is no
+# waiver field: a criterion is waived only by a criterion-waiver approval (approve).
+
+milestone_criteria() {
+  # milestone_criteria <n>: milestone <n>'s exit criteria as a JSON array of strings, from the
+  # section's paragraph that begins "Exit:" (up to a blank line or a heading), split at semicolons
+  # and at sentence ends (".", "!" or "?" followed by the end or by a space and a word that does
+  # not start lowercase), never inside (), [], {} or `code`. Errors go to stderr and return 1.
+  local sec
+  [[ -f "$REPO/$MILESTONES_FILE" ]] || { echo "no milestones file $MILESTONES_FILE" >&2; return 1; }
+  sec="$(milestone_section "$1")" || { echo "could not read $MILESTONES_FILE" >&2; return 1; }
+  [[ -n "$sec" ]] || { echo "no '## Milestone $1' section in $MILESTONES_FILE" >&2; return 1; }
+  python3 -c '
+import json, re, sys
+lines = sys.stdin.read().split("\n")
+start = next((i for i, l in enumerate(lines) if re.match(r"^\s*Exit:", l)), None)
+if start is None:
+    sys.exit("the milestone section has no paragraph beginning Exit:")
+para = []
+for l in lines[start:]:
+    if not l.strip() or l.startswith("#"):
+        break
+    para.append(l.strip())
+s = re.sub(r"^Exit:\s*", "", re.sub(r"\s+", " ", " ".join(para)))
+out, cur, depth, code = [], "", 0, False
+for i, c in enumerate(s):
+    cur += c
+    if c == "`":
+        code = not code
+    elif code:
+        continue
+    elif c in "([{":
+        depth += 1
+    elif c in ")]}":
+        depth = max(0, depth - 1)
+    elif depth == 0 and (c == ";" or (c in ".!?" and re.match(r"\s*$|\s+[^a-z]", s[i + 1:]))):
+        out.append(cur)
+        cur = ""
+out.append(cur)
+crit = [x for x in (re.sub(r"[\s;.!?]+$", "", x).strip() for x in out) if x]
+if not crit:
+    sys.exit("the Exit: paragraph holds no criterion")
+print(json.dumps(crit))' <<< "$sec"
+}
+
+accept_bundle_evidence() {
+  # accept_bundle_evidence <n> <bundle>#<step>:<test id>[,<test id>...]: the evidence object as JSON
+  # on stdout, or the reason on stdout and 1. The bundle must be sealed now, milestone <n>'s,
+  # produced by integrate (host-integrate or sandbox-integration), clean, with the step passed, the
+  # step log matching its sealed sha256, and every test id in that log as a whole token.
+  local n="$1" spec="$2" path rest step tests rel
+  [[ "$spec" == *"#"*":"* ]] || { echo "want bundle:<bundle>#<step>:<test id>[,<test id>...]"; return 1; }
+  path="${spec%%#*}"; rest="${spec#*#}"; step="${rest%%:*}"; tests="${rest#*:}"
+  rel="${path#"$REPO"/}"; rel="${rel%/}"
+  if [[ ! "$rel" =~ ^logs/milestones/evidence/[A-Za-z0-9._-]+$ || "$rel" == *..* ]]; then
+    echo "$path is not a bundle directly under logs/milestones/evidence/"; return 1
+  fi
+  [[ -f "$REPO/$rel/evidence.json" ]] || { echo "no bundle $rel"; return 1; }
+  bundle_sealed "$rel" || { echo "$rel/evidence.json does not match exactly one seal in chain.log (unsealed or altered)"; return 1; }
+  python3 - "$REPO/$rel" "$rel" "$n" "$step" "$tests" "$(seal_of "$rel")" <<'PY'
+import hashlib, json, os, re, sys
+b, rel, n, step, tests, seal = sys.argv[1:]
+def no(msg):
+    print(msg)
+    sys.exit(1)
+try:
+    d = json.load(open(os.path.join(b, "evidence.json")))
+except Exception as e:
+    no("cannot read %s/evidence.json: %s" % (rel, e))
+if str(d.get("milestone")) != n:
+    no("%s is milestone %s's bundle, not %s's" % (rel, d.get("milestone"), n))
+if d.get("produced_by") != "integrate" or d.get("where") not in ("host-integrate", "sandbox-integration"):
+    no("%s was produced by %s at %s; only an integrate bundle (host-integrate or sandbox-integration) is evidence" % (rel, d.get("produced_by"), d.get("where")))
+if d.get("dirty") is not False:
+    no("%s is dirty; a dirty bundle is never evidence" % rel)
+ids = tests.split(",")
+if any(not t.strip() for t in ids):
+    no("name one or more test ids, comma separated, none empty")
+st = [s for s in d.get("steps") or [] if isinstance(s, dict) and s.get("name") == step]
+if len(st) != 1:
+    no("%s has no step named %s (its steps: %s)" % (rel, step, " ".join(str(s.get("name")) for s in d.get("steps") or [] if isinstance(s, dict))))
+s = st[0]
+if s.get("status") != "pass":
+    no("step %s in %s did not pass (%s)" % (step, rel, s.get("status")))
+log = s.get("log") or ""
+if not re.match(r"^steps/[A-Za-z0-9._-]+\.log$", log) or not os.path.isfile(os.path.join(b, log)):
+    no("step %s has no log in %s" % (step, rel))
+data = open(os.path.join(b, log), "rb").read()
+if not s.get("log_sha256") or hashlib.sha256(data).hexdigest() != s.get("log_sha256"):
+    no("the log of step %s does not match the sha256 sealed in %s/evidence.json" % (step, rel))
+text = data.decode("utf-8", "replace")
+missing = [t for t in ids if not re.search(r"(?<![A-Za-z0-9_])" + re.escape(t) + r"(?![A-Za-z0-9_])", text)]
+if missing:
+    no("test ids absent from step %s's log: %s" % (step, ", ".join(missing)))
+tree, dh = d.get("tree"), d.get("definition_hash")
+if not (isinstance(tree, str) and re.match(r"^[0-9a-f]{40,64}$", tree) and isinstance(dh, str) and re.match(r"^[0-9a-f]{64}$", dh)):
+    no("%s lacks a tree or a definition hash" % rel)
+print(json.dumps({"kind": "bundle", "bundle": rel, "step": step, "tests": ids, "seal": seal, "sha": d.get("sha"),
+                  "tree": tree, "definition_hash": dh, "where": d.get("where")}))
+PY
+}
+
+accept_mutation_evidence() {
+  # accept_mutation_evidence <n> <criterion id> <line number or patched seal>: the evidence object as
+  # JSON on stdout, or the reason and 1. The record in .milestones/mutations/<n>.jsonl must be
+  # milestone <n>'s, verdict caught, citing the criterion (its id, its index, "<id or index>: ..."
+  # or its text), with both bundles sealed now at the seals the record holds.
+  local n="$1" cid="$2" sel="$3" out bb bs pb ps ev
+  out="$(python3 - "$REPO/.milestones/mutations/$n.jsonl" "$REPO/.milestones/acceptance/$n.json" "$n" "$cid" "$sel" <<'PY'
+import json, re, sys
+mf, af, n, cid, sel = sys.argv[1:]
+def no(msg):
+    print(msg)
+    sys.exit(1)
+try:
+    crit = [c for c in json.load(open(af))["criteria"] if c.get("id") == cid]
+    lines = open(mf).read().split("\n")
+except Exception as e:
+    no("cannot read the mutation records or the acceptance record: %s" % e)
+if len(crit) != 1:
+    no("no criterion %s in the acceptance record" % cid)
+idx, text = cid.split(".c", 1)[1], crit[0].get("text")
+recs = []
+for i, l in enumerate(lines, 1):
+    if not l.strip():
+        continue
+    try:
+        r = json.loads(l)
+    except Exception:
+        r = None
+    if (re.match(r"^[0-9]+$", sel) and i == int(sel)) or (re.match(r"^[0-9a-f]{64}$", sel) and isinstance(r, dict) and r.get("patched_seal") == sel):
+        recs.append((i, r))
+if not re.match(r"^([0-9]+|[0-9a-f]{64})$", sel):
+    no("mutation:<line number of .milestones/mutations/%s.jsonl or a patched seal>" % n)
+if len(recs) != 1 or not isinstance(recs[0][1], dict):
+    no("mutation:%s selects %d readable records in .milestones/mutations/%s.jsonl" % (sel, len(recs), n))
+line, r = recs[0]
+if str(r.get("milestone")) != n:
+    no("record %d is milestone %s's" % (line, r.get("milestone")))
+if r.get("verdict") != "caught":
+    no("record %d's verdict is %s; only a caught mutation is evidence" % (line, r.get("verdict")))
+c = str(r.get("criterion") or "")
+if not (c in (cid, idx, text) or re.match(r"^(%s|%s)\s*[:)]" % (re.escape(cid), re.escape(idx)), c)):
+    no("record %d cites criterion '%s', not %s" % (line, c, cid))
+for k in ("baseline_bundle", "patched_bundle"):
+    if not re.match(r"^logs/milestones/evidence/[A-Za-z0-9._-]+$", str(r.get(k))) or ".." in str(r.get(k)):
+        no("record %d's %s is not a bundle path" % (line, k))
+if not (re.match(r"^[0-9a-f]{40,64}$", str(r.get("tree"))) and re.match(r"^[0-9a-f]{64}$", str(r.get("definition_hash")))):
+    no("record %d lacks a tree or a definition hash" % line)
+ev = {"kind": "mutation", "record": line, "patch": r.get("patch"), "criterion": c,
+      "baseline_bundle": r["baseline_bundle"], "baseline_seal": r.get("baseline_seal"),
+      "patched_bundle": r["patched_bundle"], "patched_seal": r.get("patched_seal"),
+      "tree": r["tree"], "definition_hash": r["definition_hash"]}
+print("\t".join([r["baseline_bundle"], str(r.get("baseline_seal")), r["patched_bundle"], str(r.get("patched_seal")), json.dumps(ev)]))
+PY
+)" || { echo "$out"; return 1; }
+  IFS=$'\t' read -r bb bs pb ps ev <<< "$out"
+  if ! bundle_sealed "$bb" || [[ "$(seal_of "$bb")" != "$bs" ]]; then echo "the baseline bundle $bb does not match the seal the record holds"; return 1; fi
+  if ! bundle_sealed "$pb" || [[ "$(seal_of "$pb")" != "$ps" ]]; then echo "the patched bundle $pb does not match the seal the record holds"; return 1; fi
+  echo "$ev"
+}
+
+do_accept() {
+  local n="${MILESTONES[0]:-}" usage rel f
+  usage="accept N --init [--force] | accept N --criterion N.c<i> [--evidence bundle:<bundle>#<step>:<test id>[,<test id>...] | --evidence mutation:<line or patched seal>] [--context evaluator:<text>]"
+  [[ "$n" =~ ^[0-9]+$ ]] || die "accept needs a milestone number: $usage"
+  rel=".milestones/acceptance/$n.json"; f="$REPO/$rel"
+  if (( ACCEPT_INIT )); then
+    [[ -z "$ACCEPT_CRITERION$ACCEPT_EVIDENCE$ACCEPT_CONTEXT" ]] || die "accept --init takes no --criterion, --evidence or --context: $usage"
+    if [[ -e "$f" ]] && (( ! ACCEPT_FORCE )); then
+      die "accept: $rel exists; accept $n --init --force replaces it and drops its evidence and context"
+    fi
+    local blob crit out
+    [[ -f "$REPO/$MILESTONES_FILE" ]] || die "accept: no milestones file $MILESTONES_FILE (MILESTONES_FILE in .milestones/config); nothing written"
+    blob="$(git hash-object -- "$REPO/$MILESTONES_FILE")" && [[ "$blob" =~ ^[0-9a-f]{40,64}$ ]] \
+      || die "accept: git hash-object $MILESTONES_FILE failed; nothing written"
+    crit="$(milestone_criteria "$n" 2>&1)" || die "accept milestone $n: $crit; nothing written"
+    mkdir -p "$(dirname "$f")" || die "accept: cannot create $(dirname "$rel")"
+    out="$(python3 - "$f" "$n" "$MILESTONES_FILE" "$blob" "$crit" <<'PY'
+import json, os, sys
+f, n, src, blob, crit = sys.argv[1:]
+doc = {"schema": 1, "milestone": int(n), "source": {"file": src, "blob": blob},
+       "criteria": [{"id": "%s.c%d" % (n, i + 1), "text": t, "evidence": None, "context": []}
+                    for i, t in enumerate(json.loads(crit))]}
+with open(f + ".tmp", "w") as o:
+    json.dump(doc, o, indent=2)
+    o.write("\n")
+os.replace(f + ".tmp", f)
+for c in doc["criteria"]:
+    print("  %s  %s" % (c["id"], c["text"]))
+PY
+)" || die "accept: could not write $rel"
+    log "accept milestone $n: $rel written from $MILESTONES_FILE (blob ${blob:0:12}), $(grep -c . <<< "$out") criteria"
+    echo "$out"
+    return 0
+  fi
+
+  (( ! ACCEPT_FORCE )) || die "--force belongs to accept N --init"
+  [[ -n "$ACCEPT_CRITERION" ]] || die "accept: name the criterion: $usage"
+  [[ -n "$ACCEPT_EVIDENCE$ACCEPT_CONTEXT" ]] || die "accept: give --evidence or --context: $usage"
+  [[ "$ACCEPT_CRITERION" =~ ^$n\.c[0-9]+$ ]] || die "accept: '$ACCEPT_CRITERION' is not a criterion id of milestone $n (N.c<i>)"
+  [[ -f "$f" ]] || die "accept: no $rel; run accept $n --init first"
+  [[ -z "$ACCEPT_CONTEXT" || "$ACCEPT_CONTEXT" == evaluator:?* ]] || die "accept: --context is evaluator:<text>; context is recorded beside a criterion and is never evidence"
+  local ev="" why
+  case "$ACCEPT_EVIDENCE" in
+    "") ;;
+    bundle:*)   ev="$(accept_bundle_evidence "$n" "${ACCEPT_EVIDENCE#bundle:}")" || { why="$ev"; log "accept milestone $n refused for $ACCEPT_CRITERION: $why"; exit 2; } ;;
+    mutation:*) ev="$(accept_mutation_evidence "$n" "$ACCEPT_CRITERION" "${ACCEPT_EVIDENCE#mutation:}")" || { why="$ev"; log "accept milestone $n refused for $ACCEPT_CRITERION: $why"; exit 2; } ;;
+    *) die "accept: --evidence is bundle:<bundle>#<step>:<test ids> or mutation:<line or patched seal>" ;;
+  esac
+  why="$(python3 - "$f" "$n" "$ACCEPT_CRITERION" "$ev" "${ACCEPT_CONTEXT#evaluator:}" "$(date -Is)" <<'PY'
+import json, os, sys
+f, n, cid, ev, ctx, at = sys.argv[1:]
+try:
+    doc = json.load(open(f))
+    crit = [c for c in doc["criteria"] if isinstance(c, dict) and c.get("id") == cid]
+except Exception as e:
+    print("cannot read %s: %s" % (f, e))
+    sys.exit(1)
+if str(doc.get("milestone")) != n or len(crit) != 1:
+    print("no criterion %s in %s" % (cid, f))
+    sys.exit(1)
+c = crit[0]
+if ev:
+    e = json.loads(ev)
+    e["recorded_at"] = at
+    c["evidence"] = e
+if ctx:
+    c.setdefault("context", []).append({"source": "evaluator", "text": ctx, "at": at})
+with open(f + ".tmp", "w") as o:
+    json.dump(doc, o, indent=2)
+    o.write("\n")
+os.replace(f + ".tmp", f)
+PY
+)" || { log "accept milestone $n refused for $ACCEPT_CRITERION: $why"; exit 2; }
+  [[ -z "$ev" ]] || log "accept milestone $n: $ACCEPT_CRITERION evidence $ACCEPT_EVIDENCE"
+  [[ -z "$ACCEPT_CONTEXT" ]] || log "accept milestone $n: $ACCEPT_CRITERION evaluator context recorded (context, not evidence)"
+}
+
+ACCEPT_STATE=""; ACCEPT_UNMET=""; ACCEPT_IDS=""
+acceptance_complete() {
+  # acceptance_complete <n> <tree> <definition hash>: 0 when every criterion in
+  # .milestones/acceptance/<n>.json, whose criteria still equal the Exit paragraph's, has evidence
+  # recorded on exactly <tree> and <definition hash> whose seals still hold, or is waived by a
+  # criterion-waiver approval committed at HEAD. Otherwise 1, with ACCEPT_STATE (missing, invalid,
+  # incomplete or error), ACCEPT_UNMET ("<id>: <why>" lines, or the one reason) and ACCEPT_IDS
+  # (the ids that still need evidence). This is the boundary `integrate --evidence` reuses.
+  local n="$1" tree="$2" def="$3" f="$REPO/.milestones/acceptance/$1.json" approvals waived fresh out kind id a b c d
+  ACCEPT_STATE=""; ACCEPT_UNMET=""; ACCEPT_IDS=""
+  fresh="$(milestone_criteria "$n" 2>&1)" \
+    || { ACCEPT_STATE=error; ACCEPT_UNMET="the exit criteria cannot be read from $MILESTONES_FILE: $fresh"; return 1; }
+  if [[ ! -f "$f" ]]; then
+    ACCEPT_STATE=missing
+    ACCEPT_IDS="$(python3 -c 'import json, sys; print(" ".join("%s.c%d" % (sys.argv[1], i + 1) for i in range(len(json.loads(sys.argv[2])))))' "$n" "$fresh")"
+    return 1
+  fi
+  approvals="$(approval_entries "$n" HEAD)" \
+    || { ACCEPT_STATE=error; ACCEPT_UNMET="could not read .milestones/approvals/$n.md at HEAD"; return 1; }
+  waived="$(awk -F'\t' '$1 == "criterion-waiver" { print $6 }' <<< "$approvals")"
+  out="$(python3 - "$f" "$n" "$tree" "$def" "$fresh" "$waived" <<'PY'
+import json, sys
+f, n, tree, dh, fresh, waived = sys.argv[1:]
+waived = set(waived.split())
+try:
+    doc = json.load(open(f))
+    crit = doc["criteria"]
+    have = [(c["id"], c["text"]) for c in crit]
+except Exception as e:
+    print("invalid\t-\t%s is not a readable acceptance record (%s)" % (f, e))
+    sys.exit(0)
+if str(doc.get("milestone")) != n or not crit:
+    print("invalid\t-\t%s is not an acceptance record of milestone %s with criteria" % (f, n))
+    sys.exit(0)
+if have != [("%s.c%d" % (n, i + 1), t) for i, t in enumerate(json.loads(fresh))]:
+    print("invalid\t-\tits criteria differ from the Exit paragraph in the milestones file now; accept %s --init --force re-extracts them" % n)
+    sys.exit(0)
+for c in crit:
+    cid, e = c["id"], c.get("evidence")
+    if cid in waived:
+        print("waived\t" + cid)
+    elif not isinstance(e, dict):
+        print("unmet\t%s\tno evidence%s" % (cid, " (evaluator context is not evidence)" if c.get("context") else ""))
+    elif e.get("tree") != tree:
+        print("unmet\t%s\tits evidence is on tree %s, the gated tree is %s" % (cid, str(e.get("tree"))[:12], tree[:12]))
+    elif e.get("definition_hash") != dh:
+        print("unmet\t%s\tits evidence has gate definition %s, the gate ran with %s" % (cid, str(e.get("definition_hash"))[:12], dh[:12]))
+    elif e.get("kind") == "bundle":
+        print("bundle\t%s\t%s\t%s" % (cid, e.get("bundle"), e.get("seal")))
+    elif e.get("kind") == "mutation":
+        print("mutation\t%s\t%s\t%s\t%s\t%s" % (cid, e.get("baseline_bundle"), e.get("baseline_seal"), e.get("patched_bundle"), e.get("patched_seal")))
+    else:
+        print("unmet\t%s\tunknown evidence kind %s" % (cid, e.get("kind")))
+PY
+)" || { ACCEPT_STATE=error; ACCEPT_UNMET="could not check $f"; return 1; }
+  while IFS=$'\t' read -r kind id a b c d; do
+    case "$kind" in
+      invalid) ACCEPT_STATE=invalid; ACCEPT_UNMET="$a"; return 1 ;;
+      waived) ;;
+      unmet) ACCEPT_UNMET+="$id: $a"$'\n'; ACCEPT_IDS+="$id " ;;
+      bundle)
+        if ! bundle_sealed "$a" || [[ "$(seal_of "$a")" != "$b" ]]; then
+          ACCEPT_UNMET+="$id: its evidence bundle $a no longer matches the seal recorded"$'\n'; ACCEPT_IDS+="$id "
+        fi ;;
+      mutation)
+        if ! bundle_sealed "$a" || [[ "$(seal_of "$a")" != "$b" ]] || ! bundle_sealed "$c" || [[ "$(seal_of "$c")" != "$d" ]]; then
+          ACCEPT_UNMET+="$id: its mutation bundles no longer match the seals recorded"$'\n'; ACCEPT_IDS+="$id "
+        fi ;;
+      *) ACCEPT_STATE=error; ACCEPT_UNMET="unexpected acceptance check output: $kind"; return 1 ;;
+    esac
+  done <<< "$out"
+  ACCEPT_UNMET="${ACCEPT_UNMET%$'\n'}"; ACCEPT_IDS="${ACCEPT_IDS% }"
+  [[ -z "$ACCEPT_IDS" ]] || { ACCEPT_STATE=incomplete; return 1; }
+}
+
+acceptance_refusal() {
+  # acceptance_refusal <n> <bundle>: integrate's refusal when acceptance_complete failed: the sealed
+  # bundle and the exact commands that record evidence or ask for a waiver.
+  local n="$1" rel="$2" id l
+  log "integrate milestone $n: refused: acceptance incomplete ($ACCEPT_STATE); the gate passed and the merge stays local"
+  log "  sealed bundle: $rel"
+  case "$ACCEPT_STATE" in
+    missing) log "  no .milestones/acceptance/$n.json; record the exit criteria first:"
+             log "    $SELF accept $n --init" ;;
+    invalid) log "  $ACCEPT_UNMET"
+             log "    $SELF accept $n --init --force" ;;
+    incomplete) while IFS= read -r l; do log "  unmet $l"; done <<< "$ACCEPT_UNMET" ;;
+    *) log "  $ACCEPT_UNMET" ;;
+  esac
+  [[ -n "$ACCEPT_IDS" ]] || return 0
+  log "  record evidence for each criterion (a step of this bundle that passed and the test ids its log shows), then run integrate again:"
+  for id in $ACCEPT_IDS; do
+    log "    $SELF accept $n --criterion $id --evidence bundle:$rel#<step>:<test id>[,<test id>...]"
+  done
+  log "  or a caught mutation citing the criterion: $SELF accept $n --criterion <id> --evidence mutation:<line of .milestones/mutations/$n.jsonl>"
+  log "  or an owner waiver, typed by the owner at a terminal: $SELF approve $n criterion-waiver $ACCEPT_IDS"
+}
+
+approve_candidate_head() {
+  # The commit whose blobs an approval binds: --ref, else the sandbox branch (--sandbox, else
+  # milestone <n>'s STATUS.md Sandbox cell) when it is not merged yet, else HEAD.
+  local n="$1" id="${SANDBOX:-}" h rc=0
+  if [[ -n "$MUTATE_REF" ]]; then
+    [[ -z "$id" ]] || { echo "approve: give --ref or --sandbox, not both" >&2; return 1; }
+    git rev-parse --verify -q "$MUTATE_REF^{commit}" || { echo "approve: --ref $MUTATE_REF is not a commit" >&2; return 1; }
+    return 0
+  fi
+  [[ -n "$id" ]] || id="$(status_sandbox_cell "$n")"
+  if [[ -n "$id" ]]; then
+    [[ "$id" =~ $SANDBOX_ID_RE && "$id" != *..* ]] || { echo "approve: '$id' is not a sandbox id" >&2; return 1; }
+    h="$(git rev-parse --verify -q "refs/heads/agent-sandbox/$id^{commit}")" || { echo "approve: no branch agent-sandbox/$id" >&2; return 1; }
+    git merge-base --is-ancestor "$h" HEAD || rc=$?
+    if (( rc == 0 )); then git rev-parse --verify -q "HEAD^{commit}" || { echo "approve: HEAD does not resolve" >&2; return 1; }
+    elif (( rc == 1 )); then echo "$h"
+    else echo "approve: git merge-base failed (exit $rc)" >&2; return 1; fi
+    return 0
+  fi
+  git rev-parse --verify -q "HEAD^{commit}" || { echo "approve: HEAD does not resolve" >&2; return 1; }
+}
+
+do_approve() {
+  local n="${MILESTONES[0]:-}" kind="$APPROVE_KIND" usage rel f at head="" typed p h hash ids st existed=1 sha
+  local items=("${APPROVE_ITEMS[@]}") entries=()
+  usage="approve N criterion-waiver N.c<i>... | approve N weakening <hit kind> <path>... | approve N gate-config <path>... | approve N gate-definition | approve N budget <name>...  ([--sandbox ID | --ref REF] picks the candidate head for blob ids)"
+  [[ "$n" =~ ^[0-9]+$ && -n "$kind" ]] || die "approve needs a milestone and a kind: $usage"
+  # Consent is typed by the owner at a terminal. Nothing is read or written before this check, and
+  # there is no flag or variable that stands in for it.
+  [[ -t 0 ]] || die "approve refused: stdin is not a terminal. An owner approval is typed by the owner at an interactive terminal; a headless shell cannot give one. Nothing written."
+  rel=".milestones/approvals/$n.md"; f="$REPO/$rel"
+  at="$(date -Is)"
+  entry() { printf -- '- approved %s milestone=%s kind=%s hit=%s path=%s blob=%s hash=%s criterion=%s budget=%s confirm="approve %s %s"' \
+              "$at" "$n" "$kind" "$1" "$2" "$3" "$4" "$5" "$6" "$n" "$kind"; }
+  path_ok() { [[ -n "$1" && "$1" != /* && "$1" != *'"'* && "$1" =~ ^[[:print:]]+$ && "/$1/" != */../* ]]; }
+  case "$kind" in
+    criterion-waiver)
+      (( ${#items[@]} )) || die "approve: name the criteria: $usage"
+      [[ -f "$REPO/.milestones/acceptance/$n.json" ]] || die "approve: no .milestones/acceptance/$n.json; run accept $n --init first. Nothing written."
+      ids="$(python3 -c 'import json, sys; print(" ".join(c["id"] for c in json.load(open(sys.argv[1]))["criteria"]))' "$REPO/.milestones/acceptance/$n.json")" \
+        || die "approve: cannot read .milestones/acceptance/$n.json. Nothing written."
+      for p in "${items[@]}"; do
+        [[ "$p" =~ ^$n\.c[0-9]+$ && " $ids " == *" $p "* ]] || die "approve: no criterion $p in .milestones/acceptance/$n.json (its ids: $ids). Nothing written."
+        entries+=("$(entry - - - - "$p" -)")
+      done ;;
+    weakening|gate-config)
+      local hit=-
+      if [[ "$kind" == weakening ]]; then
+        hit="${items[0]:-}"
+        [[ " $WEAKENING_KINDS " == *" $hit "* ]] || die "approve: '$hit' is not a hit kind ($WEAKENING_KINDS). Nothing written."
+        items=("${items[@]:1}")
+      fi
+      (( ${#items[@]} )) || die "approve: name the paths: $usage"
+      head="$(approve_candidate_head "$n")" || die "approve: no candidate head. Nothing written."
+      for p in "${items[@]}"; do
+        path_ok "$p" || die "approve: '$p' is not a repository-relative path without quotes. Nothing written."
+        h="$(path_blob "$head" "$p")" || die "approve: git could not read $p at ${head:0:12}. Nothing written."
+        entries+=("$(entry "$hit" "\"$p\"" "$h" - - -)")
+      done ;;
+    gate-definition)
+      (( ${#items[@]} == 0 )) || die "approve: gate-definition takes no items: $usage"
+      require_gate
+      hash="$(gate_definition_hash)"
+      [[ "$hash" =~ ^[0-9a-f]{64}$ ]] || die "approve: could not compute the gate definition hash. Nothing written."
+      entries+=("$(entry - - - "$hash" - -)") ;;
+    budget)
+      (( ${#items[@]} )) || die "approve: name the budgets: $usage"
+      for p in "${items[@]}"; do
+        [[ "$p" =~ ^[A-Za-z0-9_.-]+$ ]] || die "approve: '$p' is not a budget name. Nothing written."
+        entries+=("$(entry - - - - - "$p")")
+      done ;;
+    *) die "approve: unknown kind '$kind': $usage" ;;
+  esac
+  git symbolic-ref -q HEAD > /dev/null || die "approve: HEAD is detached; check out the integration branch. Nothing written."
+  st="$(git status --porcelain --untracked-files=all -- "$rel")" || die "approve: git status failed. Nothing written."
+  [[ -z "$st" ]] || die "approve: $rel has uncommitted edits; a line not written by approve is never committed by it. Restore it (git checkout -- $rel, or remove it). Nothing written."
+  echo "Milestone $n, approval of kind $kind${head:+ (blob ids at ${head:0:12})}:"
+  printf '  %s\n' "${entries[@]}"
+  echo "Type exactly: approve $n $kind"
+  IFS= read -r typed || typed=""
+  typed="${typed%$'\r'}"
+  [[ "$typed" == "approve $n $kind" ]] || die "approve refused: the confirmation typed was not 'approve $n $kind'. Nothing written."
+  git cat-file -e "HEAD:$rel" 2> /dev/null || existed=0
+  mkdir -p "$(dirname "$f")" || die "approve: cannot create $(dirname "$rel"). Nothing written."
+  if [[ ! -e "$f" ]]; then
+    printf '# Owner approvals, milestone %s\n\nWritten only by run-milestones.sh approve at a terminal; every line in another form is ignored.\n\n' "$n" > "$f" \
+      || die "approve: cannot write $rel"
+  fi
+  printf '%s\n' "${entries[@]}" >> "$f" || die "approve: cannot write $rel"
+  if ! git add -- "$rel" || ! git commit -q -m "approvals: milestone $n $kind ${APPROVE_ITEMS[*]}" -- "$rel" > /dev/null; then
+    if (( existed )); then git reset -q -- "$rel" > /dev/null 2>&1; git checkout -q -- "$rel" > /dev/null 2>&1
+    else git rm -q --cached -- "$rel" > /dev/null 2>&1; rm -f "$f"; fi
+    die "approve: committing $rel failed; the file is restored and nothing is approved"
+  fi
+  sha="$(git rev-parse --short=12 HEAD)"
+  log "approve milestone $n: $kind ${APPROVE_ITEMS[*]} committed in $rel as $sha$( [[ -z "$head" ]] || echo " (blobs at ${head:0:12})")"
+}
+
 # ---------------------------------------------------------------- config
 do_config() {
   # What milestone <n> resolves to, one KEY=value per line, so a launch can be checked
@@ -2003,7 +2598,19 @@ do_prompt() {
 }
 
 # ---------------------------------------------------------------- dispatch
-if [[ "$VERB" != mutate && ( -n "$MUTATE_REF" || -n "$MUTATE_STEPS" ) ]]; then die "--ref and --steps belong to mutate"; fi
+if [[ "$VERB" != mutate && -n "$MUTATE_STEPS" ]]; then die "--steps belongs to mutate"; fi
+if [[ "$VERB" != mutate && "$VERB" != approve && -n "$MUTATE_REF" ]]; then die "--ref belongs to mutate and approve"; fi
+if [[ "$VERB" != accept ]] && (( ACCEPT_INIT || ACCEPT_FORCE )) || [[ "$VERB" != accept && -n "$ACCEPT_CRITERION$ACCEPT_EVIDENCE$ACCEPT_CONTEXT" ]]; then
+  die "--init, --force, --criterion, --evidence and --context belong to accept"
+fi
+if [[ "$VERB" == accept ]]; then
+  [[ -z "$INSIDE" && -z "$CONTINUE" && -z "$SANDBOX" && ${#MILESTONES[@]} -eq 1 ]] || die "accept takes one milestone: accept N --init | accept N --criterion N.c<i> --evidence ... | --context evaluator:<text>"
+  do_accept; exit 0
+fi
+if [[ "$VERB" == approve ]]; then
+  [[ -z "$INSIDE" && -z "$CONTINUE" && ${#MILESTONES[@]} -eq 1 ]] || die "approve takes one milestone: approve N <kind> <item...>"
+  do_approve; exit 0
+fi
 if [[ "$VERB" == mutate ]]; then
   [[ -z "$INSIDE" && -z "$CONTINUE" && ${#MILESTONES[@]} -eq 1 ]] || die "mutate takes one milestone and a patch: mutate N <patch> [--ref REF] [--steps name,name] [--sandbox ID]"
   do_mutate; exit "$MUTATE_EXIT"
