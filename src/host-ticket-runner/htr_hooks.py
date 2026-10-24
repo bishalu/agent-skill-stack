@@ -138,6 +138,29 @@ def classify(command, test_re=TEST_RE, lint_re=LINT_RE):
     return kinds
 
 
+RUNNER_PREFIX = re.compile(r"^((uv|poetry|pipenv|hatch|pdm) +run +)?(python3? +-m +)?")
+GATE_KEY = re.compile(r"^((just|make|task) +(gate|check)|(npm|pnpm|yarn|bun)( +-C +\S+)?( +run)? +gate)\b")
+
+
+def suites(command, kind, test_re=TEST_RE, lint_re=LINT_RE):
+    """The suites a Bash command runs for `kind`, each named by the words that matched.
+
+    `uv run pytest` and `pytest` are one suite; `pnpm -C web test` and `pnpm test` are two,
+    since they can run from different folders. After the last edit every suite is judged by
+    its own latest run, so a green web run after a red Python run does not stand in for it;
+    before it, only a suite whose latest run failed still counts."""
+    pattern = test_re if kind == "test" else lint_re
+    out = []
+    for seg in segments(command):
+        seg = LEAD_RE.sub("", seg)
+        if kind not in classify(seg, test_re, lint_re):
+            continue
+        m = re.match(r"(%s)" % pattern, seg)
+        if m:
+            out.append(RUNNER_PREFIX.sub("", " ".join(m.group(0).split())))
+    return out
+
+
 def masked(command, kind=None, test_re=TEST_RE, lint_re=LINT_RE):
     """Whether the command's exit code can hide the failure of its last `kind` segment.
 
@@ -393,16 +416,34 @@ def evaluate(run_dir, run=None, markers=None, check_pr=True):
         if not runs:
             miss(step, "no %s command is recorded" % kind)
             continue
-        i, m = runs[-1]
-        if m.get("background"):
-            miss(step, "the last %s run went to the background, so its exit code is unknown; run it in the foreground "
-                       "(a longer Bash timeout, not run_in_background): %s" % (step, m.get("command", "")[:160]))
-        elif m.get("exit") != 0:
-            miss(step, "the last %s run exited %s: %s" % (step, m.get("exit"), m.get("command", "")[:160]))
-        elif masked(m.get("command"), kind, test_re, lint_re):
-            miss(step, "the last %s run masks its exit code (%s); run it plainly" % (step, m.get("command", "")[:160]))
-        elif i < edit_last:
-            miss(step, "files changed after the last passing %s run; run it again" % step)
+        latest = {}
+        for i, m in runs:
+            for key in suites(m.get("command"), kind, test_re, lint_re):
+                latest[key] = (i, m)
+        gate_after_edit = any(i > edit_last and m.get("exit") == 0 and not m.get("background")
+                              and not masked(m.get("command"), kind, test_re, lint_re)
+                              and any(GATE_KEY.match(k) for k in suites(m.get("command"), kind, test_re, lint_re))
+                              for i, m in runs)
+        problems = []
+        last_i, last_m = runs[-1]
+        if last_i < edit_last:
+            problems.append("files changed after the last %s run; run it again" % kind)
+        for key, (i, m) in sorted(latest.items(), key=lambda kv: kv[1][0]):
+            cmd = m.get("command", "")[:160]
+            if i < edit_last:
+                # Before the last edit only a red suite still counts: it has not been shown green since.
+                if m.get("exit") not in (0, None) and not gate_after_edit:
+                    problems.append("the last `%s` run exited %s and it has not passed since: %s" % (key, m.get("exit"), cmd))
+                continue
+            if m.get("background"):
+                problems.append("the last `%s` run went to the background, so its exit code is unknown; run it in the "
+                                "foreground (a longer Bash timeout, not run_in_background): %s" % (key, cmd))
+            elif m.get("exit") != 0:
+                problems.append("the last `%s` run exited %s: %s" % (key, m.get("exit"), cmd))
+            elif masked(m.get("command"), kind, test_re, lint_re):
+                problems.append("the last `%s` run masks its exit code (%s); run it plainly" % (key, cmd))
+        if problems:
+            miss(step, "; ".join(problems))
         else:
             done.append(step)
 
