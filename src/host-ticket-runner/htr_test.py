@@ -293,6 +293,42 @@ class StopHook(unittest.TestCase):
         self.mark({"kind": "bash", "command": "uv run pytest | tail -3", "exit": 0})
         self.assertIn("masks", hooks.evaluate(self.run_dir)["missing"][0]["why"])
 
+    def test_a_green_suite_does_not_stand_in_for_a_red_one(self):
+        # #39's run: the Python suite exited 1 after the last edit, then the web suite passed.
+        self.full()
+        self.mark({"kind": "bash", "command": "cd /w; uv run pytest -q -p no:cacheprovider", "exit": 1},
+                  {"kind": "bash", "command": "pnpm -C web test", "exit": 0})
+        why = [m for m in hooks.evaluate(self.run_dir)["missing"] if m["step"] == "tests"][0]["why"]
+        self.assertIn("`pytest` run exited 1", why)
+        self.mark({"kind": "bash", "command": "pytest -q", "exit": 0})   # same suite, other spelling
+        self.assertEqual(hooks.evaluate(self.run_dir)["missing"], [])
+
+    def test_a_red_suite_stays_red_across_an_edit_until_it_or_a_gate_passes(self):
+        self.full()
+        self.mark({"kind": "bash", "command": "uv run pytest -q", "exit": 1},
+                  {"kind": "edit", "path": os.path.join(self.wt, "x.py")},
+                  {"kind": "bash", "command": "pnpm -C web test", "exit": 0},
+                  {"kind": "bash", "command": "uv run ruff check .", "exit": 0})
+        why = [m for m in hooks.evaluate(self.run_dir)["missing"] if m["step"] == "tests"][0]["why"]
+        self.assertIn("has not passed since", why)
+        self.mark({"kind": "bash", "command": "just gate", "exit": 0})
+        self.assertEqual(hooks.evaluate(self.run_dir)["missing"], [])
+
+    def test_exploratory_runs_before_the_last_edit_do_not_block(self):
+        self.full()
+        self.mark({"kind": "bash", "command": "pnpm test > /tmp/o.txt 2>&1; echo $?", "exit": 0},
+                  {"kind": "bash", "command": "grep -rn 'just gate\\|x' . | head", "exit": 0},
+                  {"kind": "edit", "path": os.path.join(self.wt, "x.py")},
+                  {"kind": "bash", "command": "uv run pytest -q", "exit": 0},
+                  {"kind": "bash", "command": "uv run ruff check .", "exit": 0})
+        self.assertEqual(hooks.evaluate(self.run_dir)["missing"], [])
+
+    def test_suites_are_named_by_the_words_that_matched(self):
+        self.assertEqual(hooks.suites("cd /w; uv run pytest -q && pnpm -C web test", "test"), ["pytest", "pnpm -C web test"])
+        self.assertEqual(hooks.suites("pnpm -C web typecheck && pnpm -C web lint", "lint"),
+                         ["pnpm -C web typecheck", "pnpm -C web lint"])
+        self.assertEqual(hooks.suites("python3 -m pytest", "test"), ["pytest"])
+
     def test_background_test_run_does_not_count(self):
         self.full()
         m = hooks.marker_for({"tool_name": "Bash", "tool_input": {"command": "uv run pytest -q"},
