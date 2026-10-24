@@ -147,6 +147,18 @@ class Classify(unittest.TestCase):
         self.assertFalse(hooks.masked("cd web; npm ci; npm test", "test"))
         self.assertFalse(hooks.masked("ls | wc -l; uv run pytest -q 2>&1", "test"))
         self.assertTrue(hooks.masked("uv run pytest -q && uv run ruff check; echo $?", "test"))
+        self.assertTrue(hooks.masked("uv run pytest -q &", "test"))
+        self.assertTrue(hooks.masked("uv run pytest -q & wait", "test"))
+        self.assertFalse(hooks.masked("uv run pytest -q > out.txt 2>&1", "test"))
+
+    def test_not_a_suite_run(self):
+        c = hooks.classify
+        for cmd in ("pytest --version", "uv run pytest --collect-only -q", "pytest --co", "pytest -k test_one",
+                    "pytest tests/test_x.py::test_one", "npx vitest -t 'one case'", "go test -run TestOne ./...",
+                    "ruff --version", "pytest --help"):
+            self.assertEqual(c(cmd), set(), cmd)
+        self.assertEqual(c("python3 -m pytest -q"), {"test"})
+        self.assertEqual(c("uv run pytest -m 'not slow'"), {"test"})
 
     def test_marker_for(self):
         m = hooks.marker_for({"tool_name": "Skill", "tool_input": {"skill": "compound-engineering:ce-work", "args": "x"}}, False)
@@ -175,11 +187,30 @@ class AwsDeny(unittest.TestCase):
         self.assertFalse(self.deny("Read", {"file_path": os.path.join(self.home, ".awsome")}))
         self.assertFalse(self.deny("Read", {"file_path": "/tmp/htr/aws/credentials"}))
 
+    @unittest.skipUnless(sys.platform in ("darwin", "win32"), "case-insensitive file systems only")
+    def test_other_case_spellings(self):
+        self.assertTrue(self.deny("Read", {"file_path": os.path.join(self.home, ".AWS", "credentials")}))
+        self.assertTrue(self.deny("Read", {"file_path": "~/.Aws/Config"}))
+
+    def test_searches_that_walk_into_it(self):
+        self.assertTrue(self.deny("Grep", {"pattern": "aws_secret", "path": self.home}))
+        self.assertTrue(self.deny("Grep", {"pattern": "aws_secret"}, cwd=self.home))
+        self.assertTrue(self.deny("Glob", {"pattern": "**/credentials", "path": "/"}))
+        self.assertTrue(self.deny("Glob", {"pattern": os.path.join(self.home, "**", "credentials")}))
+        self.assertFalse(self.deny("Grep", {"pattern": "aws_secret", "path": "/tmp"}))
+        self.assertFalse(self.deny("Glob", {"pattern": "src/**/*.py"}, cwd="/tmp"))
+
     def test_bash(self):
         for cmd in ("cat ~/.aws/credentials", "ls $HOME/.aws", "cat ${HOME}/.aws/config",
-                    "cat %s/.aws/credentials" % self.home, "cd ~ && cat .aws/credentials", "tar c ~/.aws"):
+                    "cat %s/.aws/credentials" % self.home, "cd ~ && cat .aws/credentials", "tar c ~/.aws",
+                    "cd ~ && ls .aws", "env -i aws sts get-caller-identity", "env -u AWS_PROFILE aws s3 ls",
+                    "unset AWS_SHARED_CREDENTIALS_FILE; aws s3 ls", "AWS_SHARED_CREDENTIALS_FILE=/x aws s3 ls",
+                    "AWS_PROFILE=admin aws sts get-caller-identity", "grep -r aws_secret ~", "find ~ -name credentials",
+                    "rg -uu key $HOME", "find / -name credentials"):
             self.assertTrue(self.deny("Bash", {"command": cmd}), cmd)
-        for cmd in ("aws sts get-caller-identity", "cat $AWS_SHARED_CREDENTIALS_FILE", "ls ~/.awsome"):
+        for cmd in ("aws sts get-caller-identity", "cat $AWS_SHARED_CREDENTIALS_FILE", "ls ~/.awsome",
+                    "AWS_PROFILE=htr-agent aws s3 ls", "grep -r key src", "find . -name '*.py'", "env | grep '^AWS_'",
+                    "cp -r build /tmp/out"):
             self.assertFalse(self.deny("Bash", {"command": cmd}), cmd)
 
     def test_bash_windows_spellings(self):
@@ -222,10 +253,10 @@ class StopHook(unittest.TestCase):
 
     def full(self):
         self.mark(self.skill("ce-work"), {"kind": "edit", "path": os.path.join(self.wt, "README.md")},
-                  self.skill("ce-simplify-code"), self.skill("ce-code-review"),
+                  self.skill("ce-simplify-code"), self.skill("ce-code-review"), self.skill("ce-compound"),
                   {"kind": "bash", "command": "uv run pytest -q", "exit": 0},
                   {"kind": "bash", "command": "uv run ruff check src", "exit": 0},
-                  self.skill("ce-compound"), self.skill("ce-commit-push-pr"))
+                  self.skill("ce-commit-push-pr"))
 
     def stop(self, active=False):
         out, marker = hooks.stop_decision(self.run_dir, {"stop_hook_active": active, "last_assistant_message": "done"})
@@ -278,6 +309,40 @@ class StopHook(unittest.TestCase):
         miss = hooks.evaluate(self.run_dir)["missing"]
         self.assertEqual([m["step"] for m in miss], ["ce-commit-push-pr"])
 
+    def test_work_after_the_last_review_needs_another_review(self):
+        self.full()
+        self.mark(self.skill("ce-work"))
+        miss = hooks.evaluate(self.run_dir)["missing"]
+        self.assertEqual(miss[0]["step"], "ce-code-review")
+        self.assertIn("before the last ce-work", miss[0]["why"])
+
+    def test_missing_steps_come_in_working_order(self):
+        steps = [m["step"] for m in hooks.evaluate(self.run_dir, check_pr=False)["missing"]]
+        self.assertEqual(steps, ["ce-work", "ce-simplify-code", "ce-code-review", "ce-compound", "tests", "lint", "ce-commit-push-pr"])
+
+    def test_no_pr_points_at_the_shipping_skill(self):
+        self.full()
+        os.remove(self.pr)
+        hooks.write_json(self.pr, None)
+        miss = hooks.evaluate(self.run_dir)["missing"]
+        self.assertEqual(miss[-1]["step"], "pr")
+
+    def test_unreadable_run_json_escalates_not_completes(self):
+        os.remove(os.path.join(self.run_dir, "run.json"))
+        out, marker = self.stop()
+        self.assertEqual(marker["decision"], "escalate")
+        self.assertFalse(os.path.exists(os.path.join(self.run_dir, "complete.json")))
+
+    def test_block_budget_is_per_turn(self):
+        self.run["budgets"]["stop_blocks"] = 1
+        hooks.write_json(os.path.join(self.run_dir, "run.json"), self.run)
+        self.mark({"kind": "turn", "event": "start", "turn": 0})
+        self.assertEqual(self.stop()[1]["decision"], "block")
+        self.mark({"kind": "bash", "command": "echo working", "exit": 0})
+        self.assertEqual(self.stop(active=True)[1]["decision"], "escalate")
+        self.mark({"kind": "turn", "event": "start", "turn": 1})   # a finishing turn
+        self.assertEqual(self.stop()[1]["decision"], "block")
+
     def test_pr_must_match_head_cite_ids_and_carry_review(self):
         self.full()
         self.write_pr(body="Closes #7", head="0" * 40)
@@ -308,11 +373,17 @@ class StopHook(unittest.TestCase):
 
     def test_plan_first_requires_plan_before_work(self):
         self.run["required"] = htr.required_steps("plan-first", [])
+        self.run["work_input"] = htr.PLAN_PATH
         hooks.write_json(os.path.join(self.run_dir, "run.json"), self.run)
         self.full()
         self.assertEqual(hooks.evaluate(self.run_dir)["missing"][0]["step"], "ce-plan")
         self.mark(self.skill("ce-plan"))
-        self.assertIn("before ce-plan", hooks.evaluate(self.run_dir)["missing"][0]["why"])
+        miss = hooks.evaluate(self.run_dir)["missing"][0]
+        self.assertIn("before ce-plan", miss["why"])
+        self.assertIn("ce-work mode:return-to-caller %s" % htr.PLAN_PATH, miss["do"])
+        # A second ce-work after the plan, then a review of it and the shipping call, clears it.
+        self.mark(self.skill("ce-work"), self.skill("ce-code-review"), self.skill("ce-commit-push-pr"))
+        self.assertEqual(hooks.evaluate(self.run_dir)["missing"], [])
 
     def test_skipped_steps_are_not_required(self):
         self.run["required"] = htr.required_steps("work", ["lint"])
@@ -507,6 +578,11 @@ class Launch(unittest.TestCase):
         r = self.htr("launch", "--repo", "o/r", "--issue", "7", "--checkout", self.checkout, "--model", "fable")
         self.assertEqual(r.returncode, 2)
         self.assertIn("Opus at most", r.stderr)
+        r = self.htr("launch", "--repo", "o/r", "--issue", "7", "--checkout", self.checkout, "--test-regex", "pytest(")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("--test-regex is not a valid regular expression", r.stderr)
+        r = self.htr("launch", "--repo", "o/r", "--issue", "7", "--checkout", self.checkout, "--base", "main", "--dry-run", "--json")
+        self.assertEqual(json.loads(r.stdout)["work_input"].endswith("ticket.md"), True)
         r = self.htr("aws-keys", env={})
         self.assertNotEqual(r.returncode, 0)
 

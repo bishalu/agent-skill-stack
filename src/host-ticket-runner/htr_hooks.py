@@ -37,12 +37,18 @@ LINT_RE = (r"((uv|poetry|pipenv|hatch|pdm) run +)?(python3? +-m +)?(ruff|flake8|
            r"|eslint\b|tsc\b|prettier +--check|shellcheck\b|golangci-lint\b|cargo +clippy\b|(just|make|task) +(lint|gate|check)[\w:-]*"
            r"|terraform +(fmt +-check|validate)\b|actionlint\b|markdownlint\b|python3? +\S*check-doc-\S+\.py\b")
 EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
-SEP = r"&&|\|\||;|\||\n"
+# A single `&` (not `&&`, `2>&1`, `&>`) sends what precedes it to the background.
+SEP = r"&&|\|\||\|&|;|\||(?<![&>])&(?![&>])|\n"
+# A test or lint segment that names one of these is not a run of the suite: it prints a
+# version or help, lists tests, or runs a hand-picked subset.
+NOT_A_RUN = re.compile(r"(^|\s)(--version|-V|--help|-h|--collect-only|--co|--list|--listTests)(\s|=|$)")
+SUBSET = re.compile(r"(^|\s)(-k|-t|--testNamePattern|--grep|-g|-run|--lf|--last-failed|--deselect|--only)(\s|=|$)|::")
 DEFAULT_BUDGETS = {"stop_blocks": 8, "stalled_blocks": 2, "finishing_turns": 2}
 LEAD_RE = re.compile(r"^(\s*(\w+=\S*|cd +\S+ *&&|time|env|command|exec|sudo +-E)\s+)*")
 
 # The skills the lifecycle needs, by the name after any plugin namespace.
 SKILL_STEPS = ["ce-plan", "ce-work", "ce-simplify-code", "ce-code-review", "ce-compound", "ce-commit-push-pr"]
+ORDER = SKILL_STEPS[:-1] + ["tests", "lint", "ce-commit-push-pr", "pr"]
 
 # What the Stop hook tells the agent to do for each missing step. The ticket file and plan
 # path are filled in from run.json.
@@ -123,7 +129,9 @@ def classify(command, test_re=TEST_RE, lint_re=LINT_RE):
     kinds = set()
     for seg in segments(command):
         seg = LEAD_RE.sub("", seg)
-        if re.match(r"(%s)" % test_re, seg):
+        if NOT_A_RUN.search(seg):
+            continue
+        if re.match(r"(%s)" % test_re, seg) and not SUBSET.search(seg):
             kinds.add("test")
         if re.match(r"(%s)" % lint_re, seg):
             kinds.add("lint")
@@ -135,7 +143,8 @@ def masked(command, kind=None, test_re=TEST_RE, lint_re=LINT_RE):
 
     The exit code is that segment's own only when everything after it is chained with
     `&&`: a `;`, a newline, a pipe or `||` after it (`pytest; echo $?`, `ruff | tail`,
-    `pytest || true`) hands the exit code to something else."""
+    `pytest || true`) hands the exit code to something else, and a `&` after it
+    (`pytest &`) sends it to the background."""
     parts = re.split("(%s)" % SEP, command or "")
     segs, seps = parts[0::2], parts[1::2]
     last = None
@@ -145,7 +154,7 @@ def masked(command, kind=None, test_re=TEST_RE, lint_re=LINT_RE):
             last = i
     if last is None:
         return False
-    return any(sep != "&&" and segs[j + 1].strip() for j, sep in enumerate(seps) if j >= last)
+    return any(sep == "&" or (sep != "&&" and segs[j + 1].strip()) for j, sep in enumerate(seps) if j >= last)
 
 
 # ---------------------------------------------------------------- markers from tool calls
@@ -195,38 +204,100 @@ def real_aws_dirs(run):
     return out
 
 
+# macOS and Windows file systems are case-insensitive by default: ~/.AWS is ~/.aws.
+FOLD = str.lower if sys.platform in ("darwin", "win32") else (lambda s: s)
+SEARCH_TOOLS = {"Grep", "Glob"}
+
+
+def _forms(p):
+    out = {FOLD(os.path.normcase(os.path.abspath(p)))}
+    try:
+        out.add(FOLD(os.path.normcase(os.path.realpath(p))))
+    except OSError:
+        pass
+    return {o.rstrip("/\\") or o for o in out}
+
+
+def _within(child, parent):
+    return child == parent or child.startswith(parent.rstrip("/\\") + os.sep) or child.startswith(parent.rstrip("/\\") + "/")
+
+
+def _same_or_under(p, d):
+    """Whether p is d or inside it, by name (case-folded where the file system folds case)
+    and by file identity for any existing ancestor of p (another spelling or a hard link)."""
+    if any(_within(c, x) for c in _forms(p) for x in _forms(d)):
+        return True
+    if not os.path.exists(d):
+        return False
+    cur = os.path.abspath(p)
+    while True:
+        try:
+            if os.path.exists(cur) and os.path.samefile(cur, d):
+                return True
+        except OSError:
+            pass
+        up = os.path.dirname(cur)
+        if up == cur:
+            return False
+        cur = up
+
+
+def _bash_reaches_real_aws(cmd, run):
+    """The reason a Bash command reaches the real ~/.aws, or None. This reads command text,
+    so it catches the spellings below and not every possible one."""
+    text = cmd.replace("\\\\", "\\")
+    home = re.escape(os.path.expanduser("~").replace("\\", "/"))
+    homes = r"(~|\$HOME|\$\{HOME\}|%USERPROFILE%|\$env:USERPROFILE|" + home + r")"
+    checks = [
+        (homes + r"[/\\]+\.aws\b", "the command names the real ~/.aws"),
+        (r"(^|[\s'\"=:/\\(])\.aws([/\\'\"\s)]|$)", "the command names a .aws directory"),
+        # Without the runner's AWS_* variables the CLI and SDKs fall back to ~/.aws.
+        (r"\benv\b[^;&|\n]*\s(-i|--ignore-environment|-u\s*AWS_\w*|--unset[=\s]*AWS_\w*)\b", "the command drops the runner's AWS environment"),
+        (r"\bunset\b[^;&|\n]*\bAWS_", "the command unsets the runner's AWS environment"),
+        (r"\bAWS_(SHARED_CREDENTIALS_FILE|CONFIG_FILE)\s*=", "the command repoints the AWS credential or config file"),
+        # A recursive search or copy from home or the root walks into ~/.aws.
+        (r"\b(grep|egrep|rg|ag|ack|find|fd|tar|zip|rsync|cp|scp|du)\b[^;&|\n]*\s['\"]?(" + homes[1:-1] +
+         r"|/|/Users|/home|[A-Za-z]:)[/\\]?['\"]?(\s|$)", "the command searches or copies from home or the root, which includes ~/.aws"),
+    ]
+    for pat, why in checks:
+        if re.search(pat, text, re.IGNORECASE):
+            return why
+    m = re.search(r"\bAWS_(DEFAULT_)?PROFILE\s*=\s*['\"]?([\w.-]*)", text)
+    if m and m.group(2) != (run or {}).get("aws_profile", "htr-agent"):
+        return "the command switches to AWS profile %r, not the runner's" % m.group(2)
+    return None
+
+
 def touches_real_aws(payload, run):
     """The reason this tool call reaches into the real ~/.aws, or None."""
     tool = payload.get("tool_name") or ""
     ti = payload.get("tool_input") or {}
     if tool == "Bash":
-        cmd = str(ti.get("command") or "")
-        home = re.escape(os.path.expanduser("~").replace("\\", "/"))
-        pats = [r"(~|\$HOME|\$\{HOME\}|%USERPROFILE%|\$env:USERPROFILE|" + home + r")[/\\]+\.aws\b",
-                r"(^|[\s'\"=/\\])\.aws[/\\]+(credentials|config|sso|cli|login)\b"]
-        for p in pats:
-            if re.search(p, cmd.replace("\\\\", "\\"), re.IGNORECASE):
-                return "the command names the real ~/.aws"
-        return None
+        return _bash_reaches_real_aws(str(ti.get("command") or ""), run)
     cwd = payload.get("cwd") or os.getcwd()
     dirs = real_aws_dirs(run)
-    for key in ("file_path", "path", "notebook_path", "pattern"):
+    paths = []
+    for key in ("file_path", "path", "notebook_path"):
         v = ti.get(key)
-        if not v or not isinstance(v, str):
-            continue
-        p = os.path.expanduser(v)
-        if not os.path.isabs(p):
-            base = ti.get("path") if key == "pattern" and isinstance(ti.get("path"), str) else cwd
-            p = os.path.join(os.path.expanduser(base), p)
-        cands = {os.path.normcase(os.path.abspath(p))}
-        try:
-            cands.add(os.path.normcase(os.path.realpath(p)))
-        except OSError:
-            pass
-        for c in cands:
-            for d in dirs:
-                if c == d or c.startswith(d.rstrip("/\\") + os.sep) or c.startswith(d.rstrip("/\\") + "/"):
-                    return "%s %s is inside the real ~/.aws" % (key, v)
+        if v and isinstance(v, str):
+            paths.append((key, os.path.join(cwd, os.path.expanduser(v))))
+    if tool in SEARCH_TOOLS:
+        base = os.path.join(cwd, os.path.expanduser(ti.get("path"))) if isinstance(ti.get("path"), str) and ti.get("path") else cwd
+        root = base
+        pat = os.path.expanduser(ti.get("pattern")) if tool == "Glob" and isinstance(ti.get("pattern"), str) else ""
+        if pat:
+            # A Glob pattern's fixed leading folders are where the walk starts.
+            fixed = os.path.dirname(re.split(r"[*?\[{]", pat, 1)[0])
+            root = os.path.join(base, fixed) if fixed else base
+            paths.append(("pattern", os.path.join(base, pat)))
+        # A search rooted at ~/.aws, or at any folder that contains it, walks into it.
+        for d in dirs:
+            if _same_or_under(d, root):
+                return "%s from %s walks into the real ~/.aws" % (tool, root)
+    for key, p in paths:
+        for d in dirs:
+            if _same_or_under(p, d):
+                return "%s %s is inside the real ~/.aws" % (key, ti.get(key))
     return None
 
 
@@ -303,12 +374,13 @@ def evaluate(run_dir, run=None, markers=None, check_pr=True):
             done.append(step)
 
     # Order: plan before work, work before review, review before the shipping call.
-    w = first_index(markers, is_skill("ce-work"))
-    if "ce-plan" in required and w >= 0 and "ce-plan" in done and first_index(markers, is_skill("ce-plan")) > w:
-        miss("ce-work", "ce-work ran before ce-plan; run it again on the plan")
+    w_last = last_index(markers, is_skill("ce-work"))
+    if "ce-plan" in done and w_last >= 0 and w_last < first_index(markers, is_skill("ce-plan")):
+        miss("ce-work", "ce-work ran only before ce-plan; run it again on the plan")
     r_last = last_index(markers, is_skill("ce-code-review"))
-    if "ce-code-review" in done and w >= 0 and r_last < w:
-        miss("ce-code-review", "ce-code-review ran before ce-work; review the finished change")
+    changed_last = max(w_last, last_index(markers, is_skill("ce-simplify-code")))
+    if "ce-code-review" in done and changed_last >= 0 and r_last < changed_last:
+        miss("ce-code-review", "the last ce-code-review came before the last ce-work or ce-simplify-code; review the finished change")
     s_last = last_index(markers, is_skill("ce-commit-push-pr"))
     if "ce-commit-push-pr" in done and r_last >= 0 and s_last < r_last:
         miss("ce-commit-push-pr", "the last ce-code-review came after the last ce-commit-push-pr; ship the reviewed change")
@@ -344,9 +416,9 @@ def evaluate(run_dir, run=None, markers=None, check_pr=True):
         elif dirt:
             problems.append("the worktree has uncommitted changes: %s" % ", ".join(l[3:] for l in dirt.splitlines()[:5]))
         pr, why = pr_state(run)
-        if why:
-            problems.append(why)
-        elif pr:
+        if why or not pr:
+            problems.append(why or "no PR for %s" % run.get("branch"))
+        else:
             if pr.get("state") not in ("OPEN", "MERGED"):
                 problems.append("PR %s is %s" % (pr.get("url"), pr.get("state")))
             if code == 0 and pr.get("headRefOid") and pr.get("headRefOid") != head:
@@ -359,10 +431,14 @@ def evaluate(run_dir, run=None, markers=None, check_pr=True):
             if not re.search(r"(?im)^#+ .*review", body):
                 problems.append("the PR body has no heading naming the review findings (applied and residual)")
         if problems:
-            missing.append({"step": "pr", "why": "; ".join(problems),
-                            "do": "fix this, then update the PR (git push, and `gh pr edit %s -R %s --body-file <file>` for the body)" % (run.get("branch"), run.get("repo"))})
+            do = (STEP_HELP["pr"].format(**fill) if not pr else
+                  "fix this, then update the PR (git push, and `gh pr edit %s -R %s --body-file <file>` for the body)" % (run.get("branch"), run.get("repo")))
+            missing.append({"step": "pr", "why": "; ".join(problems), "do": do})
         else:
             done.append("pr")
+    # Report in the order the work is done: tests and lint come after ce-compound (its
+    # learning is an edit) and before the shipping call.
+    missing.sort(key=lambda m: ORDER.index(m["step"]) if m["step"] in ORDER else len(ORDER))
     return {"missing": missing, "done": done, "pr": pr}
 
 
@@ -390,11 +466,20 @@ def stop_decision(run_dir, payload, run=None, markers=None, ev=None):
     max_stall = int(budget.get("stalled_blocks", DEFAULT_BUDGETS["stalled_blocks"]))
     keys = sorted("%s: %s" % (m["step"], m["why"]) for m in missing)
 
+    if not run.get("required"):
+        # An unreadable run.json leaves nothing to check; that is not a finished run.
+        why = "run.json is missing, unreadable or lists no required steps"
+        write_escalation(run_dir, run, missing, why, payload)
+        return ({"systemMessage": "host-ticket-runner: escalated (%s); see %s" % (why, os.path.join(run_dir, "escalation.md"))},
+                {"kind": "stop", "decision": "escalate", "stop_hook_active": active, "missing": keys, "reason": why})
+
     if not missing:
         write_json(os.path.join(run_dir, "complete.json"), {"at": now(), "done": ev["done"], "pr": (ev.get("pr") or {}).get("url")})
         return None, {"kind": "stop", "decision": "allow", "stop_hook_active": active, "reason": "every required step is shown"}
 
-    blocks = [m for m in markers if m.get("kind") == "stop" and m.get("decision") == "block"]
+    # The block budget is per turn: a finishing turn (resume) starts with a fresh one.
+    turn_start = last_index(markers, lambda m: m.get("kind") == "turn" and m.get("event") == "start")
+    blocks = [m for m in markers[turn_start + 1:] if m.get("kind") == "stop" and m.get("decision") == "block"]
     # A stall: the hook already blocked, the agent stopped again (stop_hook_active) with the
     # same steps missing and no tool call recorded in between.
     stalled = 0

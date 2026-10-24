@@ -53,7 +53,7 @@ IS_WIN = os.name == "nt"
 IS_MAC = sys.platform == "darwin"
 
 # ---------------------------------------------------------------- routing table
-# The table SKILL.md shows; htr_test.py fails when the two disagree.
+# The table SKILL.md shows; htr_test.py fails when a tier's model or effort there differs.
 TIERS = {
     "light":    {"model": "sonnet", "effort": "medium"},
     "standard": {"model": "opus",   "effort": "medium"},
@@ -72,7 +72,8 @@ EFFORTS = ("low", "medium", "high", "xhigh", "max")
 
 CRITERIA_HEADING = re.compile(r"^\s*(#{1,6}\s*|\*\*)\s*(acceptance criteria|acceptance|done when|definition of done|"
                               r"exit criteria|success criteria|criteria)\b[^\n]*$", re.IGNORECASE)
-LIFECYCLE = ["ce-work", "ce-simplify-code", "ce-code-review", "tests", "lint", "ce-compound", "ce-commit-push-pr", "pr"]
+LIFECYCLE = ["ce-work", "ce-simplify-code", "ce-code-review", "ce-compound", "tests", "lint", "ce-commit-push-pr", "pr"]
+PLAN_PATH = "<the plan path ce-plan wrote>"
 DEFAULT_BUDGETS = hooks.DEFAULT_BUDGETS
 AWS_PROFILE = "htr-agent"
 # Ambient variables the agent must not inherit. Every AWS_* goes (named keys and the
@@ -248,7 +249,7 @@ def required_steps(route, skip):
 def brief(ticket, res, run_info):
     issue = ticket["number"]
     tf = run_info["ticket_file"]
-    work_in = tf if res["route"] == "work" else "<the plan path ce-plan wrote>"
+    work_in = tf if res["route"] == "work" else PLAN_PATH
     steps = []
     if res["route"] == "plan-first":
         steps.append("ce-plan with the ticket file %s as the request. The ticket has no acceptance criteria, so the plan "
@@ -257,13 +258,13 @@ def brief(ticket, res, run_info):
     steps.append("ce-simplify-code on the branch diff.")
     steps.append("ce-code-review apply:local plan:%s: it applies the findings it verifies; commit them. Keep the residual "
                  "findings for the PR body." % work_in)
+    steps.append("ce-compound mode:non-interactive depth:lightweight, invoked once. It writes a learning only when the "
+                 "ticket produced a non-obvious one; ending \"Documentation skipped\" is fine.")
     t = " and ".join(name for step, name in (("tests", "the full test suite"), ("lint", "the linters"))
                      if step in run_info["required"])
     if t:
-        steps.append("Run %s (find them in the justfile, Makefile, package.json or pyproject.toml), after your last edit, "
-                     "and get them green." % t)
-    steps.append("ce-compound mode:non-interactive depth:lightweight for each non-obvious lesson this ticket produced. "
-                 "When nothing qualifies it ends \"Documentation skipped\"; that is fine.")
+        steps.append("Run %s (find them in the justfile, Makefile, package.json or pyproject.toml), after your last edit "
+                     "(ce-compound's included), and get them green." % t)
     steps.append("ce-commit-push-pr mode:pipeline babysit:off: commit what remains, push %s and open the PR against %s." % (
         run_info["branch"], run_info["base"]))
     steps_text = "\n".join("%d. %s" % (i + 1, s) for i, s in enumerate(steps))
@@ -411,8 +412,11 @@ def agent_probe(args):
             "aws_profile": AWS_PROFILE, "real_aws_dirs": [real_aws_dir()]}
     hooks.write_json(os.path.join(d, "run.json"), info)
     hooks.write_json(os.path.join(d, "settings.json"), settings_for(d, stop=False))
+    # The third call only asks whether the file is readable: were the deny ever to miss, the
+    # probe's output would still not carry the owner's keys.
     prompt = ("Run these as separate Bash calls and report each output verbatim, then stop: "
-              "1) `env | grep '^AWS_' | sed 's/=.*//'`  2) `aws sts get-caller-identity`  3) `cat ~/.aws/credentials | head -3`.")
+              "1) `env | grep '^AWS_' | sed 's/=.*//'`  2) `aws sts get-caller-identity`  "
+              "3) `test -r ~/.aws/credentials && echo HOST-AWS-READABLE || echo HOST-AWS-NOT-READABLE`.")
     cmd = ["claude", "-p", prompt, "--model", "haiku", "--dangerously-skip-permissions", "--settings",
            os.path.join(d, "settings.json"), "--output-format", "text"]
     r = subprocess.run(cmd, cwd=d, env=agent_env(info), capture_output=True, text=True, timeout=600)
@@ -421,7 +425,10 @@ def agent_probe(args):
     print("\n--- launched-agent AWS probe (%s) ---\n%s" % (d, r.stdout.strip()))
     denies = [m for m in hooks.read_markers(d) if m.get("kind") == "aws-deny"]
     print("--- PreToolUse denies recorded: %d" % len(denies))
-    return [] if r.returncode == 0 else ["agent probe (claude exited %d)" % r.returncode]
+    problems = [] if r.returncode == 0 else ["agent probe (claude exited %d)" % r.returncode]
+    if not denies:
+        problems.append("agent probe: no PreToolUse deny was recorded for the ~/.aws check")
+    return problems
 
 
 # ---------------------------------------------------------------- runs on disk
@@ -481,13 +488,15 @@ def state_of(rj, check_pr=False):
             tail = f.read().decode("utf-8", "replace")
     except OSError:
         pass
+    # Only the latest turn's output says whether its token was revoked.
+    tail = tail[tail.rfind("\n=== turn "):] if "\n=== turn " in tail else tail
     if alive:
         st = "running"
     elif complete:
         st = "complete"
     elif esc:
         st = "escalated"
-    elif re.search(r"(^|\D)401(\D|$)|authentication_error|OAuth token (has )?expired|invalid_grant|Please run /login", tail):
+    elif re.search(r"API Error: 401\b|authentication_error|OAuth token (has )?expired|invalid_grant|Please run /login|Invalid API key", tail):
         st = "auth-expired"
     elif ex:
         st = "ended-incomplete"
@@ -622,6 +631,11 @@ def do_prompt(args):
 
 
 def do_launch(args):
+    for flag, pat in (("--test-regex", args.test_regex), ("--lint-regex", args.lint_regex)):
+        try:
+            re.compile(pat or "")
+        except re.error as e:
+            die("%s is not a valid regular expression: %s" % (flag, e), example="htr.py launch --repo R --issue N %s 'just +test\\b'" % flag)
     problems = do_preflight(args, quiet=True)
     if problems:
         die("preflight failed: %s (run htr.py preflight)" % ", ".join(problems), 1)
@@ -630,7 +644,10 @@ def do_launch(args):
         die("issue %s#%s is %s; pass --allow-closed to run it anyway" % (args.repo, args.issue, ticket.get("state")))
     prev, st = active_run_for(args.repo, args.issue)
     if prev and not args.again:
-        print("already %s: %s (htr.py status --run %s); --again launches another" % (st, prev["id"], prev["id"]))
+        if args.json:
+            print(json.dumps({"run": prev["id"], "state": st, "launched": False}, indent=2))
+        else:
+            print("already %s: %s (htr.py status --run %s); --again launches another" % (st, prev["id"], prev["id"]))
         return 0
 
     checkout = resolve_checkout(args.repo, args.checkout)
@@ -654,11 +671,12 @@ def do_launch(args):
             "test_regex": args.test_regex, "lint_regex": args.lint_regex, "launched_at": now_stamp(),
             "finishing_turns": 0, "extensions": []}
     info.update({k: res[k] for k in ("route", "route_why", "tier", "tier_why", "model", "effort", "criteria", "criteria_source")})
-    info["work_input"] = info["ticket_file"] if res["route"] == "work" else None
+    info["work_input"] = info["ticket_file"] if res["route"] == "work" else PLAN_PATH
 
     if args.dry_run:
         print(json.dumps(info, indent=2))
-        print("\n(dry run: nothing created, nothing launched)")
+        if not args.json:
+            print("\n(dry run: nothing created, nothing launched)")
         return 0
 
     os.makedirs(run_dir)
@@ -741,20 +759,24 @@ def do_supervise(args):
     """Internal: runs one claude turn in the run's worktree and records how it ended."""
     d = args.run
     info = hooks.read_json(os.path.join(d, "run.json"))
-    turn = (info.get("finishing_turns") or 0) if args.resume_text else 0
+    resume_text = None
+    if args.resume_file:
+        with open(args.resume_file, encoding="utf-8") as f:
+            resume_text = f.read()
+    turn = (info.get("finishing_turns") or 0) if resume_text else 0
     hooks.write_json(os.path.join(d, "supervise.json"), {"pid": os.getpid(), "started_at": now_stamp(), "turn": turn,
-                                                         "kind": "finishing" if args.resume_text else "launch"})
+                                                         "kind": "finishing" if resume_text else "launch"})
     base = ["claude", "-p", "--dangerously-skip-permissions", "--settings", os.path.join(d, "settings.json"),
             "--model", info["model"], "--effort", info["effort"], "--output-format", "text"]
-    if args.resume_text:
-        cmd = base + ["--resume", info["session_id"], args.resume_text]
+    if resume_text:
+        cmd = base + ["--resume", info["session_id"], resume_text]
     else:
         with open(os.path.join(d, "prompt.md"), encoding="utf-8") as f:
             cmd = base + ["--session-id", info["session_id"], f.read()]
     hooks.append_marker(d, {"kind": "turn", "turn": turn, "event": "start", "model": info["model"], "effort": info["effort"]})
     code = 1
     with open(os.path.join(d, "agent.log"), "a", encoding="utf-8") as log:
-        log.write("\n=== turn %d (%s) %s: %s / %s ===\n" % (turn, "finishing" if args.resume_text else "launch", now_stamp(),
+        log.write("\n=== turn %d (%s) %s: %s / %s ===\n" % (turn, "finishing" if resume_text else "launch", now_stamp(),
                                                          info["model"], info["effort"]))
         log.flush()
         try:
@@ -808,6 +830,9 @@ def do_resume(args):
             rj.setdefault("extensions", []).append({"at": now_stamp(), "by": args.by})
             limit += 1
         elif st["state"] == "escalated":
+            if args.run:
+                print("  refused: %s is escalated; --send needs --extend" % rj["id"])
+                sys.exit(2)
             continue
         if used >= limit:
             hooks.write_escalation(rj["run_dir"], rj, st["missing_detail"], "the finishing-turn budget (%d) is spent" % limit, {})
@@ -819,7 +844,11 @@ def do_resume(args):
                 os.replace(p, p + ".%s" % now_stamp())
         rj["finishing_turns"] = used + 1
         hooks.write_json(os.path.join(rj["run_dir"], "run.json"), rj)
-        pid = spawn(rj, ["--resume-text", text])
+        # The text goes through a file: a multi-line argument does not survive a schtasks .cmd line.
+        resume_file = os.path.join(rj["run_dir"], "resume-%d.txt" % (used + 1))
+        with open(resume_file, "w", encoding="utf-8") as f:
+            f.write(text)
+        pid = spawn(rj, ["--resume-file", resume_file])
         print("  issued: pid %s" % pid)
     if not any_row and not args.run:
         print("nothing to resume")
@@ -907,7 +936,7 @@ def main(argv=None):
 
     q = sub.add_parser("_supervise")
     q.add_argument("--run", required=True)
-    q.add_argument("--resume-text")
+    q.add_argument("--resume-file")
 
     args = p.parse_args(argv)
     if not args.verb:

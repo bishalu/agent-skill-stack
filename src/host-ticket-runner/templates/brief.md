@@ -19,7 +19,7 @@ $criteria_rule- a section headed "Review findings" listing what ce-code-review f
 
 ## What checks you
 
-A Stop hook reads the tool calls this run recorded, not what you write. It will not let the run end until it sees each skill above invoked, the test suite and the linters run after your last edit and exiting 0, the worktree clean, and an open PR for $branch whose head is your HEAD and whose body cites every criterion id and has the review heading. When it blocks, it lists what is missing; do exactly that. Run tests and linters as plain commands, not piped into `tail` or behind `|| true`, and in the foreground with a Bash timeout long enough for them: a run sent to the background has no exit code the hook can see, so it does not count.
+A Stop hook reads the tool calls this run recorded, not what you write. It will not let the run end until it sees each skill above invoked, the test suite and the linters run after your last edit and exiting 0, the worktree clean, and an open PR for $branch whose head is your HEAD and whose body cites every criterion id and has the review heading. When it blocks, it lists what is missing; do exactly that. Run the full test suite and linters as plain commands, not piped into `tail`, behind `|| true` or ended with `&`, and in the foreground with a Bash timeout long enough for them: a run sent to the background has no exit code the hook can see, and a subset (`-k`, a single test id, `--collect-only`) is not the suite, so neither counts.
 
 ## Tests are evidence
 

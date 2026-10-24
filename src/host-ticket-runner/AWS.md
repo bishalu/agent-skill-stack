@@ -7,12 +7,12 @@ A ticket agent never holds admin AWS access. It holds one provisioned, least-pri
 Every run's environment is rebuilt before `claude` starts:
 
 - **Scrubbed:** every variable whose name starts with `AWS_`, so the named keys (`AWS_PROFILE`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `AWS_ROLE_ARN`, `AWS_WEB_IDENTITY_TOKEN_FILE`, `AWS_SSO_*`, `AWS_CONTAINER_*`) go, and so do non-standard copies a shell profile may export (`AWS_SEC`, `AWS_ID`).
-- **Pointed at the runner's files:** `AWS_CONFIG_FILE=HTR_HOME/aws/config`, `AWS_SHARED_CREDENTIALS_FILE=HTR_HOME/aws/credentials`, `AWS_PROFILE=htr-agent`, `AWS_SDK_LOAD_CONFIG=1`, `AWS_EC2_METADATA_DISABLED=true`. Neither file references an SSO session, a `credential_process` or a role, so nothing in the real `~/.aws` (its SSO and CLI caches included) is ever consulted. Until a key is installed the credentials file holds an empty `[htr-agent]` profile, and every AWS call fails with "Unable to locate credentials".
-- **Denied:** a `PreToolUse` hook refuses any file tool or Bash command that names the real `~/.aws`. It matches text, so it stops the agent reaching for the host's keys by habit, not a determined one; the scrub above is what keeps them out by default.
+- **Pointed at the runner's files:** `AWS_CONFIG_FILE=HTR_HOME/aws/config`, `AWS_SHARED_CREDENTIALS_FILE=HTR_HOME/aws/credentials`, `AWS_PROFILE=htr-agent`, `AWS_SDK_LOAD_CONFIG=1`, `AWS_EC2_METADATA_DISABLED=true`. Neither file references an SSO session, a `credential_process` or a role, so while these variables are set nothing in the real `~/.aws` (its SSO and CLI caches included) is consulted. A process that runs without them (`env -i`, `unset AWS_CONFIG_FILE`, a tool that clears its own environment) falls back to the real `~/.aws`; the deny below catches the common spellings, not every one. Until a key is installed the credentials file holds an empty `[htr-agent]` profile, and every AWS call fails with "Unable to locate credentials".
+- **Denied:** a `PreToolUse` hook refuses any file tool or Bash command that reaches the real `~/.aws`: names it (any letter case), searches from a folder that holds it, or drops or repoints the runner's `AWS_*` variables (the full list is in `SKILL.md`). It matches text, so it stops the agent reaching for the host's keys by habit, not a determined one; the scrub above is what keeps them out by default.
 
 `HOME` is left alone: Claude Code reads its login and settings from it.
 
-Run `htr.py preflight --agent` to see this from inside a launched agent: it prints which `AWS_*` names the agent has, what `aws sts get-caller-identity` returns, and whether its `cat ~/.aws/credentials` was denied.
+Run `htr.py preflight --agent` to see this from inside a launched agent: it prints which `AWS_*` names the agent has, what `aws sts get-caller-identity` returns, and whether its readability check on `~/.aws/credentials` was denied (the probe never prints the file). Preflight fails when no deny was recorded.
 
 ## The principal (vibeset-dj)
 

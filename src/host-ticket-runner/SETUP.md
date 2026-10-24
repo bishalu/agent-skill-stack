@@ -16,6 +16,8 @@ The driver and its hooks are standard-library Python. Nothing is installed into 
 
 The skills the brief names (`ce-plan`, `ce-work`, `ce-simplify-code`, `ce-code-review`, `ce-compound`, `ce-commit-push-pr`) must be installed for the user the runner runs as; `scripts/install.sh` in this repository does that. A run whose agent cannot find one blocks at the Stop hook and escalates.
 
+Each ticket runs in a fresh worktree, so the target repo's tests and linters must pass from a clean checkout: gitignored inputs (a local database, a `.env`, a fixture fetched by hand) are not there. Check once with `git worktree add <scratch dir> origin/main` and the repo's gate before the first launch; a repo that fails it escalates every run.
+
 ## State
 
 `HTR_HOME` holds every run's record, worktree, clone and the agents' AWS files. It defaults to `~/.local/state/host-ticket-runner` on macOS and `%LOCALAPPDATA%\host-ticket-runner` on Windows; set it in the shell profile to move it. It is the only directory the runner writes outside the target repository's worktrees.
