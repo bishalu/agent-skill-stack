@@ -168,7 +168,8 @@ no relinking and no plugin reinstall, which is safe while a sandbox runs.
 upstream/        read-only git clones, never edited, never committed
 curation.json    what is included, what is excluded and why, every routing change
 overlay/         reserved for changes that cannot be expressed as frontmatter
-src/             the engineering-router skill and the CLAUDE.md snippet
+src/             locally authored skills (engineering-router, verify-site, design-transfer,
+                 milestone-supervisor, host-ticket-runner) and the CLAUDE.md and settings snippets
 build/           generated: vendored skills, plus a forked Trail of Bits marketplace
 eval/            corpus, held-out set, runner, fixture repo, results
 scripts/         sync, build, render-docs, install
