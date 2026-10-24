@@ -16,7 +16,7 @@ The standing rules tell the agent to run CE's loop the way `lfg` runs it, minus 
 1. `ce-plan` with the milestone section as the request. Pipeline runs always take the Durable contract: a plan file under the CE artifact root, grounded in `docs/solutions/` learnings and any declared Compound Pack, reviewed by `ce-doc-review`.
 2. `ce-work mode:return-to-caller <plan path>`: implementation and local verification, unit-scoped commits.
 3. `ce-simplify-code` on the branch diff.
-4. `ce-code-review mode:agent apply:local plan:<plan path>`: findings applied and committed; residual findings written into the report.
+4. `ce-code-review apply:local plan:<plan path>`: findings applied and committed; residual findings written into the report.
 5. `ce-compound mode:non-interactive` for each non-obvious lesson the milestone produced, so the next `ce-plan` reads it.
 6. `ce-commit` for what remains, the report last. `ce-handoff create` at the very end, so a follow-up turn or a fresh sandbox can resume.
 
