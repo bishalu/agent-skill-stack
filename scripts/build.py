@@ -243,6 +243,7 @@ LOCAL_META = {
     "verify-site":        dict(cls="ACTIVE",  domain="verification"),
     "design-transfer":    dict(cls="ACTIVE",  domain="design"),
     "milestone-supervisor": dict(cls="ACTIVE", domain="orchestration"),
+    "host-ticket-runner": dict(cls="MANUAL", domain="orchestration"),
 }
 
 

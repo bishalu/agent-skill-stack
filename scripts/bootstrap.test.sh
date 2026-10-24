@@ -93,6 +93,7 @@ bad = [
     (r"^Bash\(systemctl --user:\*\)$", "bare systemctl --user can start and edit units"),
     (r"^Bash\(agent-sandbox:\*\)$", "bare agent-sandbox includes rm, clean, build and config set"),
     (r"^(Edit|Write)\(.*skills/milestone-supervisor", "the driver's folder is code the driver rule runs"),
+    (r"^(Edit|Write)\(.*skills/host-ticket-runner", "htr.py and its hooks are code the runner rule runs"),
     (r"^(Edit|Write)\(.*\.milestones/(\*\*\)$|\*\*/\*|config)", ".milestones/config is shell the driver sources"),
 ]
 hits = [f"{rule}: {why}" for rule in allow for pat, why in bad if re.search(pat, rule)]
