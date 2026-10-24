@@ -73,6 +73,15 @@ EFFORTS = ("low", "medium", "high", "xhigh", "max")
 CRITERIA_HEADING = re.compile(r"^\s*(#{1,6}\s*|\*\*)\s*(acceptance criteria|acceptance|done when|definition of done|"
                               r"exit criteria|success criteria|criteria)\b[^\n]*$", re.IGNORECASE)
 LIFECYCLE = ["ce-work", "ce-simplify-code", "ce-code-review", "ce-compound", "tests", "lint", "ce-commit-push-pr", "pr"]
+# The steps each tier's lifecycle requires. Light drops the simplify pass and the learning
+# (a small change rarely teaches one) and asks for a quick review; heavy plans first, even
+# when the ticket has criteria. Every profile keeps a review, the full checks after the last
+# edit, and a PR that cites every criterion.
+PROFILES = {
+    "light": ["ce-work", "ce-code-review", "tests", "lint", "ce-commit-push-pr", "pr"],
+    "standard": LIFECYCLE,
+    "heavy": LIFECYCLE,
+}
 PLAN_PATH = "<the plan path ce-plan wrote>"
 DEFAULT_BUDGETS = hooks.DEFAULT_BUDGETS
 AWS_PROFILE = "htr-agent"
@@ -216,8 +225,11 @@ def resolve(ticket, args):
 
     text = (ticket.get("title") or "") + "\n" + body
     risk = sorted({m.group(0).lower() for m in RISK_RE.finditer(text)})
+    labelled = label_value(labels, "tier")
     if args.tier:
         tier, why = args.tier, "--tier %s" % args.tier
+    elif labelled in TIERS:
+        tier, why = labelled, "label tier:%s" % labelled
     elif labels & HEAVY_LABELS:
         tier, why = "heavy", "label %s" % ", ".join(sorted(labels & HEAVY_LABELS))
     elif labels & LIGHT_LABELS and route == "work":
@@ -230,20 +242,31 @@ def resolve(ticket, args):
         tier, why = "light", "small ticket (%d chars, %d criteria, no risk words)" % (len(body), len(criteria))
     else:
         tier, why = "standard", "default (%d chars, %d criteria%s)" % (len(body), len(criteria), ", thin" if route == "plan-first" else "")
-    model = args.model or TIERS[tier]["model"]
-    effort = args.effort or TIERS[tier]["effort"]
+    model = args.model or label_value(labels, "model") or TIERS[tier]["model"]
+    effort = args.effort or label_value(labels, "effort") or TIERS[tier]["effort"]
+    if tier == "heavy" and route == "work" and (getattr(args, "route", "auto") or "auto") == "auto":
+        route, route_why = "plan-first", "heavy tier: ce-plan first, against the %d criteria" % len(criteria)
     if not MODEL_OK.match(model):
         die("model %r is refused: launched agents run on Opus at most (haiku, sonnet, opus or a claude-haiku/sonnet/opus id)" % model,
             example="htr.py launch --repo %s --issue %s --model opus" % (args.repo, args.issue))
     if effort not in EFFORTS:
         die("effort %r is not one of %s" % (effort, ", ".join(EFFORTS)))
     return {"route": route, "route_why": route_why, "tier": tier, "tier_why": why, "model": model, "effort": effort,
+            "profile": tier,
             "criteria": criteria, "criteria_source": source, "labels": sorted(labels)}
 
 
-def required_steps(route, skip):
-    req = (["ce-plan"] if route == "plan-first" else []) + LIFECYCLE
+def required_steps(route, skip, profile="standard"):
+    req = (["ce-plan"] if route == "plan-first" else []) + PROFILES[profile]
     return [s for s in req if s not in skip]
+
+
+def label_value(labels, key):
+    """The value of a `key:value` label, the owner's or orchestrator's call for this ticket."""
+    for l in sorted(labels):
+        if l.startswith(key + ":"):
+            return l.split(":", 1)[1].strip()
+    return None
 
 
 def brief(ticket, res, run_info):
@@ -251,15 +274,25 @@ def brief(ticket, res, run_info):
     tf = run_info["ticket_file"]
     work_in = tf if res["route"] == "work" else PLAN_PATH
     steps = []
-    if res["route"] == "plan-first":
+    req = run_info["required"]
+    if res["route"] == "plan-first" and res["criteria"]:
+        steps.append("ce-plan with the ticket file %s as the request. The ticket's acceptance criteria are the contract: the "
+                     "plan breaks the work into units against them, grounded in docs/solutions/, and is committed." % tf)
+    elif res["route"] == "plan-first":
         steps.append("ce-plan with the ticket file %s as the request. The ticket has no acceptance criteria, so the plan "
                      "is where they get written: take the Durable contract, ground it in docs/solutions/, and commit the plan." % tf)
     steps.append("ce-work mode:return-to-caller %s: implementation and local verification, unit-scoped commits." % work_in)
-    steps.append("ce-simplify-code on the branch diff.")
-    steps.append("ce-code-review apply:local plan:%s: it applies the findings it verifies; commit them. Keep the residual "
-                 "findings for the PR body." % work_in)
-    steps.append("ce-compound mode:non-interactive depth:lightweight, invoked once. It writes a learning only when the "
-                 "ticket produced a non-obvious one; ending \"Documentation skipped\" is fine.")
+    if "ce-simplify-code" in req:
+        steps.append("ce-simplify-code on the branch diff.")
+    if res.get("profile") != "light":
+        steps.append("ce-code-review apply:local plan:%s: it applies the findings it verifies; commit them. Keep the residual "
+                     "findings for the PR body." % work_in)
+    else:
+        steps.append("ce-code-review quick apply:local plan:%s: a quick review of a small change (one reviewer, not the "
+                     "multi-agent pass); commit what it applies and keep the residuals for the PR body." % work_in)
+    if "ce-compound" in req:
+        steps.append("ce-compound mode:non-interactive depth:lightweight, invoked once. It writes a learning only when the "
+                     "ticket produced a non-obvious one; ending \"Documentation skipped\" is fine.")
     t = " and ".join(name for step, name in (("tests", "the full test suite"), ("lint", "the linters"))
                      if step in run_info["required"])
     if t:
@@ -636,6 +669,7 @@ def do_route(args):
     print("tier:     %s (%s)" % (res["tier"], res["tier_why"]))
     print("model:    %s" % res["model"])
     print("effort:   %s" % res["effort"])
+    print("steps:    %s" % ", ".join(required_steps(res["route"], getattr(args, "skip_step", None) or [], res["profile"])))
     for c in res["criteria"]:
         print("  %s: %s" % (c["id"], c["text"]))
     return 0
@@ -653,7 +687,7 @@ def do_prompt(args):
     ticket, res = plan_launch(args)
     rid = run_id(args.repo, args.issue, "PREVIEW")
     info = {"repo": args.repo, "branch": branch_name(args.issue, ticket), "base": args.base or "<default branch>",
-            "ticket_file": os.path.join(runs_dir(), rid, "ticket.md"), "required": required_steps(res["route"], args.skip_step or [])}
+            "ticket_file": os.path.join(runs_dir(), rid, "ticket.md"), "required": required_steps(res["route"], args.skip_step or [], res["profile"])}
     print(brief(ticket, res, info))
     return 0
 
@@ -691,7 +725,7 @@ def do_launch(args):
     skip = args.skip_step or []
     info = {"id": rid, "run_dir": run_dir, "repo": args.repo, "issue": ticket["number"], "title": ticket.get("title"),
             "url": ticket.get("url"), "checkout": checkout, "worktree": worktree, "branch": branch, "base": base,
-            "ticket_file": os.path.join(run_dir, "ticket.md"), "required": required_steps(res["route"], skip),
+            "ticket_file": os.path.join(run_dir, "ticket.md"), "required": required_steps(res["route"], skip, res["profile"]),
             "skipped": skip, "session_id": str(uuid.uuid4()), "detach": args.detach, "aws_profile": AWS_PROFILE,
             "real_aws_dirs": [real_aws_dir()],
             "budgets": {"stop_blocks": args.max_stop_blocks, "stalled_blocks": DEFAULT_BUDGETS["stalled_blocks"],
