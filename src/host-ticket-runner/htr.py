@@ -73,7 +73,7 @@ EFFORTS = ("low", "medium", "high", "xhigh", "max")
 CRITERIA_HEADING = re.compile(r"^\s*(#{1,6}\s*|\*\*)\s*(acceptance criteria|acceptance|done when|definition of done|"
                               r"exit criteria|success criteria|criteria)\b[^\n]*$", re.IGNORECASE)
 LIFECYCLE = ["ce-work", "ce-simplify-code", "ce-code-review", "tests", "lint", "ce-compound", "ce-commit-push-pr", "pr"]
-DEFAULT_BUDGETS = {"stop_blocks": 8, "stalled_blocks": 2, "finishing_turns": 2}
+DEFAULT_BUDGETS = hooks.DEFAULT_BUDGETS
 AWS_PROFILE = "htr-agent"
 # Ambient variables the agent must not inherit. Every AWS_* goes (named keys and the
 # non-standard copies people keep, like AWS_SEC); the parent Claude session's own wiring
@@ -257,8 +257,8 @@ def brief(ticket, res, run_info):
     steps.append("ce-simplify-code on the branch diff.")
     steps.append("ce-code-review apply:local plan:%s: it applies the findings it verifies; commit them. Keep the residual "
                  "findings for the PR body." % work_in)
-    t = "the full test suite and the linters" if "tests" in run_info["required"] and "lint" in run_info["required"] else (
-        "the full test suite" if "tests" in run_info["required"] else ("the linters" if "lint" in run_info["required"] else ""))
+    t = " and ".join(name for step, name in (("tests", "the full test suite"), ("lint", "the linters"))
+                     if step in run_info["required"])
     if t:
         steps.append("Run %s (find them in the justfile, Makefile, package.json or pyproject.toml), after your last edit, "
                      "and get them green." % t)
@@ -273,7 +273,8 @@ def brief(ticket, res, run_info):
                 + "  Cite the ids rather than restating the criteria; the runner's record (acceptance.json) is the one copy of them;\n")
     else:
         rule = "- the acceptance criteria your plan wrote, each with how you verified it;\n"
-    tpl = string.Template(open(os.path.join(HERE, "templates", "brief.md"), encoding="utf-8").read())
+    with open(os.path.join(HERE, "templates", "brief.md"), encoding="utf-8") as f:
+        tpl = string.Template(f.read())
     return tpl.safe_substitute(repo=run_info["repo"], issue=issue, ticket_file=tf, branch=run_info["branch"],
                                base=run_info["base"], steps=steps_text, criteria_rule=rule, aws_profile=AWS_PROFILE,
                                title=ticket.get("title") or "", body=(ticket.get("body") or "").strip())
@@ -282,6 +283,10 @@ def brief(ticket, res, run_info):
 # ---------------------------------------------------------------- AWS
 def aws_dir():
     return os.path.join(htr_home(), "aws")
+
+
+def real_aws_dir():
+    return os.path.join(os.path.expanduser("~"), ".aws")
 
 
 def ensure_aws_files():
@@ -309,7 +314,8 @@ def ensure_aws_files():
 
 def aws_state():
     _, cred = ensure_aws_files()
-    text = open(cred, encoding="utf-8").read()
+    with open(cred, encoding="utf-8") as f:
+        text = f.read()
     m = re.search(r"aws_access_key_id\s*=\s*(\S+)", text)
     return ("provisioned key %s...%s" % (m.group(1)[:4], m.group(1)[-4:])) if m else "placeholder (no key: AWS calls fail)"
 
@@ -379,7 +385,7 @@ def do_preflight(args, quiet=False):
         line(r.returncode == 0, tool, (r.stdout or r.stderr).strip().splitlines()[0] if (r.stdout or r.stderr).strip() else path)
     if shutil.which("gh"):
         r = subprocess.run(["gh", "auth", "status"], capture_output=True, text=True)
-        line(r.returncode == 0, "gh auth", "logged in" if r.returncode == 0 else (r.stderr or r.stdout).strip().splitlines()[-1:])
+        line(r.returncode == 0, "gh auth", "logged in" if r.returncode == 0 else ((r.stderr or r.stdout).strip().splitlines() or ["not logged in"])[-1])
     line(True, "aws profile", "%s: %s" % (AWS_PROFILE, aws_state()))
     amb = sorted(k for k in os.environ if k.upper().startswith("AWS_"))
     line(True, "ambient AWS env", ("%s (scrubbed from every run)" % ", ".join(amb)) if amb else "none")
@@ -402,7 +408,7 @@ def agent_probe(args):
     d = os.path.join(home, "runs", "preflight-%s" % now_stamp())
     os.makedirs(d)
     info = {"id": os.path.basename(d), "run_dir": d, "repo": "-", "branch": "-", "worktree": d, "required": [],
-            "aws_profile": AWS_PROFILE, "real_aws_dirs": [os.path.join(os.path.expanduser("~"), ".aws")]}
+            "aws_profile": AWS_PROFILE, "real_aws_dirs": [real_aws_dir()]}
     hooks.write_json(os.path.join(d, "run.json"), info)
     hooks.write_json(os.path.join(d, "settings.json"), settings_for(d, stop=False))
     prompt = ("Run these as separate Bash calls and report each output verbatim, then stop: "
@@ -410,7 +416,8 @@ def agent_probe(args):
     cmd = ["claude", "-p", prompt, "--model", "haiku", "--dangerously-skip-permissions", "--settings",
            os.path.join(d, "settings.json"), "--output-format", "text"]
     r = subprocess.run(cmd, cwd=d, env=agent_env(info), capture_output=True, text=True, timeout=600)
-    open(os.path.join(d, "agent.log"), "w").write(r.stdout + r.stderr)
+    with open(os.path.join(d, "agent.log"), "w") as f:
+        f.write(r.stdout + r.stderr)
     print("\n--- launched-agent AWS probe (%s) ---\n%s" % (d, r.stdout.strip()))
     denies = [m for m in hooks.read_markers(d) if m.get("kind") == "aws-deny"]
     print("--- PreToolUse denies recorded: %d" % len(denies))
@@ -597,10 +604,18 @@ def do_route(args):
     return 0
 
 
+def run_id(repo, issue, stamp):
+    return "%s-%s-%s" % (repo.replace("/", "-"), issue, stamp)
+
+
+def branch_name(issue, ticket):
+    return "htr/%s-%s" % (issue, slug(ticket.get("title") or ""))
+
+
 def do_prompt(args):
     ticket, res = plan_launch(args)
-    rid = "%s-%s-%s" % (args.repo.replace("/", "-"), args.issue, "PREVIEW")
-    info = {"repo": args.repo, "branch": "htr/%s-%s" % (args.issue, slug(ticket.get("title") or "")), "base": args.base or "<default branch>",
+    rid = run_id(args.repo, args.issue, "PREVIEW")
+    info = {"repo": args.repo, "branch": branch_name(args.issue, ticket), "base": args.base or "<default branch>",
             "ticket_file": os.path.join(runs_dir(), rid, "ticket.md"), "required": required_steps(res["route"], args.skip_step or [])}
     print(brief(ticket, res, info))
     return 0
@@ -619,17 +634,13 @@ def do_launch(args):
         return 0
 
     checkout = resolve_checkout(args.repo, args.checkout)
-    base = args.base
-    if not base:
-        if os.environ.get("HTR_FAKE_ISSUE"):
-            base = "main"
-        else:
-            base = run(["gh", "repo", "view", args.repo, "--json", "defaultBranchRef", "-q", ".defaultBranchRef.name"]).stdout.strip() or "main"
-    rid = "%s-%s-%s" % (args.repo.replace("/", "-"), args.issue, now_stamp())
+    base = args.base or run(["gh", "repo", "view", args.repo, "--json", "defaultBranchRef", "-q",
+                             ".defaultBranchRef.name"]).stdout.strip() or "main"
+    rid = run_id(args.repo, args.issue, now_stamp())
     home = htr_home()
     run_dir = os.path.join(home, "runs", rid)
     worktree = os.path.join(home, "worktrees", rid)
-    branch = "htr/%s-%s" % (args.issue, slug(ticket.get("title") or ""))
+    branch = branch_name(args.issue, ticket)
     if subprocess.run(["git", "-C", checkout, "rev-parse", "--verify", "-q", "refs/heads/" + branch], capture_output=True).returncode == 0:
         branch += "-" + now_stamp()
     skip = args.skip_step or []
@@ -637,7 +648,7 @@ def do_launch(args):
             "url": ticket.get("url"), "checkout": checkout, "worktree": worktree, "branch": branch, "base": base,
             "ticket_file": os.path.join(run_dir, "ticket.md"), "required": required_steps(res["route"], skip),
             "skipped": skip, "session_id": str(uuid.uuid4()), "detach": args.detach, "aws_profile": AWS_PROFILE,
-            "real_aws_dirs": [os.path.join(os.path.expanduser("~"), ".aws")],
+            "real_aws_dirs": [real_aws_dir()],
             "budgets": {"stop_blocks": args.max_stop_blocks, "stalled_blocks": DEFAULT_BUDGETS["stalled_blocks"],
                         "finishing_turns": args.max_finishing_turns},
             "test_regex": args.test_regex, "lint_regex": args.lint_regex, "launched_at": now_stamp(),
@@ -683,7 +694,6 @@ def spawn(info, extra):
     """Start `_supervise` so it outlives this process and the session that ran it."""
     d = info["run_dir"]
     argv = [sys.executable, SELF, "_supervise", "--run", d] + extra
-    sup_log = open(os.path.join(d, "supervisor.log"), "a")
     mode = info.get("detach", "process")
     if mode == "launchd":
         if not IS_MAC:
@@ -714,15 +724,16 @@ def spawn(info, extra):
         info["schtask"] = name
         hooks.write_json(os.path.join(d, "run.json"), info)
         return "schtasks:" + name
-    kw = {"stdin": subprocess.DEVNULL, "stdout": sup_log, "stderr": subprocess.STDOUT, "cwd": info["worktree"], "close_fds": True}
-    if IS_WIN:
-        flags = 0x00000008 | 0x00000200   # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
-        try:
-            p = subprocess.Popen(argv, creationflags=flags | 0x01000000, **kw)   # | CREATE_BREAKAWAY_FROM_JOB
-        except OSError:
-            p = subprocess.Popen(argv, creationflags=flags, **kw)   # the parent's job forbids breakaway
-    else:
-        p = subprocess.Popen(argv, start_new_session=True, **kw)
+    with open(os.path.join(d, "supervisor.log"), "a") as sup_log:
+        kw = {"stdin": subprocess.DEVNULL, "stdout": sup_log, "stderr": subprocess.STDOUT, "cwd": info["worktree"], "close_fds": True}
+        if IS_WIN:
+            flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+            try:
+                p = subprocess.Popen(argv, creationflags=flags | subprocess.CREATE_BREAKAWAY_FROM_JOB, **kw)
+            except OSError:
+                p = subprocess.Popen(argv, creationflags=flags, **kw)   # the parent's job forbids breakaway
+        else:
+            p = subprocess.Popen(argv, start_new_session=True, **kw)
     return p.pid
 
 
@@ -738,7 +749,8 @@ def do_supervise(args):
     if args.resume_text:
         cmd = base + ["--resume", info["session_id"], args.resume_text]
     else:
-        cmd = base + ["--session-id", info["session_id"], open(os.path.join(d, "prompt.md"), encoding="utf-8").read()]
+        with open(os.path.join(d, "prompt.md"), encoding="utf-8") as f:
+            cmd = base + ["--session-id", info["session_id"], f.read()]
     hooks.append_marker(d, {"kind": "turn", "turn": turn, "event": "start", "model": info["model"], "effort": info["effort"]})
     code = 1
     with open(os.path.join(d, "agent.log"), "a", encoding="utf-8") as log:
@@ -867,8 +879,8 @@ def main(argv=None):
     q.add_argument("--skip-step", action="append", choices=["tests", "lint"], help="a step the Stop hook does not require (repeatable)")
     q.add_argument("--test-regex", help="replace the pattern a Bash command must start with to count as a test run")
     q.add_argument("--lint-regex", help="replace the pattern a Bash command must start with to count as a lint run")
-    q.add_argument("--max-stop-blocks", type=int, default=DEFAULT_BUDGETS["stop_blocks"], help="Stop-hook blocks before it escalates (default 8)")
-    q.add_argument("--max-finishing-turns", type=int, default=DEFAULT_BUDGETS["finishing_turns"], help="resume turns before escalation (default 2)")
+    q.add_argument("--max-stop-blocks", type=int, default=DEFAULT_BUDGETS["stop_blocks"], help="Stop-hook blocks before it escalates (default %d)" % DEFAULT_BUDGETS["stop_blocks"])
+    q.add_argument("--max-finishing-turns", type=int, default=DEFAULT_BUDGETS["finishing_turns"], help="resume turns before escalation (default %d)" % DEFAULT_BUDGETS["finishing_turns"])
     q.add_argument("--again", action="store_true", help="launch even when a run of this issue is running or complete")
     q.add_argument("--allow-closed", action="store_true", help="launch a closed issue")
     q.add_argument("--dry-run", action="store_true", help="resolve everything and print the run record; create and launch nothing")

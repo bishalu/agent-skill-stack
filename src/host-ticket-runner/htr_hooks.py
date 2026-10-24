@@ -37,6 +37,8 @@ LINT_RE = (r"((uv|poetry|pipenv|hatch|pdm) run +)?(python3? +-m +)?(ruff|flake8|
            r"|eslint\b|tsc\b|prettier +--check|shellcheck\b|golangci-lint\b|cargo +clippy\b|(just|make|task) +(lint|gate|check)[\w:-]*"
            r"|terraform +(fmt +-check|validate)\b|actionlint\b|markdownlint\b|python3? +\S*check-doc-\S+\.py\b")
 EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
+SEP = r"&&|\|\||;|\||\n"
+DEFAULT_BUDGETS = {"stop_blocks": 8, "stalled_blocks": 2, "finishing_turns": 2}
 LEAD_RE = re.compile(r"^(\s*(\w+=\S*|cd +\S+ *&&|time|env|command|exec|sudo +-E)\s+)*")
 
 # The skills the lifecycle needs, by the name after any plugin namespace.
@@ -113,7 +115,7 @@ def skill_name(raw):
 
 
 def segments(command):
-    return [s.strip() for s in re.split(r"&&|\|\||;|\||\n", command or "") if s.strip()]
+    return [s.strip() for s in re.split(SEP, command or "") if s.strip()]
 
 
 def classify(command, test_re=TEST_RE, lint_re=LINT_RE):
@@ -134,7 +136,7 @@ def masked(command, kind=None, test_re=TEST_RE, lint_re=LINT_RE):
     The exit code is that segment's own only when everything after it is chained with
     `&&`: a `;`, a newline, a pipe or `||` after it (`pytest; echo $?`, `ruff | tail`,
     `pytest || true`) hands the exit code to something else."""
-    parts = re.split(r"(&&|\|\||;|\||\n)", command or "")
+    parts = re.split("(%s)" % SEP, command or "")
     segs, seps = parts[0::2], parts[1::2]
     last = None
     for i, seg in enumerate(segs):
@@ -197,8 +199,6 @@ def touches_real_aws(payload, run):
     """The reason this tool call reaches into the real ~/.aws, or None."""
     tool = payload.get("tool_name") or ""
     ti = payload.get("tool_input") or {}
-    cwd = payload.get("cwd") or os.getcwd()
-    dirs = real_aws_dirs(run)
     if tool == "Bash":
         cmd = str(ti.get("command") or "")
         home = re.escape(os.path.expanduser("~").replace("\\", "/"))
@@ -208,6 +208,8 @@ def touches_real_aws(payload, run):
             if re.search(p, cmd.replace("\\\\", "\\"), re.IGNORECASE):
                 return "the command names the real ~/.aws"
         return None
+    cwd = payload.get("cwd") or os.getcwd()
+    dirs = real_aws_dirs(run)
     for key in ("file_path", "path", "notebook_path", "pattern"):
         v = ti.get(key)
         if not v or not isinstance(v, str):
@@ -312,12 +314,12 @@ def evaluate(run_dir, run=None, markers=None, check_pr=True):
         miss("ce-commit-push-pr", "the last ce-code-review came after the last ce-commit-push-pr; ship the reviewed change")
 
     edit_last = last_index(markers, lambda m: m.get("kind") == "edit" and _inside(m.get("path"), worktree))
-    for step, rx in (("tests", test_re), ("lint", lint_re)):
+    for step, kind in (("tests", "test"), ("lint", "lint")):
         if step not in required:
             continue
-        runs = [(i, m) for i, m in enumerate(markers) if m.get("kind") == "bash" and step[:4] in classify(m.get("command"), test_re, lint_re)]
+        runs = [(i, m) for i, m in enumerate(markers) if m.get("kind") == "bash" and kind in classify(m.get("command"), test_re, lint_re)]
         if not runs:
-            miss(step, "no %s command is recorded" % ("test" if step == "tests" else "lint"))
+            miss(step, "no %s command is recorded" % kind)
             continue
         i, m = runs[-1]
         if m.get("background"):
@@ -325,7 +327,7 @@ def evaluate(run_dir, run=None, markers=None, check_pr=True):
                        "(a longer Bash timeout, not run_in_background): %s" % (step, m.get("command", "")[:160]))
         elif m.get("exit") != 0:
             miss(step, "the last %s run exited %s: %s" % (step, m.get("exit"), m.get("command", "")[:160]))
-        elif masked(m.get("command"), step[:4], test_re, lint_re):
+        elif masked(m.get("command"), kind, test_re, lint_re):
             miss(step, "the last %s run masks its exit code (%s); run it plainly" % (step, m.get("command", "")[:160]))
         elif i < edit_last:
             miss(step, "files changed after the last passing %s run; run it again" % step)
@@ -336,7 +338,7 @@ def evaluate(run_dir, run=None, markers=None, check_pr=True):
     if "pr" in required and check_pr:
         problems = []
         code, head, err = git(worktree, "rev-parse", "HEAD")
-        code2, dirt, _ = git(worktree, "status", "--porcelain", "--untracked-files=normal")
+        _, dirt, _ = git(worktree, "status", "--porcelain", "--untracked-files=normal")
         if code != 0:
             problems.append("cannot read the worktree HEAD: %s" % err)
         elif dirt:
@@ -384,8 +386,8 @@ def stop_decision(run_dir, payload, run=None, markers=None, ev=None):
     missing = ev["missing"]
     active = bool(payload.get("stop_hook_active"))
     budget = run.get("budgets") or {}
-    max_blocks = int(budget.get("stop_blocks", 8))
-    max_stall = int(budget.get("stalled_blocks", 2))
+    max_blocks = int(budget.get("stop_blocks", DEFAULT_BUDGETS["stop_blocks"]))
+    max_stall = int(budget.get("stalled_blocks", DEFAULT_BUDGETS["stalled_blocks"]))
     keys = sorted("%s: %s" % (m["step"], m["why"]) for m in missing)
 
     if not missing:
@@ -397,7 +399,7 @@ def stop_decision(run_dir, payload, run=None, markers=None, ev=None):
     # same steps missing and no tool call recorded in between.
     stalled = 0
     if active and blocks:
-        last_block = max(i for i, m in enumerate(markers) if m.get("kind") == "stop" and m.get("decision") == "block")
+        last_block = last_index(markers, lambda m: m.get("kind") == "stop" and m.get("decision") == "block")
         progressed = any(m.get("kind") in ("skill", "bash", "edit") for m in markers[last_block + 1:])
         prev = markers[last_block]
         stalled = 0 if progressed or prev.get("missing") != keys else int(prev.get("stalled", 0)) + 1

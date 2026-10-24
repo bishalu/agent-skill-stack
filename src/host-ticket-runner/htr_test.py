@@ -11,7 +11,6 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import textwrap
 import time
 import unittest
 
@@ -142,7 +141,6 @@ class Classify(unittest.TestCase):
         self.assertTrue(hooks.masked("uv run pytest | tail -5"))
         self.assertTrue(hooks.masked("pytest || true"))
         self.assertFalse(hooks.masked("uv run pytest -q && uv run ruff check"))
-        # Seen in the first live run: the trailing echo owns the exit code.
         self.assertTrue(hooks.masked('uv run ruff check . ; echo "ruff exit $?"', "lint"))
         self.assertTrue(hooks.masked("pytest; true", "test"))
         self.assertTrue(hooks.masked("pytest\necho done", "test"))
@@ -411,7 +409,8 @@ class Launch(unittest.TestCase):
 
     def htr(self, *a, **kw):
         env = dict(self.env, **kw.pop("env", {}))
-        return subprocess.run([PY, HTR] + list(a), capture_output=True, text=True, env=env, cwd=self.t)
+        return subprocess.run([PY, HTR] + list(a), capture_output=True, text=True, env=env, cwd=self.t,
+                              stdin=subprocess.DEVNULL)
 
     def wait_exit(self, run_dir, n=1):
         for _ in range(200):
