@@ -73,15 +73,17 @@ EFFORTS = ("low", "medium", "high", "xhigh", "max")
 CRITERIA_HEADING = re.compile(r"^\s*(#{1,6}\s*|\*\*)\s*(acceptance criteria|acceptance|done when|definition of done|"
                               r"exit criteria|success criteria|criteria)\b[^\n]*$", re.IGNORECASE)
 LIFECYCLE = ["ce-work", "ce-simplify-code", "ce-code-review", "ce-compound", "tests", "lint", "ce-commit-push-pr", "pr"]
-# The steps each tier's lifecycle requires. Light drops the simplify pass and the learning
-# (a small change rarely teaches one) and asks for a quick review; heavy plans first, even
-# when the ticket has criteria. Every profile keeps a review, the full checks after the last
-# edit, and a PR that cites every criterion.
-PROFILES = {
-    "light": ["ce-work", "ce-code-review", "tests", "lint", "ce-commit-push-pr", "pr"],
-    "standard": LIFECYCLE,
-    "heavy": LIFECYCLE,
+# How much of the Compound Engineering cycle a run is held to, chosen per ticket apart from
+# its model and effort. none: implement directly, then the checks and the PR. lean: ce-work,
+# a quick ce-code-review, the checks, the PR. full: the whole cycle. Every cycle keeps the
+# full checks after the last edit and a PR that cites every criterion; ce-plan is added only
+# for a ticket with no criteria (or a plan:first label).
+CYCLES = {
+    "none": ["tests", "lint", "pr"],
+    "lean": ["ce-work", "ce-code-review", "tests", "lint", "ce-commit-push-pr", "pr"],
+    "full": LIFECYCLE,
 }
+TIER_CYCLE = {"light": "lean", "standard": "full", "heavy": "full"}
 PLAN_PATH = "<the plan path ce-plan wrote>"
 DEFAULT_BUDGETS = hooks.DEFAULT_BUDGETS
 AWS_PROFILE = "htr-agent"
@@ -244,20 +246,23 @@ def resolve(ticket, args):
         tier, why = "standard", "default (%d chars, %d criteria%s)" % (len(body), len(criteria), ", thin" if route == "plan-first" else "")
     model = args.model or label_value(labels, "model") or TIERS[tier]["model"]
     effort = args.effort or label_value(labels, "effort") or TIERS[tier]["effort"]
-    if tier == "heavy" and route == "work" and (getattr(args, "route", "auto") or "auto") == "auto":
-        route, route_why = "plan-first", "heavy tier: ce-plan first, against the %d criteria" % len(criteria)
+    cycle = getattr(args, "cycle", None) or label_value(labels, "cycle") or TIER_CYCLE[tier]
+    if cycle not in CYCLES:
+        die("cycle %r is not one of %s" % (cycle, ", ".join(CYCLES)))
+    if label_value(labels, "plan") == "first" and route == "work" and (getattr(args, "route", "auto") or "auto") == "auto":
+        route, route_why = "plan-first", "label plan:first: ce-plan first, against the %d criteria" % len(criteria)
     if not MODEL_OK.match(model):
         die("model %r is refused: launched agents run on Opus at most (haiku, sonnet, opus or a claude-haiku/sonnet/opus id)" % model,
             example="htr.py launch --repo %s --issue %s --model opus" % (args.repo, args.issue))
     if effort not in EFFORTS:
         die("effort %r is not one of %s" % (effort, ", ".join(EFFORTS)))
     return {"route": route, "route_why": route_why, "tier": tier, "tier_why": why, "model": model, "effort": effort,
-            "profile": tier,
+            "cycle": cycle,
             "criteria": criteria, "criteria_source": source, "labels": sorted(labels)}
 
 
-def required_steps(route, skip, profile="standard"):
-    req = (["ce-plan"] if route == "plan-first" else []) + PROFILES[profile]
+def required_steps(route, skip, cycle="full"):
+    req = (["ce-plan"] if route == "plan-first" else []) + CYCLES[cycle]
     return [s for s in req if s not in skip]
 
 
@@ -281,13 +286,18 @@ def brief(ticket, res, run_info):
     elif res["route"] == "plan-first":
         steps.append("ce-plan with the ticket file %s as the request. The ticket has no acceptance criteria, so the plan "
                      "is where they get written: take the Durable contract, ground it in docs/solutions/, and commit the plan." % tf)
-    steps.append("ce-work mode:return-to-caller %s: implementation and local verification, unit-scoped commits." % work_in)
+    if "ce-work" in req:
+        steps.append("ce-work mode:return-to-caller %s: implementation and local verification, unit-scoped commits." % work_in)
+    else:
+        steps.append("Implement the ticket directly from %s, without the Compound Engineering skills: read the code it touches, "
+                     "make the change, verify it locally, and commit in small units. Then reread your own diff against each "
+                     "criterion as its review." % work_in)
     if "ce-simplify-code" in req:
         steps.append("ce-simplify-code on the branch diff.")
-    if res.get("profile") != "light":
+    if res.get("cycle") == "full":
         steps.append("ce-code-review apply:local plan:%s: it applies the findings it verifies; commit them. Keep the residual "
                      "findings for the PR body." % work_in)
-    else:
+    elif "ce-code-review" in req:
         steps.append("ce-code-review quick apply:local plan:%s: a quick review of a small change (one reviewer, not the "
                      "multi-agent pass); commit what it applies and keep the residuals for the PR body." % work_in)
     if "ce-compound" in req:
@@ -298,8 +308,13 @@ def brief(ticket, res, run_info):
     if t:
         steps.append("Run %s (find them in the justfile, Makefile, package.json or pyproject.toml), after your last edit "
                      "(ce-compound's included), and get them green." % t)
-    steps.append("ce-commit-push-pr mode:pipeline babysit:off: commit what remains, push %s and open the PR against %s." % (
-        run_info["branch"], run_info["base"]))
+    if "ce-commit-push-pr" in req:
+        steps.append("ce-commit-push-pr mode:pipeline babysit:off: commit what remains, push %s and open the PR against %s." % (
+            run_info["branch"], run_info["base"]))
+    else:
+        steps.append("Commit what remains, push %s and open the PR against %s with `gh pr create`. Its body cites every "
+                     "criterion id with how you verified it, and has a \"Review findings\" heading for your self-review." % (
+                         run_info["branch"], run_info["base"]))
     steps_text = "\n".join("%d. %s" % (i + 1, s) for i, s in enumerate(steps))
     if res["criteria"]:
         crit = "".join("  %s: %s\n" % (c["id"], c["text"]) for c in res["criteria"])
@@ -309,9 +324,21 @@ def brief(ticket, res, run_info):
         rule = "- the acceptance criteria your plan wrote, each with how you verified it;\n"
     with open(os.path.join(HERE, "templates", "brief.md"), encoding="utf-8") as f:
         tpl = string.Template(f.read())
-    return tpl.safe_substitute(repo=run_info["repo"], issue=issue, ticket_file=tf, branch=run_info["branch"],
+    text = tpl.safe_substitute(repo=run_info["repo"], issue=issue, ticket_file=tf, branch=run_info["branch"],
                                base=run_info["base"], steps=steps_text, criteria_rule=rule, aws_profile=AWS_PROFILE,
                                port_base=run_info.get("port_base", ""), title=ticket.get("title") or "", body=(ticket.get("body") or "").strip())
+    req = run_info["required"]
+    if "ce-compound" not in req:
+        text = text.replace(" (ce-compound's included)", "")
+    if "ce-commit-push-pr" not in req:
+        text = text.replace("ce-commit-push-pr writes it; make sure it holds:", "Make sure it holds:")
+    if "ce-code-review" not in req:
+        text = text.replace("listing what ce-code-review found, which findings you applied",
+                            "listing what your self-review found, what you changed")
+    if "ce-work" not in req:
+        text = text.replace(" through the Compound Engineering lifecycle, hands-off", ", hands-off")
+        text = re.sub(r" Resolve each skill name against the available-skills list[^\n]*?ce-work\)\.", "", text)
+    return text
 
 
 # ---------------------------------------------------------------- AWS
@@ -646,6 +673,7 @@ def common_args(p):
     p.add_argument("--tier", choices=sorted(TIERS), help="override the routing table's tier")
     p.add_argument("--model", help="override the tier's model (Opus at most: haiku, sonnet, opus or a claude-* id)")
     p.add_argument("--effort", help="override the tier's effort (%s)" % ", ".join(EFFORTS))
+    p.add_argument("--cycle", choices=sorted(CYCLES), help="override how much of the CE cycle the run is held to (none, lean, full)")
     p.add_argument("--route", choices=["auto", "work", "plan-first"], default="auto",
                    help="auto: ce-work when the ticket has acceptance criteria, ce-plan first when it has none")
     p.add_argument("--json", action="store_true", help="print JSON")
@@ -669,7 +697,7 @@ def do_route(args):
     print("tier:     %s (%s)" % (res["tier"], res["tier_why"]))
     print("model:    %s" % res["model"])
     print("effort:   %s" % res["effort"])
-    print("steps:    %s" % ", ".join(required_steps(res["route"], getattr(args, "skip_step", None) or [], res["profile"])))
+    print("steps:    %s" % ", ".join(required_steps(res["route"], getattr(args, "skip_step", None) or [], res["cycle"])))
     for c in res["criteria"]:
         print("  %s: %s" % (c["id"], c["text"]))
     return 0
@@ -687,7 +715,7 @@ def do_prompt(args):
     ticket, res = plan_launch(args)
     rid = run_id(args.repo, args.issue, "PREVIEW")
     info = {"repo": args.repo, "branch": branch_name(args.issue, ticket), "base": args.base or "<default branch>",
-            "ticket_file": os.path.join(runs_dir(), rid, "ticket.md"), "required": required_steps(res["route"], args.skip_step or [], res["profile"])}
+            "ticket_file": os.path.join(runs_dir(), rid, "ticket.md"), "required": required_steps(res["route"], args.skip_step or [], res["cycle"])}
     print(brief(ticket, res, info))
     return 0
 
@@ -725,7 +753,7 @@ def do_launch(args):
     skip = args.skip_step or []
     info = {"id": rid, "run_dir": run_dir, "repo": args.repo, "issue": ticket["number"], "title": ticket.get("title"),
             "url": ticket.get("url"), "checkout": checkout, "worktree": worktree, "branch": branch, "base": base,
-            "ticket_file": os.path.join(run_dir, "ticket.md"), "required": required_steps(res["route"], skip, res["profile"]),
+            "ticket_file": os.path.join(run_dir, "ticket.md"), "required": required_steps(res["route"], skip, res["cycle"]),
             "skipped": skip, "session_id": str(uuid.uuid4()), "detach": args.detach, "aws_profile": AWS_PROFILE,
             "real_aws_dirs": [real_aws_dir()],
             "budgets": {"stop_blocks": args.max_stop_blocks, "stalled_blocks": DEFAULT_BUDGETS["stalled_blocks"],
