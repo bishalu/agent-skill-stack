@@ -396,10 +396,14 @@ def agent_env(run_info):
                 "HTR_RUN_DIR": run_info["run_dir"], "HTR_RUN_ID": run_info["id"]})
     if run_info.get("port_base"):
         env["HTR_PORT_BASE"] = str(run_info["port_base"])
+    env["BASH_MAX_TIMEOUT_MS"] = str(BASH_MAX_TIMEOUT_MS)
     return env
 
 
 PORT_FIRST, PORT_BLOCK, PORT_BLOCKS = 20000, 100, 40
+# A repo gate with parallel runs on the same machine outlasts Bash's 10-minute foreground cap,
+# and the Stop hook only accepts a foreground run.
+BASH_MAX_TIMEOUT_MS = 45 * 60 * 1000
 
 
 def free_port_base():
