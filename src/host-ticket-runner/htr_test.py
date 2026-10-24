@@ -511,8 +511,9 @@ class Launch(unittest.TestCase):
         call = self.calls()[0]
         argv, env = call["argv"], call["env"]
         self.assertEqual(os.path.realpath(call["cwd"]), os.path.realpath(out["worktree"]))
-        for flag in ("-p", "--dangerously-skip-permissions", "--settings", "--session-id"):
+        for flag in ("-p", "--dangerously-skip-permissions", "--settings", "--session-id", "--strict-mcp-config"):
             self.assertIn(flag, argv)
+        self.assertEqual(hooks.read_json(argv[argv.index("--mcp-config") + 1]), {"mcpServers": {}})
         self.assertEqual(argv[argv.index("--model") + 1], "sonnet")
         self.assertEqual(argv[argv.index("--effort") + 1], "medium")
         self.assertNotIn("AWS_ACCESS_KEY_ID", env)

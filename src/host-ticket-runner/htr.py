@@ -403,6 +403,19 @@ def do_preflight(args, quiet=False):
     return problems
 
 
+def no_mcp(d):
+    """Flags that start the agent with no MCP servers at all.
+
+    An MCP server starts with its own environment, which the AWS scrub never reaches, so a host
+    server holding the owner's credentials (an AWS MCP server, say) would hand them to the agent.
+    `--strict-mcp-config` ignores every user, project and plugin server; the run's own config is empty.
+    """
+    path = os.path.join(d, "mcp.json")
+    if not os.path.exists(path):
+        hooks.write_json(path, {"mcpServers": {}})
+    return ["--strict-mcp-config", "--mcp-config", path]
+
+
 def agent_probe(args):
     """A short launched agent, with exactly a run's env and hooks, reporting what AWS it sees."""
     home = htr_home()
@@ -418,7 +431,7 @@ def agent_probe(args):
               "1) `env | grep '^AWS_' | sed 's/=.*//'`  2) `aws sts get-caller-identity`  "
               "3) `test -r ~/.aws/credentials && echo HOST-AWS-READABLE || echo HOST-AWS-NOT-READABLE`.")
     cmd = ["claude", "-p", prompt, "--model", "haiku", "--dangerously-skip-permissions", "--settings",
-           os.path.join(d, "settings.json"), "--output-format", "text"]
+           os.path.join(d, "settings.json"), "--output-format", "text"] + no_mcp(d)
     r = subprocess.run(cmd, cwd=d, env=agent_env(info), capture_output=True, text=True, timeout=600)
     with open(os.path.join(d, "agent.log"), "w") as f:
         f.write(r.stdout + r.stderr)
@@ -767,7 +780,7 @@ def do_supervise(args):
     hooks.write_json(os.path.join(d, "supervise.json"), {"pid": os.getpid(), "started_at": now_stamp(), "turn": turn,
                                                          "kind": "finishing" if resume_text else "launch"})
     base = ["claude", "-p", "--dangerously-skip-permissions", "--settings", os.path.join(d, "settings.json"),
-            "--model", info["model"], "--effort", info["effort"], "--output-format", "text"]
+            "--model", info["model"], "--effort", info["effort"], "--output-format", "text"] + no_mcp(d)
     if resume_text:
         cmd = base + ["--resume", info["session_id"], resume_text]
     else:
