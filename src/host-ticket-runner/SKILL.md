@@ -45,7 +45,7 @@ Overrides per ticket: `--tier`, `--model`, `--effort`. The cap is Opus, from the
 - **PostToolUse on `Skill`, `Bash`, `Edit`, `Write`** (and `PostToolUseFailure` on `Skill`, `Bash`) append one line each to `markers.jsonl`: which skill ran (namespace stripped), each Bash command with its exit code (0 on PostToolUse; the code from `Exit code N` on failure), each file edit.
 - **Stop** evaluates the markers and the repository, and blocks with the list of what is missing until all of these hold:
   - each required skill was invoked, `ce-plan` before `ce-work`, the last `ce-code-review` after `ce-work`, and the last `ce-commit-push-pr` after the last review;
-  - the last command classed as a test run, and the last classed as a lint run, exited 0, ran after the last edit inside the worktree, and do not hide their exit code (`| tail`, `|| true`). A command counts by how a segment starts: `pytest`, `uv run pytest`, `pnpm test`, `just gate` and so on for tests; `ruff`, `eslint`, `tsc`, `just lint`, `just gate` and so on for lint. `--test-regex` and `--lint-regex` replace the patterns; `--skip-step tests|lint` drops a step for a repo that has none;
+  - the last command classed as a test run, and the last classed as a lint run, exited 0, ran after the last edit inside the worktree, ran in the foreground, and own the command's exit code (anything after them chained only with `&&`, so not `| tail`, `|| true` or `; echo $?`). A command counts by how a segment starts: `pytest`, `uv run pytest`, `pnpm test`, `just gate` and so on for tests; `ruff`, `eslint`, `tsc`, `just lint`, `just gate` and so on for lint. `--test-regex` and `--lint-regex` replace the patterns; `--skip-step tests|lint` drops a step for a repo that has none;
   - the worktree is clean, and `gh pr view <branch>` finds an open (or merged) PR whose head is the worktree's HEAD, whose body cites every criterion id and has a heading naming the review findings.
   When all hold it writes `complete.json` and lets the run end.
 - **Budgets.** The Stop hook blocks at most 8 times per run (`--max-stop-blocks`), and escalates early when the agent stops twice in a row with the same steps missing and no tool call in between: `stop_hook_active` is how it tells a stop it already blocked from a fresh one. On either, it writes `escalation.md` (what is missing, why it stopped, the agent's last message, the resume command) and lets the run end. An escalation is a stop, not a retry.
@@ -66,7 +66,7 @@ What the hooks prove is that the steps ran in order and the checks exited 0 afte
 
 - No sandbox: the agent runs as the owner's user with the owner's files, network and `gh` login. The hooks steer it; they do not contain it.
 - The `~/.aws` deny matches paths and command text. A command that builds the path at run time (`cat $(echo ~)/.a''ws/...`, a script) gets past it; only a separate OS user would not. The env scrub and the runner-owned AWS files are what keep the host's keys out of reach by default.
-- A test command chained after something that swallows its status (`pytest; true`) is not caught by the masking check. The PR review is the backstop.
+- The masking check reads command text: a test run whose exit code is hidden inside a script, or by `set +e` in a recipe, still counts. The PR review is the backstop.
 - Windows support is implemented and unit-tested only for what runs on any OS; the detached launch, Task Scheduler mode and hooks under Windows have not been run on a Windows host (see `SETUP.md`).
 
 ## What a run keeps

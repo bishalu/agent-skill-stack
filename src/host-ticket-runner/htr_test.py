@@ -142,6 +142,13 @@ class Classify(unittest.TestCase):
         self.assertTrue(hooks.masked("uv run pytest | tail -5"))
         self.assertTrue(hooks.masked("pytest || true"))
         self.assertFalse(hooks.masked("uv run pytest -q && uv run ruff check"))
+        # Seen in the first live run: the trailing echo owns the exit code.
+        self.assertTrue(hooks.masked('uv run ruff check . ; echo "ruff exit $?"', "lint"))
+        self.assertTrue(hooks.masked("pytest; true", "test"))
+        self.assertTrue(hooks.masked("pytest\necho done", "test"))
+        self.assertFalse(hooks.masked("cd web; npm ci; npm test", "test"))
+        self.assertFalse(hooks.masked("ls | wc -l; uv run pytest -q 2>&1", "test"))
+        self.assertTrue(hooks.masked("uv run pytest -q && uv run ruff check; echo $?", "test"))
 
     def test_marker_for(self):
         m = hooks.marker_for({"tool_name": "Skill", "tool_input": {"skill": "compound-engineering:ce-work", "args": "x"}}, False)
@@ -256,6 +263,16 @@ class StopHook(unittest.TestCase):
         self.assertIn("exited 1", hooks.evaluate(self.run_dir)["missing"][0]["why"])
         self.mark({"kind": "bash", "command": "uv run pytest | tail -3", "exit": 0})
         self.assertIn("masks", hooks.evaluate(self.run_dir)["missing"][0]["why"])
+
+    def test_background_test_run_does_not_count(self):
+        self.full()
+        m = hooks.marker_for({"tool_name": "Bash", "tool_input": {"command": "uv run pytest -q"},
+                              "tool_response": {"backgroundTaskId": "b1", "stdout": ""}}, failed=False)
+        self.assertIsNone(m["exit"])
+        self.mark(m)
+        self.assertIn("background", hooks.evaluate(self.run_dir)["missing"][0]["why"])
+        asked = hooks.marker_for({"tool_name": "Bash", "tool_input": {"command": "ruff check .", "run_in_background": True}}, False)
+        self.assertTrue(asked["background"])
 
     def test_review_after_shipping_is_missing(self):
         self.full()

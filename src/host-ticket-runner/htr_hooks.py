@@ -128,9 +128,22 @@ def classify(command, test_re=TEST_RE, lint_re=LINT_RE):
     return kinds
 
 
-def masked(command):
-    """A command whose failure cannot reach its exit code proves nothing either way."""
-    return bool(re.search(r"\|\|\s*(true|:|exit +0)\b|;\s*(true|:)\s*$|\|\s*(tee|head|tail|grep|cat)\b", command or ""))
+def masked(command, kind=None, test_re=TEST_RE, lint_re=LINT_RE):
+    """Whether the command's exit code can hide the failure of its last `kind` segment.
+
+    The exit code is that segment's own only when everything after it is chained with
+    `&&`: a `;`, a newline, a pipe or `||` after it (`pytest; echo $?`, `ruff | tail`,
+    `pytest || true`) hands the exit code to something else."""
+    parts = re.split(r"(&&|\|\||;|\||\n)", command or "")
+    segs, seps = parts[0::2], parts[1::2]
+    last = None
+    for i, seg in enumerate(segs):
+        k = classify(seg, test_re, lint_re)
+        if (kind in k) if kind else k:
+            last = i
+    if last is None:
+        return False
+    return any(sep != "&&" and segs[j + 1].strip() for j, sep in enumerate(seps) if j >= last)
 
 
 # ---------------------------------------------------------------- markers from tool calls
@@ -148,7 +161,15 @@ def marker_for(payload, failed):
         if failed:
             m = re.search(r"[Ee]xit code (\d+)", str(payload.get("error") or ""))
             code = int(m.group(1)) if m else 1
-        return dict(base, kind="bash", command=cmd[:2000], exit=code, interrupted=bool(payload.get("is_interrupt")))
+        # A command sent to the background (asked for, or moved there by the harness when it
+        # ran long) reports success when it starts, not when it ends: no exit code to trust.
+        resp = payload.get("tool_response")
+        background = bool(ti.get("run_in_background")) or (
+            isinstance(resp, dict) and any(resp.get(k) for k in ("backgroundTaskId", "background_task_id", "backgroundedByUser")))
+        if background and not failed:
+            code = None
+        return dict(base, kind="bash", command=cmd[:2000], exit=code, background=background,
+                    interrupted=bool(payload.get("is_interrupt")))
     if tool in EDIT_TOOLS:
         path = ti.get("file_path") or ti.get("notebook_path") or ""
         return dict(base, kind="edit", path=str(path))
@@ -299,9 +320,12 @@ def evaluate(run_dir, run=None, markers=None, check_pr=True):
             miss(step, "no %s command is recorded" % ("test" if step == "tests" else "lint"))
             continue
         i, m = runs[-1]
-        if m.get("exit") != 0:
+        if m.get("background"):
+            miss(step, "the last %s run went to the background, so its exit code is unknown; run it in the foreground "
+                       "(a longer Bash timeout, not run_in_background): %s" % (step, m.get("command", "")[:160]))
+        elif m.get("exit") != 0:
             miss(step, "the last %s run exited %s: %s" % (step, m.get("exit"), m.get("command", "")[:160]))
-        elif masked(m.get("command")):
+        elif masked(m.get("command"), step[:4], test_re, lint_re):
             miss(step, "the last %s run masks its exit code (%s); run it plainly" % (step, m.get("command", "")[:160]))
         elif i < edit_last:
             miss(step, "files changed after the last passing %s run; run it again" % step)
