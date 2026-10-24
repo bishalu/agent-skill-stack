@@ -110,6 +110,36 @@ class Routing(unittest.TestCase):
         r = htr.resolve(self.ticket(), Args(tier="heavy", effort="xhigh"))
         self.assertEqual((r["tier"], r["model"], r["effort"]), ("heavy", "opus", "xhigh"))
 
+    def test_tier_label_sets_the_lifecycle(self):
+        light = htr.resolve(self.ticket(labels=["tier:light"]), Args())
+        self.assertEqual((light["tier"], light["model"], light["profile"]), ("light", "sonnet", "light"))
+        steps = htr.required_steps(light["route"], [], light["profile"])
+        self.assertNotIn("ce-simplify-code", steps)
+        self.assertNotIn("ce-compound", steps)
+        for kept in ("ce-work", "ce-code-review", "tests", "lint", "ce-commit-push-pr", "pr"):
+            self.assertIn(kept, steps)
+        heavy = htr.resolve(self.ticket(labels=["tier:heavy"]), Args())
+        self.assertEqual((heavy["tier"], heavy["route"]), ("heavy", "plan-first"))
+        self.assertEqual(htr.required_steps(heavy["route"], [], "heavy")[0], "ce-plan")
+        self.assertTrue(heavy["criteria"], "a heavy ticket keeps its own criteria ids")
+
+    def test_a_light_brief_asks_for_only_its_steps(self):
+        t = self.ticket(labels=["tier:light"])
+        r = htr.resolve(t, Args())
+        info = {"repo": "o/r", "branch": "htr/7-t", "base": "main", "ticket_file": "/r/ticket.md",
+                "required": htr.required_steps(r["route"], [], r["profile"]), "port_base": 20000}
+        text = htr.brief(t, r, info)
+        self.assertNotIn("ce-simplify-code", text.split("## What checks you")[0])
+        self.assertNotIn("ce-compound mode", text)
+        self.assertIn("ce-code-review quick apply:local", text)
+
+    def test_model_and_effort_labels_within_the_cap(self):
+        r = htr.resolve(self.ticket(labels=["tier:standard", "model:sonnet", "effort:high"]), Args())
+        self.assertEqual((r["model"], r["effort"]), ("sonnet", "high"))
+        self.assertEqual(htr.resolve(self.ticket(labels=["model:sonnet"]), Args(model="opus"))["model"], "opus")
+        with self.assertRaises(SystemExit):
+            htr.resolve(self.ticket(labels=["model:fable"]), Args())
+
     def test_opus_cap(self):
         for bad in ("fable", "best", "claude-fable-1", "gpt-5"):
             with self.assertRaises(SystemExit) as cm:

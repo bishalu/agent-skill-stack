@@ -24,19 +24,21 @@ The brief (`templates/brief.md`, filled per ticket) gives the agent this order:
 6. The project's full test suite and linters, green, after the last edit.
 7. `ce-commit-push-pr mode:pipeline babysit:off`: push the branch, open the PR. Its body cites every criterion id, has a "Review findings" heading and an "Owner actions needed" section.
 
-A ticket with acceptance criteria goes straight to step 2: the criteria are the plan. They are extracted at launch from a heading such as "Acceptance criteria" or "Done when" (its list items, else its sentences), or from an `Exit:` paragraph, into `acceptance.json` with ids `T<issue>.c1`, `T<issue>.c2`. The brief hands the agent those ids and the PR must cite each one, so the record stays the one copy of the criteria. `--route plan-first` forces step 1 for a ticket whose criteria are not enough of a plan.
+A light or standard ticket with acceptance criteria goes straight to step 2: the criteria are the plan (a heavy one plans first, and a light one skips steps 3 and 5; see the routing table). They are extracted at launch from a heading such as "Acceptance criteria" or "Done when" (its list items, else its sentences), or from an `Exit:` paragraph, into `acceptance.json` with ids `T<issue>.c1`, `T<issue>.c2`. The brief hands the agent those ids and the PR must cite each one, so the record stays the one copy of the criteria. `--route plan-first` forces step 1 for a ticket whose criteria are not enough of a plan.
 
 ## Model and effort: the routing table
 
 `htr.py route --repo R --issue N` prints what a ticket resolves to and why. First matching row wins:
 
-| Tier | When | Model | Effort |
-|---|---|---|---|
-| **heavy** | a label `size:l`, `size:xl`, `risk`, `security`, `infra`, `migration`, `breaking` or `cross-boundary`; or risk words in the title or body (auth, OAuth, login, credentials, secrets, IAM, payments, billing, migrations, schema change, Terraform, deploy, security, encryption, concurrency, race condition, breaking change, public API, tenancy); or 6000+ characters or 9+ criteria | `opus` | `high` |
-| **light** | a label `docs`, `documentation`, `typo`, `chore`, `trivial`, `size:xs`, `size:s` or `good first issue` on a ticket with criteria (these labels outrank risk words, the heavy labels outrank them); or a ticket with criteria, at most 1500 characters and 3 criteria, and no risk words | `sonnet` | `medium` |
-| **standard** | everything else, including every thin ticket | `opus` | `medium` |
+| Tier | When | Model | Effort | Lifecycle |
+|---|---|---|---|---|
+| **heavy** | a label `size:l`, `size:xl`, `risk`, `security`, `infra`, `migration`, `breaking` or `cross-boundary`; or risk words in the title or body (auth, OAuth, login, credentials, secrets, IAM, payments, billing, migrations, schema change, Terraform, deploy, security, encryption, concurrency, race condition, breaking change, public API, tenancy); or 6000+ characters or 9+ criteria | `opus` | `high` | ce-plan first (even with criteria), then the full cycle |
+| **light** | a label `docs`, `documentation`, `typo`, `chore`, `trivial`, `size:xs`, `size:s` or `good first issue` on a ticket with criteria (these labels outrank risk words, the heavy labels outrank them); or a ticket with criteria, at most 1500 characters and 3 criteria, and no risk words | `sonnet` | `medium` | ce-work, a quick ce-code-review, the checks, the PR (no simplify pass, no learning) |
+| **standard** | everything else, including every thin ticket | `opus` | `medium` | the full cycle |
 
-Overrides per ticket: `--tier`, `--model`, `--effort`. The cap is Opus, from the owner's CLAUDE.md rule: `--model` accepts `haiku`, `sonnet`, `opus` or a `claude-haiku|sonnet|opus-*` id and refuses anything else with exit 2, whatever model this session runs on. Effort may go up to `xhigh` or `max` on a ticket that earns it. Raise a tier when the ticket is small in words but touches a boundary the table cannot see (a shared schema, a public contract); lower one only for a ticket you have read.
+**Labels decide first.** A `tier:light`, `tier:standard` or `tier:heavy` label on the issue picks the tier, and `model:` and `effort:` labels adjust it, ahead of every heuristic row above. They are how the orchestrator records its call on the ticket itself, where anyone can see it, so a relaunch routes the same way. Every lifecycle keeps a review, the full checks after the last edit, and a PR citing every criterion; only light drops the simplify pass and the learning.
+
+Overrides per ticket: `--tier`, `--model`, `--effort`, which beat the labels. The cap is Opus, from the owner's CLAUDE.md rule: `--model` accepts `haiku`, `sonnet`, `opus` or a `claude-haiku|sonnet|opus-*` id and refuses anything else with exit 2, whatever model this session runs on. Effort may go up to `xhigh` or `max` on a ticket that earns it. Raise a tier when the ticket is small in words but touches a boundary the table cannot see (a shared schema, a public contract); lower one only for a ticket you have read.
 
 ## How the hooks enforce it
 
