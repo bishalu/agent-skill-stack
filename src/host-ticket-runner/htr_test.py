@@ -604,6 +604,8 @@ class Launch(unittest.TestCase):
         self.assertEqual(env["AWS_PROFILE"], "htr-agent")
         self.assertEqual(env["HTR_PORT_BASE"], "20000")          # the first free 100-port block
         self.assertIn("HTR_PORT_BASE`=20000", argv[-1])
+        self.assertEqual(env["BASH_MAX_TIMEOUT_MS"], "2700000")
+        self.assertIn("timeout: 2700000", argv[-1])
         self.assertTrue(env["AWS_SHARED_CREDENTIALS_FILE"].startswith(os.path.join(self.t, "home", "aws")))
         self.assertNotIn("aws_access_key_id", slurp(env["AWS_SHARED_CREDENTIALS_FILE"]).split("[htr-agent]")[1])
         settings = hooks.read_json(argv[argv.index("--settings") + 1])

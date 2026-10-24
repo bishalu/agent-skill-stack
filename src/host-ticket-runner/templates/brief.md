@@ -29,6 +29,10 @@ Never skip, xfail, loosen an assertion, delete a test or re-baseline a snapshot 
 
 Other tickets may be running on this machine at the same time. Every server, dev server or browser check you start listens on a port from `HTR_PORT_BASE` to `HTR_PORT_BASE`+99 (`HTR_PORT_BASE`=$port_base is in your environment), never on a fixed port another run could hold. If the project hard-codes a port, use the project's own override for it; if it has none, say so under "Owner actions needed".
 
+## Long commands
+
+Bash's foreground limit is raised to 45 minutes for this run. Run the final check as one foreground command with `timeout: 2700000`, never in the background: with other runs sharing the machine it can take longer than 10 minutes, and the Stop hook only counts a foreground run.
+
 ## AWS
 
 This run has only the provisioned profile `$aws_profile`. The host's own AWS credentials are not yours, and a hook refuses reads of the real ~/.aws. When an AWS call is denied, record it under "Owner actions needed" and continue.
