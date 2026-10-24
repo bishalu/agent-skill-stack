@@ -26,7 +26,7 @@ HOOKS = os.path.join(HERE, "htr_hooks.py")
 
 class Args:
     def __init__(self, **kw):
-        self.tier = self.model = self.effort = None
+        self.tier = self.model = self.effort = self.cycle = None
         self.route = "auto"
         self.repo, self.issue = "o/r", 7
         self.__dict__.update(kw)
@@ -112,22 +112,34 @@ class Routing(unittest.TestCase):
 
     def test_tier_label_sets_the_lifecycle(self):
         light = htr.resolve(self.ticket(labels=["tier:light"]), Args())
-        self.assertEqual((light["tier"], light["model"], light["profile"]), ("light", "sonnet", "light"))
-        steps = htr.required_steps(light["route"], [], light["profile"])
+        self.assertEqual((light["tier"], light["model"], light["cycle"]), ("light", "sonnet", "lean"))
+        steps = htr.required_steps(light["route"], [], light["cycle"])
         self.assertNotIn("ce-simplify-code", steps)
         self.assertNotIn("ce-compound", steps)
         for kept in ("ce-work", "ce-code-review", "tests", "lint", "ce-commit-push-pr", "pr"):
             self.assertIn(kept, steps)
         heavy = htr.resolve(self.ticket(labels=["tier:heavy"]), Args())
-        self.assertEqual((heavy["tier"], heavy["route"]), ("heavy", "plan-first"))
-        self.assertEqual(htr.required_steps(heavy["route"], [], "heavy")[0], "ce-plan")
-        self.assertTrue(heavy["criteria"], "a heavy ticket keeps its own criteria ids")
+        self.assertEqual((heavy["tier"], heavy["route"], heavy["cycle"]), ("heavy", "work", "full"))
+        planned = htr.resolve(self.ticket(labels=["plan:first"]), Args())
+        self.assertEqual(planned["route"], "plan-first")
+        self.assertTrue(planned["criteria"], "a planned ticket keeps its own criteria ids")
+
+    def test_model_effort_and_cycle_are_separate_calls(self):
+        r = htr.resolve(self.ticket(labels=["model:opus", "effort:high", "cycle:none"]), Args())
+        self.assertEqual((r["model"], r["effort"], r["cycle"]), ("opus", "high", "none"))
+        self.assertEqual(htr.required_steps(r["route"], [], r["cycle"]), ["tests", "lint", "pr"])
+        info = {"repo": "o/r", "branch": "htr/7-t", "base": "main", "ticket_file": "/r/ticket.md",
+                "required": htr.required_steps(r["route"], [], r["cycle"]), "port_base": 20000}
+        text = htr.brief(self.ticket(labels=["cycle:none"]), r, info).split("## What checks you")[0]
+        self.assertNotIn("ce-work", text)
+        self.assertIn("gh pr create", text)
+        self.assertEqual(htr.resolve(self.ticket(labels=["cycle:none"]), Args(cycle="full"))["cycle"], "full")
 
     def test_a_light_brief_asks_for_only_its_steps(self):
         t = self.ticket(labels=["tier:light"])
         r = htr.resolve(t, Args())
         info = {"repo": "o/r", "branch": "htr/7-t", "base": "main", "ticket_file": "/r/ticket.md",
-                "required": htr.required_steps(r["route"], [], r["profile"]), "port_base": 20000}
+                "required": htr.required_steps(r["route"], [], r["cycle"]), "port_base": 20000}
         text = htr.brief(t, r, info)
         self.assertNotIn("ce-simplify-code", text.split("## What checks you")[0])
         self.assertNotIn("ce-compound mode", text)
