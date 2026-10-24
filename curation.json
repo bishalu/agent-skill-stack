@@ -77,6 +77,13 @@
         "frontmatter": {},
         "reason": "Unmodified — already disable-model-invocation upstream. Included because code-review's Spec axis reads docs/agents/issue-tracker.md, which only this skill writes."
       },
+      "wayfinder": {
+        "path": "skills/engineering/wayfinder",
+        "class": "MANUAL",
+        "domain": "large-scope planning (explicit invocation)",
+        "frontmatter": {},
+        "reason": "Requested explicitly by the user despite the owner-level overlap with ce-plan/ce-brainstorm noted in the original exclusion. Already disable-model-invocation upstream, so it can never be auto-routed to over ce-*; included unmodified as /wayfinder, the same MANUAL treatment given to code-review to let an explicit request reach a second, non-default planning tool without it competing for the phase."
+      },
       "writing-for-agents": {
         "path": "skills/productivity/writing-for-agents",
         "class": "CONDITIONAL",
@@ -88,7 +95,7 @@
       }
     },
     "excluded": {
-      "implement, to-spec, to-tickets, wayfinder, triage, grill-with-docs, improve-codebase-architecture, prototype, research, ask-matt, handoff, teach, retro, writing-*": "Owner-level or near-owner-level competitors to the Compound lifecycle (planning, requirements, implementation, handoff, learning), or duplicates of a Compound skill (ce-prototype, ce-handoff, ce-explain, ce-pov). Excluded rather than demoted, to keep the skill listing small. (writing-for-agents has since been installed: it owns agent-facing documents, a domain nothing else covered. grilling and grill-me have since been installed: grilling narrowed to an explicit grill request with a non-ownership clause, grill-me unmodified because it is already manual-only. ce-brainstorm keeps sole ownership of requirements.)",
+      "implement, to-spec, to-tickets, triage, grill-with-docs, improve-codebase-architecture, prototype, research, ask-matt, handoff, teach, retro, writing-*": "Owner-level or near-owner-level competitors to the Compound lifecycle (planning, requirements, implementation, handoff, learning), or duplicates of a Compound skill (ce-prototype, ce-handoff, ce-explain, ce-pov). Excluded rather than demoted, to keep the skill listing small. (writing-for-agents has since been installed: it owns agent-facing documents, a domain nothing else covered. grilling and grill-me have since been installed: grilling narrowed to an explicit grill request with a non-ownership clause, grill-me unmodified because it is already manual-only. ce-brainstorm keeps sole ownership of requirements. wayfinder has since been installed too: requested explicitly despite the owner-level overlap with ce-plan/ce-brainstorm noted above; already disable-model-invocation upstream, so it can never be auto-routed to over ce-* and only ever reaches the user via an explicit /wayfinder.)",
       "resolving-merge-conflicts, wizard, git-guardrails-claude-code, setup-pre-commit, migrate-to-shoehorn, scaffold-exercises, setup-ts-deep-modules": "Useful but outside the four lifecycle domains this stack curates; omitted to protect the context budget. Add with scripts/build.sh if wanted."
     }
   },
