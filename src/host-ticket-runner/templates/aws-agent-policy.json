@@ -1,0 +1,178 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "WhoAmI",
+      "Effect": "Allow",
+      "Action": "sts:GetCallerIdentity",
+      "Resource": "*"
+    },
+    {
+      "Sid": "BedrockInvokeForRecordings",
+      "Effect": "Allow",
+      "Action": [
+        "bedrock:InvokeModel",
+        "bedrock:InvokeModelWithResponseStream"
+      ],
+      "Resource": [
+        "arn:aws:bedrock:*::foundation-model/*",
+        "arn:aws:bedrock:us-east-2:887324280633:inference-profile/us.*"
+      ]
+    },
+    {
+      "Sid": "BedrockDiscovery",
+      "Effect": "Allow",
+      "Action": [
+        "bedrock:ListFoundationModels",
+        "bedrock:GetFoundationModel",
+        "bedrock:ListInferenceProfiles",
+        "bedrock:GetInferenceProfile"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "ReadModelWeights",
+      "Effect": "Allow",
+      "Action": "s3:GetObject",
+      "Resource": "arn:aws:s3:::vibeset-dj-models/*"
+    },
+    {
+      "Sid": "ListModelWeights",
+      "Effect": "Allow",
+      "Action": "s3:ListBucket",
+      "Resource": "arn:aws:s3:::vibeset-dj-models"
+    },
+    {
+      "Sid": "ReadOwnLogs",
+      "Effect": "Allow",
+      "Action": [
+        "logs:DescribeLogStreams",
+        "logs:GetLogEvents",
+        "logs:FilterLogEvents",
+        "logs:StartQuery"
+      ],
+      "Resource": [
+        "arn:aws:logs:us-east-2:887324280633:log-group:/aws/lambda/vibeset-dj-*",
+        "arn:aws:logs:us-east-2:887324280633:log-group:vibeset-dj-*"
+      ]
+    },
+    {
+      "Sid": "LogsQueryResultsAndListing",
+      "Effect": "Allow",
+      "Action": [
+        "logs:DescribeLogGroups",
+        "logs:GetQueryResults",
+        "logs:StopQuery"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "DescribeOwnService",
+      "Effect": "Allow",
+      "Action": [
+        "lambda:GetFunction",
+        "lambda:GetFunctionConfiguration",
+        "lambda:ListVersionsByFunction",
+        "lambda:GetAlias",
+        "sqs:GetQueueAttributes",
+        "sqs:GetQueueUrl"
+      ],
+      "Resource": [
+        "arn:aws:lambda:us-east-2:887324280633:function:vibeset-dj-*",
+        "arn:aws:sqs:us-east-2:887324280633:vibeset-dj-*"
+      ]
+    },
+    {
+      "Sid": "NoIdentityChanges",
+      "Effect": "Deny",
+      "Action": [
+        "iam:*",
+        "sts:AssumeRole",
+        "sts:AssumeRoleWithWebIdentity",
+        "sts:GetFederationToken",
+        "organizations:*",
+        "account:*"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "NoDeploysOrInfraWrites",
+      "Effect": "Deny",
+      "Action": [
+        "lambda:Create*",
+        "lambda:Update*",
+        "lambda:Delete*",
+        "lambda:Publish*",
+        "lambda:Put*",
+        "lambda:AddPermission",
+        "lambda:RemovePermission",
+        "ecr:PutImage",
+        "ecr:InitiateLayerUpload",
+        "ecr:UploadLayerPart",
+        "ecr:CompleteLayerUpload",
+        "ecr:BatchDeleteImage",
+        "ecs:*Service",
+        "ecs:RegisterTaskDefinition",
+        "ecs:RunTask",
+        "cloudformation:*",
+        "apigateway:POST",
+        "apigateway:PUT",
+        "apigateway:PATCH",
+        "apigateway:DELETE",
+        "cloudfront:*",
+        "rds:*",
+        "ec2:Run*",
+        "ec2:Create*",
+        "ec2:Delete*",
+        "ec2:Modify*",
+        "ec2:Terminate*",
+        "s3:DeleteBucket*",
+        "s3:PutBucket*",
+        "s3:PutObject",
+        "s3:DeleteObject*",
+        "ssm:StartSession",
+        "ssm:SendCommand"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "NoSecretsAtAll",
+      "Effect": "Deny",
+      "Action": [
+        "secretsmanager:*",
+        "kms:Decrypt",
+        "ssm:GetParameter*"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "NothingElseEvenIfAnotherPolicyGrantsIt",
+      "Effect": "Deny",
+      "NotAction": [
+        "bedrock:InvokeModel",
+        "bedrock:InvokeModelWithResponseStream",
+        "bedrock:ListFoundationModels",
+        "bedrock:GetFoundationModel",
+        "bedrock:ListInferenceProfiles",
+        "bedrock:GetInferenceProfile",
+        "sts:GetCallerIdentity",
+        "s3:GetObject",
+        "s3:ListBucket",
+        "logs:DescribeLogGroups",
+        "logs:DescribeLogStreams",
+        "logs:GetLogEvents",
+        "logs:FilterLogEvents",
+        "logs:StartQuery",
+        "logs:GetQueryResults",
+        "logs:StopQuery",
+        "lambda:GetFunction",
+        "lambda:GetFunctionConfiguration",
+        "lambda:ListVersionsByFunction",
+        "lambda:GetAlias",
+        "sqs:GetQueueAttributes",
+        "sqs:GetQueueUrl"
+      ],
+      "Resource": "*"
+    }
+  ]
+}
