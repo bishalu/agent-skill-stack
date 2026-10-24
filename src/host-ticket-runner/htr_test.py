@@ -463,6 +463,8 @@ def hook(verb, payload):
                           capture_output=True, text=True).stdout
 if mode == "die":
     print("partial work, then the turn ended"); sys.exit(1)
+if mode == "hang":
+    import time; time.sleep(60); sys.exit(1)
 if mode == "full":
     for s in ("ce-work", "ce-simplify-code", "ce-code-review"):
         hook("post-tool-use", {"tool_name": "Skill", "tool_input": {"skill": "compound-engineering:" + s}})
@@ -558,6 +560,8 @@ class Launch(unittest.TestCase):
         self.assertNotIn("CLAUDECODE", env)
         self.assertNotIn("CLAUDE_CODE_SESSION_ID", env)
         self.assertEqual(env["AWS_PROFILE"], "htr-agent")
+        self.assertEqual(env["HTR_PORT_BASE"], "20000")          # the first free 100-port block
+        self.assertIn("HTR_PORT_BASE`=20000", argv[-1])
         self.assertTrue(env["AWS_SHARED_CREDENTIALS_FILE"].startswith(os.path.join(self.t, "home", "aws")))
         self.assertNotIn("aws_access_key_id", slurp(env["AWS_SHARED_CREDENTIALS_FILE"]).split("[htr-agent]")[1])
         settings = hooks.read_json(argv[argv.index("--settings") + 1])
@@ -570,6 +574,25 @@ class Launch(unittest.TestCase):
         self.assertIn("ce-work mode:return-to-caller", prompt)
         self.assertIn("ce-commit-push-pr mode:pipeline", prompt)
         self.assertIn("Fix a typo in the README", prompt)
+
+    def test_a_live_run_holds_its_port_block(self):
+        _, first = self.launch("hang")
+        for _ in range(200):   # wait until the run is live
+            if hooks.read_json(os.path.join(first, "supervise.json")):
+                break
+            time.sleep(0.05)
+        try:
+            out = self.htr("launch", "--repo", "o/r", "--issue", "7", "--checkout", self.checkout, "--base", "main",
+                           "--json", "--again", "--dry-run")
+            self.assertEqual(json.loads(out.stdout.split("\n(dry run")[0])["port_base"], 20100, out.stderr)
+        finally:
+            sup = hooks.read_json(os.path.join(first, "supervise.json"), {})
+            for pid in (sup.get("pid"),):
+                if pid:
+                    try:
+                        os.killpg(os.getpgid(pid), 9)
+                    except OSError:
+                        pass
 
     def test_dead_turn_resumes_within_budget_then_escalates(self):
         out, run_dir = self.launch("die")

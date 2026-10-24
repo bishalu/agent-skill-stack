@@ -278,7 +278,7 @@ def brief(ticket, res, run_info):
         tpl = string.Template(f.read())
     return tpl.safe_substitute(repo=run_info["repo"], issue=issue, ticket_file=tf, branch=run_info["branch"],
                                base=run_info["base"], steps=steps_text, criteria_rule=rule, aws_profile=AWS_PROFILE,
-                               title=ticket.get("title") or "", body=(ticket.get("body") or "").strip())
+                               port_base=run_info.get("port_base", ""), title=ticket.get("title") or "", body=(ticket.get("body") or "").strip())
 
 
 # ---------------------------------------------------------------- AWS
@@ -334,7 +334,22 @@ def agent_env(run_info):
     env.update({"AWS_CONFIG_FILE": cfg, "AWS_SHARED_CREDENTIALS_FILE": cred, "AWS_PROFILE": AWS_PROFILE,
                 "AWS_SDK_LOAD_CONFIG": "1", "AWS_EC2_METADATA_DISABLED": "true",
                 "HTR_RUN_DIR": run_info["run_dir"], "HTR_RUN_ID": run_info["id"]})
+    if run_info.get("port_base"):
+        env["HTR_PORT_BASE"] = str(run_info["port_base"])
     return env
+
+
+PORT_FIRST, PORT_BLOCK, PORT_BLOCKS = 20000, 100, 40
+
+
+def free_port_base():
+    """The first 100-port block no live run holds, so parallel runs never share a server port."""
+    held = {r.get("port_base") for r in all_runs() if state_of(r)["state"] in ("running", "not-started")}
+    for n in range(PORT_BLOCKS):
+        base = PORT_FIRST + n * PORT_BLOCK
+        if base not in held:
+            return base
+    die("every port block is held by a live run (%d); wait for one to finish" % PORT_BLOCKS)
 
 
 def do_aws_keys(args):
@@ -682,7 +697,7 @@ def do_launch(args):
             "budgets": {"stop_blocks": args.max_stop_blocks, "stalled_blocks": DEFAULT_BUDGETS["stalled_blocks"],
                         "finishing_turns": args.max_finishing_turns},
             "test_regex": args.test_regex, "lint_regex": args.lint_regex, "launched_at": now_stamp(),
-            "finishing_turns": 0, "extensions": []}
+            "finishing_turns": 0, "extensions": [], "port_base": free_port_base()}
     info.update({k: res[k] for k in ("route", "route_why", "tier", "tier_why", "model", "effort", "criteria", "criteria_source")})
     info["work_input"] = info["ticket_file"] if res["route"] == "work" else PLAN_PATH
 
