@@ -25,6 +25,10 @@ A Stop hook reads the tool calls this run recorded, not what you write. It will 
 
 Never skip, xfail, loosen an assertion, delete a test or re-baseline a snapshot to make a check pass. A failing test is telling you something: fix the code, or measure and report in the PR body why the expectation was wrong. List every changed test file in the PR body with the reason. Keep the full suite and the linters green at every commit.
 
+## Ports
+
+Other tickets may be running on this machine at the same time. Every server, dev server or browser check you start listens on a port from `HTR_PORT_BASE` to `HTR_PORT_BASE`+99 (`HTR_PORT_BASE`=$port_base is in your environment), never on a fixed port another run could hold. If the project hard-codes a port, use the project's own override for it; if it has none, say so under "Owner actions needed".
+
 ## AWS
 
 This run has only the provisioned profile `$aws_profile`. The host's own AWS credentials are not yours, and a hook refuses reads of the real ~/.aws. When an AWS call is denied, record it under "Owner actions needed" and continue.
