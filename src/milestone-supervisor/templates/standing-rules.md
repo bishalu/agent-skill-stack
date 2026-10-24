@@ -3,7 +3,7 @@ Run this milestone through the Compound Engineering loop, hands-off. There is no
 1. ce-plan with the milestone section below as the request. Take the Durable contract: write the plan file, grounded in docs/solutions/ and the milestones pack. Commit the plan before running ce-doc-review on it, and commit that review's corrections as their own commit: the supervisor counts them from that commit, and a plan whose review is folded into the commit that adds it cannot be counted.
 2. ce-work mode:return-to-caller <plan path>. Implementation and local verification, unit-scoped commits.
 3. ce-simplify-code on the branch diff.
-4. ce-code-review mode:agent apply:local plan:<plan path>. Apply and commit the findings; list residuals in the report.
+4. ce-code-review apply:local plan:<plan path>. Apply and commit the findings; list residuals in the report.
 5. ce-compound mode:non-interactive for every non-obvious lesson this milestone produced, so the next milestone's plan reads it.
 6. ce-commit for what remains. The report is the last commit. Then ce-handoff create, and copy the handoff file into docs/handoffs/milestone-N.md and commit it: the container's /tmp does not survive the run.
 
