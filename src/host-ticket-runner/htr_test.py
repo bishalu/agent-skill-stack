@@ -185,6 +185,13 @@ class Classify(unittest.TestCase):
         self.assertEqual(c("cat > notes.md <<EOF\nuv run pytest -q\nEOF\nuv run pytest -q"), {"test"})
         self.assertFalse(hooks.masked("cat > n.md <<-EOF\n\tpytest | tail\n\tEOF\nuv run pytest -q"))
 
+    def test_separators_inside_quotes_do_not_split(self):
+        c = hooks.classify
+        self.assertEqual(c('pgrep -fl "pytest|vitest|tsc" | head'), set())
+        self.assertEqual(c("grep -E 'a;pytest' log && uv run pytest -q"), {"test"})
+        self.assertFalse(hooks.masked('uv run pytest -q && echo "done | ok"'))
+        self.assertTrue(hooks.masked('uv run pytest -q | grep "passed"'))
+
     def test_masked(self):
         self.assertTrue(hooks.masked("uv run pytest | tail -5"))
         self.assertTrue(hooks.masked("pytest || true"))

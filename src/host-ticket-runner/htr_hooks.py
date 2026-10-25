@@ -128,8 +128,17 @@ def without_heredocs(command):
     return HEREDOC.sub(lambda m: m.group(0).split("\n", 1)[0], command or "")
 
 
+QUOTED = re.compile(r"'[^']*'|\"(?:\\.|[^\"\\])*\"")
+
+
+def plain(command):
+    """The command with heredoc bodies dropped and separators inside quotes blanked:
+    `pgrep -f "pytest|vitest"` is one pgrep, not a pipe into vitest."""
+    return QUOTED.sub(lambda m: re.sub(SEP, " ", m.group(0)), without_heredocs(command))
+
+
 def segments(command):
-    return [s.strip() for s in re.split(SEP, without_heredocs(command)) if s.strip()]
+    return [s.strip() for s in re.split(SEP, plain(command)) if s.strip()]
 
 
 def classify(command, test_re=TEST_RE, lint_re=LINT_RE):
@@ -176,7 +185,7 @@ def masked(command, kind=None, test_re=TEST_RE, lint_re=LINT_RE):
     `&&`: a `;`, a newline, a pipe or `||` after it (`pytest; echo $?`, `ruff | tail`,
     `pytest || true`) hands the exit code to something else, and a `&` after it
     (`pytest &`) sends it to the background."""
-    parts = re.split("(%s)" % SEP, without_heredocs(command))
+    parts = re.split("(%s)" % SEP, plain(command))
     segs, seps = parts[0::2], parts[1::2]
     last = None
     for i, seg in enumerate(segs):
