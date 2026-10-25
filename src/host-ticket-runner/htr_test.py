@@ -179,6 +179,12 @@ class Classify(unittest.TestCase):
         self.assertEqual(c("cat pytest.ini"), set())
         self.assertEqual(c("git commit -m 'run pytest'"), set())
 
+    def test_a_heredoc_body_is_not_a_run(self):
+        c = hooks.classify
+        self.assertEqual(c("python3 - <<'EOF'\nopen('pr.md', 'w').write('pytest -q passed')\npytest -q\ntsc clean\nEOF"), set())
+        self.assertEqual(c("cat > notes.md <<EOF\nuv run pytest -q\nEOF\nuv run pytest -q"), {"test"})
+        self.assertFalse(hooks.masked("cat > n.md <<-EOF\n\tpytest | tail\n\tEOF\nuv run pytest -q"))
+
     def test_masked(self):
         self.assertTrue(hooks.masked("uv run pytest | tail -5"))
         self.assertTrue(hooks.masked("pytest || true"))
