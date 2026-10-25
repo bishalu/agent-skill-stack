@@ -755,6 +755,13 @@ def do_launch(args):
     if subprocess.run(["git", "-C", checkout, "rev-parse", "--verify", "-q", "refs/heads/" + branch], capture_output=True).returncode == 0:
         branch += "-" + now_stamp()
     skip = args.skip_step or []
+    copy_in = []
+    for rel in args.copy_in or []:
+        if os.path.isabs(rel) or ".." in rel.split(os.sep):
+            die("--copy-in takes a path inside the checkout: %s" % rel, example="htr.py launch --repo o/r --issue 7 --copy-in data.sqlite")
+        if not os.path.isfile(os.path.join(checkout, rel)):
+            die("--copy-in %s: no such file in %s" % (rel, checkout))
+        copy_in.append(rel)
     info = {"id": rid, "run_dir": run_dir, "repo": args.repo, "issue": ticket["number"], "title": ticket.get("title"),
             "url": ticket.get("url"), "checkout": checkout, "worktree": worktree, "branch": branch, "base": base,
             "ticket_file": os.path.join(run_dir, "ticket.md"), "required": required_steps(res["route"], skip, res["cycle"]),
@@ -763,7 +770,7 @@ def do_launch(args):
             "budgets": {"stop_blocks": args.max_stop_blocks, "stalled_blocks": DEFAULT_BUDGETS["stalled_blocks"],
                         "finishing_turns": args.max_finishing_turns},
             "test_regex": args.test_regex, "lint_regex": args.lint_regex, "launched_at": now_stamp(),
-            "finishing_turns": 0, "extensions": [], "port_base": free_port_base()}
+            "finishing_turns": 0, "extensions": [], "port_base": free_port_base(), "copied_in": copy_in}
     info.update({k: res[k] for k in ("route", "route_why", "tier", "tier_why", "model", "effort", "criteria", "criteria_source")})
     info["work_input"] = info["ticket_file"] if res["route"] == "work" else PLAN_PATH
 
@@ -777,12 +784,19 @@ def do_launch(args):
     run(["git", "-C", checkout, "fetch", "origin", base], timeout=600)
     os.makedirs(os.path.dirname(worktree), exist_ok=True)
     run(["git", "-C", checkout, "worktree", "add", "-b", branch, worktree, "origin/" + base])
+    for rel in copy_in:
+        dest = os.path.join(worktree, rel)
+        os.makedirs(os.path.dirname(dest) or worktree, exist_ok=True)
+        shutil.copy2(os.path.join(checkout, rel), dest)
     with open(info["ticket_file"], "w", encoding="utf-8") as f:
         f.write("# %s\n\n%s\n" % (ticket.get("title") or "", (ticket.get("body") or "").strip()))
     hooks.write_json(os.path.join(run_dir, "acceptance.json"),
                      {"ticket": "%s#%s" % (args.repo, ticket["number"]), "source": res["criteria_source"], "criteria": res["criteria"]})
     with open(os.path.join(run_dir, "prompt.md"), "w", encoding="utf-8") as f:
         f.write(brief(ticket, res, info))
+        if copy_in:
+            f.write("\n## Files copied in\n\nThe host copied these into your worktree because the repo does not track them: %s. "
+                    "Use them as they are, and never commit them.\n" % ", ".join("`%s`" % r for r in copy_in))
     hooks.write_json(os.path.join(run_dir, "settings.json"), settings_for(run_dir))
     hooks.write_json(os.path.join(run_dir, "run.json"), info)
     pid = spawn(info, [])
@@ -1004,6 +1018,8 @@ def main(argv=None):
     q.add_argument("--lint-regex", help="replace the pattern a Bash command must start with to count as a lint run")
     q.add_argument("--max-stop-blocks", type=int, default=DEFAULT_BUDGETS["stop_blocks"], help="Stop-hook blocks before it escalates (default %d)" % DEFAULT_BUDGETS["stop_blocks"])
     q.add_argument("--max-finishing-turns", type=int, default=DEFAULT_BUDGETS["finishing_turns"], help="resume turns before escalation (default %d)" % DEFAULT_BUDGETS["finishing_turns"])
+    q.add_argument("--copy-in", action="append", metavar="PATH",
+                   help="copy an untracked file from the checkout into the worktree at the same path (repeatable), e.g. a seeded database")
     q.add_argument("--again", action="store_true", help="launch even when a run of this issue is running or complete")
     q.add_argument("--allow-closed", action="store_true", help="launch a closed issue")
     q.add_argument("--dry-run", action="store_true", help="resolve everything and print the run record; create and launch nothing")
