@@ -589,6 +589,19 @@ class Launch(unittest.TestCase):
         with open(os.path.join(self.fake, "claude.calls")) as f:
             return [json.loads(l) for l in f if "--version" not in l]
 
+    def test_copy_in_puts_an_untracked_file_in_the_worktree_and_names_it(self):
+        os.makedirs(os.path.join(self.checkout, "data"))
+        with open(os.path.join(self.checkout, "data", "catalog.sqlite"), "w") as f:
+            f.write("rows")
+        out, run_dir = self.launch("die", "--copy-in", "data/catalog.sqlite")
+        self.wait_exit(run_dir)
+        self.assertEqual(slurp(os.path.join(out["worktree"], "data", "catalog.sqlite")), "rows")
+        self.assertIn("`data/catalog.sqlite`", slurp(os.path.join(run_dir, "prompt.md")))
+        for bad in ("missing.sqlite", "../outside", "/etc/hosts"):
+            r = self.htr("launch", "--repo", "o/r", "--issue", "7", "--checkout", self.checkout, "--base", "main",
+                         "--again", "--copy-in", bad)
+            self.assertNotEqual(r.returncode, 0, bad)
+
     def test_launch_scrubs_env_installs_hooks_and_detaches(self):
         out, run_dir = self.launch("die")
         self.wait_exit(run_dir)
