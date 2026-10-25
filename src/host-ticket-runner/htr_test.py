@@ -4,6 +4,8 @@ they were given; git is real; no agent, network call or AWS call happens.
 
   python3 htr_test.py          (or: python3 -m unittest htr_test -v)
 """
+import contextlib
+import io
 import json
 import os
 import re
@@ -170,7 +172,7 @@ class Routing(unittest.TestCase):
 
     # ---- phases: the model and effort follow the lifecycle phase
     def phases(self, r):
-        return {p: (r["phases"][p]["model"], r["phases"][p]["effort"]) for p in htr.PHASES}
+        return {p: (r["phase_models"][p]["model"], r["phase_models"][p]["effort"]) for p in htr.PHASES}
 
     def test_each_tier_has_a_model_per_phase(self):
         self.assertEqual(self.phases(htr.resolve(self.ticket(), Args())),
@@ -216,29 +218,51 @@ class Routing(unittest.TestCase):
 
     def test_phase_plan_splits_the_required_steps(self):
         res = htr.resolve(self.ticket(), Args(cycle="full"))
-        plan = htr.phase_plan(htr.required_steps("plan-first", [], "full"), res["phases"])
+        plan = htr.phase_plan(htr.required_steps("plan-first", [], "full"), res["phase_models"])
         self.assertEqual([(p["name"], p["steps"]) for p in plan], [
             ("build", ["ce-plan", "ce-work", "ce-simplify-code"]), ("judge", ["ce-code-review"]),
             ("finish", ["ce-compound", "tests", "lint", "ce-commit-push-pr", "pr"])])
         self.assertEqual((plan[1]["model"], plan[1]["effort"]), ("opus", "medium"))
-        lean = htr.phase_plan(htr.required_steps("work", ["lint"], "lean"), res["phases"])
+        lean = htr.phase_plan(htr.required_steps("work", ["lint"], "lean"), res["phase_models"])
         self.assertEqual([(p["name"], p["steps"]) for p in lean], [
             ("build", ["ce-work"]), ("judge", ["ce-code-review"]), ("finish", ["tests", "ce-commit-push-pr", "pr"])])
         # cycle none has no build step to show, so the build turn carries the whole run, on the build model.
-        none = htr.phase_plan(htr.required_steps("work", [], "none"), res["phases"])
+        none = htr.phase_plan(htr.required_steps("work", [], "none"), res["phase_models"])
         self.assertEqual([(p["name"], p["steps"], p["model"]) for p in none], [("build", ["tests", "lint", "pr"], "sonnet")])
+        # With ce-plan too: the implementing follows the plan in the same build turn, not on the finish model.
+        thin = htr.phase_plan(htr.required_steps("plan-first", [], "none"), res["phase_models"])
+        self.assertEqual([(p["name"], p["steps"]) for p in thin], [("build", ["ce-plan", "tests", "lint", "pr"])])
+
+    def test_a_refused_judge_model_names_its_own_flag(self):
+        err = io.StringIO()
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(err):
+            htr.resolve(self.ticket(), Args(judge_model="fable"))
+        self.assertIn("judge-model 'fable' is refused", err.getvalue())
+        self.assertIn("--judge-model opus", err.getvalue())
+
+    def test_a_turn_refuses_a_model_over_the_cap_written_into_run_json(self):
+        d = tempfile.mkdtemp(prefix="htr-turn-")
+        self.addCleanup(shutil.rmtree, d, True)
+        info = {"model": "sonnet", "effort": "medium", "session_id": "s", "worktree": d}
+        self.assertEqual(htr.run_turn(d, info, 0, "phase", "p", {"name": "judge", "model": "fable", "effort": "high"}), 2)
+        self.assertIn("refused 'fable'", slurp(os.path.join(d, "agent.log")))
+        self.assertEqual(hooks.read_markers(d), [], "a refused turn starts nothing")
 
     def test_a_phased_brief_tells_the_agent_to_do_one_phase_per_turn(self):
         t = self.ticket()
         r = htr.resolve(t, Args())
         req = htr.required_steps(r["route"], [], r["cycle"])
         info = {"repo": "o/r", "branch": "htr/7-t", "base": "main", "ticket_file": "/r/ticket.md", "required": req,
-                "port_base": 20000, "phases": htr.phase_plan(req, r["phases"])}
+                "port_base": 20000, "phases": htr.phase_plan(req, r["phase_models"])}
         text = htr.brief(t, r, info)
         self.assertIn("## Phases", text)
         self.assertIn("judge: ce-code-review, on opus / medium", text)
         self.assertIn("This turn is the build phase", text)
-        info["phases"] = htr.phase_plan(htr.required_steps("work", [], "none"), r["phases"])
+        self.assertIn("Leave ce-code-review to the judge phase", text)
+        self.assertIn("Each phase ends with a stop", text)
+        self.assertIn("Each phase runs as one headless turn", text)
+        self.assertNotIn("Then stop.", text)
+        info["phases"] = htr.phase_plan(htr.required_steps("work", [], "none"), r["phase_models"])
         self.assertNotIn("## Phases", htr.brief(t, r, info))
 
 
@@ -563,7 +587,7 @@ class StopHook(unittest.TestCase):
     def phased(self, cycle="full"):
         res = htr.resolve({"number": 7, "title": "t", "body": "## Done when\n- a\n", "labels": []}, Args(cycle=cycle))
         self.run["required"] = htr.required_steps("work", [], cycle)
-        self.run["phases"] = htr.phase_plan(self.run["required"], res["phases"])
+        self.run["phases"] = htr.phase_plan(self.run["required"], res["phase_models"])
         hooks.write_json(os.path.join(self.run_dir, "run.json"), self.run)
 
     def turn(self, phase, n=0):
@@ -601,8 +625,7 @@ class StopHook(unittest.TestCase):
         self.assertEqual(marker["decision"], "allow")
         self.assertTrue(os.path.exists(os.path.join(self.run_dir, "complete.json")))
 
-    def test_a_judge_turn_that_reopens_the_build_is_blocked_for_it(self):
-        # A review whose fix-up calls ce-work again needs another review before the judge turn ends.
+    def test_a_judge_turn_whose_fix_up_calls_ce_work_needs_another_review(self):
         self.phased()
         self.turn("build")
         self.mark(self.skill("ce-work"), self.skill("ce-simplify-code"))
@@ -611,6 +634,53 @@ class StopHook(unittest.TestCase):
         out, marker = self.stop()
         self.assertEqual(marker["decision"], "block")
         self.assertIn("before the last ce-work", out["reason"])
+
+    def test_a_review_outside_the_judge_turn_does_not_count(self):
+        self.phased()
+        self.turn("build")
+        self.mark(self.skill("ce-work"), self.skill("ce-simplify-code"), self.skill("ce-code-review"))
+        out, marker = self.stop()
+        self.assertEqual((marker["decision"], marker["next"]), ("phase-done", "judge"), "the judge turn still runs")
+        self.turn("judge")
+        out, marker = self.stop()
+        self.assertEqual(marker["decision"], "block")
+        self.assertIn("outside the judge phase's turn", out["reason"])
+
+    def test_a_finish_turn_that_reopens_the_review_ends_for_the_judge(self):
+        self.phased()
+        self.turn("build")
+        self.mark(self.skill("ce-work"), self.skill("ce-simplify-code"))
+        self.turn("judge")
+        self.mark(self.skill("ce-code-review"))
+        self.turn("finish")
+        self.mark(self.skill("ce-work"))
+        out, marker = self.stop()
+        self.assertIsNone(out, "a review on the finish model would not count, so the turn ends")
+        self.assertEqual((marker["decision"], marker["phase"], marker["next"]), ("phase-done", "finish", "judge"))
+        self.assertIsNone(htr.next_phase(self.run_dir, self.run["phases"], self.run["phases"][2])[0],
+                          "the supervisor goes forward only; resume routes to the judge")
+        self.assertEqual(hooks.first_missing_phase(self.run, hooks.evaluate(self.run_dir)["missing"])["name"], "judge")
+
+    def test_a_finish_turn_is_blocked_for_an_earlier_build_step_still_missing(self):
+        # Reached when a turn ends some other way (a hook timeout, say) and a later phase runs.
+        self.phased()
+        self.turn("build")
+        self.mark(self.skill("ce-work"))
+        self.turn("judge")
+        self.mark(self.skill("ce-code-review"))
+        self.turn("finish")
+        out, marker = self.stop()
+        self.assertEqual(marker["decision"], "block")
+        self.assertIn("finish phase", out["reason"])
+        self.assertIn("ce-simplify-code:", out["reason"])
+        self.assertNotIn("later phases", out["reason"], "finish is the last phase")
+
+    def test_a_one_turn_phased_run_names_no_later_phases(self):
+        self.phased("none")
+        self.turn("build")
+        out, marker = self.stop()
+        self.assertEqual(marker["decision"], "block")
+        self.assertNotIn("later phases", out["reason"])
 
     def test_legacy_run_json_keeps_one_turn_for_the_whole_cycle(self):
         # A run.json written before phases existed, as htr.py launch wrote it then: no "phases" key,
@@ -709,6 +779,7 @@ if mode == "phased":
         json.dump({"url": "https://github.com/o/r/pull/9", "state": "OPEN", "headRefOid": head,
                    "body": "Closes #7\nT7.c1 ok\n## Review findings\nnone"}, open(os.environ["HTR_FAKE_PR"], "w"))
     print("stop:", hook("stop", {"stop_hook_active": False}) or "allowed")
+    sys.exit(int(os.environ.get("FAKE_EXIT", "0")))
 '''
 
 FAKE_GH = r'''#!/usr/bin/env python3
@@ -903,6 +974,7 @@ class Launch(unittest.TestCase):
         r = self.htr("resume", "--run", out["run"])
         self.assertIn("judge phase: opus / medium", r.stdout)
         self.assertNotIn("ce-commit-push-pr", r.stdout.split("finishing turn")[1], "a judge turn lists only its own steps")
+        hooks.append_marker(run_dir, {"kind": "turn", "turn": 1, "event": "start", "phase": "judge"})
         hooks.append_marker(run_dir, {"kind": "skill", "skill": "ce-code-review", "ok": True})
         self.assertIn("finish phase: sonnet / low", self.htr("resume", "--run", out["run"]).stdout)
         r = self.htr("resume", "--run", out["run"], "--send", env={"FAKE_CLAUDE_MODE": "die"})
@@ -912,6 +984,39 @@ class Launch(unittest.TestCase):
         self.assertEqual((self.arg(argv, "--model"), self.arg(argv, "--effort")), ("sonnet", "low"))
         self.assertIn("finish phase", argv[-1])
         self.assertEqual(hooks.read_json(os.path.join(run_dir, "run.json"))["finishing_turns"], 1)
+
+    def test_a_resumed_phase_turn_goes_on_to_the_later_phases(self):
+        out, run_dir = self.launch("die")
+        self.wait_exit(run_dir)
+        hooks.append_marker(run_dir, {"kind": "skill", "skill": "ce-work", "ok": True})
+        r = self.htr("resume", "--run", out["run"], "--send", env={"FAKE_CLAUDE_MODE": "phased"})
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.wait_exit(run_dir, 3)
+        for _ in range(200):
+            if os.path.exists(os.path.join(run_dir, "exit.json")):
+                break
+            time.sleep(0.05)
+        calls = [c["argv"] for c in self.calls()][1:]
+        sid = hooks.read_json(os.path.join(run_dir, "run.json"))["session_id"]
+        self.assertEqual([(self.arg(a, "--model"), self.arg(a, "--effort"), self.arg(a, "--resume")) for a in calls],
+                         [("opus", "medium", sid), ("sonnet", "low", sid)])
+        self.assertEqual(hooks.read_json(os.path.join(run_dir, "run.json"))["finishing_turns"], 1)
+        self.assertEqual(json.loads(self.htr("status", "--json").stdout)[0]["state"], "complete")
+
+    def test_a_turn_that_fails_after_its_phase_is_shown_starts_no_next_phase(self):
+        # The build turn shows its phase (the hook writes phase-done), then claude exits non-zero.
+        r = self.htr("launch", "--repo", "o/r", "--issue", "7", "--checkout", self.checkout, "--base", "main", "--json",
+                     env={"FAKE_CLAUDE_MODE": "phased", "FAKE_EXIT": "1"})
+        self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
+        run_dir = os.path.join(self.t, "home", "runs", json.loads(r.stdout)["run"])
+        self.wait_exit(run_dir)
+        for _ in range(200):
+            if os.path.exists(os.path.join(run_dir, "exit.json")):
+                break
+            time.sleep(0.05)
+        self.assertEqual(hooks.read_json(os.path.join(run_dir, "exit.json"))["code"], 1)
+        self.assertEqual([m["decision"] for m in hooks.read_markers(run_dir) if m.get("kind") == "stop"][-1], "phase-done")
+        self.assertEqual(len(self.calls()), 1, "a failed session is not resumed into the next phase")
 
     def test_a_legacy_run_resumes_on_its_one_model_with_no_phase_turns(self):
         out, run_dir = self.launch("die")
@@ -946,16 +1051,20 @@ class Launch(unittest.TestCase):
         r = self.htr("prompt", "--repo", "o/r", "--issue", "7")
         self.assertIn("judge: ce-code-review, on opus / medium", r.stdout)
 
-    def test_one_turn_that_does_everything_completes_with_no_phase_turns(self):
+    def test_a_build_turn_that_also_reviews_still_gets_its_judge_turn(self):
+        # The fake does the whole lifecycle in each turn. The build turn's review does not count,
+        # so the judge turn runs on Opus; its review does, and the run completes there.
         out, run_dir = self.launch("full")
-        self.wait_exit(run_dir)
+        self.wait_exit(run_dir, 2)
         for _ in range(200):
             if os.path.exists(os.path.join(run_dir, "exit.json")):
                 break
             time.sleep(0.05)
         stops = [m for m in hooks.read_markers(run_dir) if m.get("kind") == "stop"]
-        self.assertEqual([s["decision"] for s in stops], ["phase-done", "allow"])
-        self.assertEqual(len(self.calls()), 1)
+        self.assertEqual([(s["decision"], s.get("next")) for s in stops],
+                         [("phase-done", "judge"), ("phase-done", "judge"), ("phase-done", "finish"), ("allow", None)])
+        calls = [c["argv"] for c in self.calls()]
+        self.assertEqual([(self.arg(a, "--model"), self.arg(a, "--effort")) for a in calls], [("sonnet", "medium"), ("opus", "medium")])
         st = json.loads(self.htr("status", "--json").stdout)[0]
         self.assertEqual((st["state"], st["pr"]), ("complete", "https://github.com/o/r/pull/9"))
         r = self.htr("launch", "--repo", "o/r", "--issue", "7", "--checkout", self.checkout, "--base", "main")

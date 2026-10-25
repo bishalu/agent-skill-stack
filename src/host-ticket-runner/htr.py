@@ -8,7 +8,8 @@ Usage: htr.py <verb> [options]        htr.py <verb> --help for each verb's optio
 Verbs:
   preflight   check the host (claude, gh, git, the AWS profile); --agent also proves the
               AWS scrubbing inside a short launched agent
-  route       print the tier, model, effort, route and criteria a ticket resolves to
+  route       print the tier, cycle, per-phase model and effort, route and criteria a
+              ticket resolves to
   prompt      build a ticket's brief and print it, launching nothing
   launch      worktree, brief, hooks, detached agent; returns as soon as it is running
   status      every run (or one) with its state, missing steps and PR
@@ -263,31 +264,29 @@ def resolve(ticket, args):
         die("cycle %r is not one of %s" % (cycle, ", ".join(CYCLES)))
     if label_value(labels, "plan") == "first" and route == "work" and (getattr(args, "route", "auto") or "auto") == "auto":
         route, route_why = "plan-first", "label plan:first: ce-plan first, against the %d criteria" % len(criteria)
-    for m in (model, judge_model):
+    for flag, m in (("--model", model), ("--judge-model", judge_model)):
         if not MODEL_OK.match(m):
-            die("model %r is refused: launched agents run on Opus at most (haiku, sonnet, opus or a claude-haiku/sonnet/opus id)" % m,
-                example="htr.py launch --repo %s --issue %s --model opus" % (args.repo, args.issue))
+            die("%s %r is refused: launched agents run on Opus at most (haiku, sonnet, opus or a claude-haiku/sonnet/opus id)"
+                % (flag[2:], m), example="htr.py launch --repo %s --issue %s %s opus" % (args.repo, args.issue, flag))
     for e in (effort, judge_effort):
         if e is not None and e not in EFFORTS:
             die("effort %r is not one of %s" % (e, ", ".join(EFFORTS)))
     if judge_effort is None:
         judge_effort = max(table["judge"]["effort"], effort, key=EFFORTS.index)
-    phases = {"build": _p(model, effort), "judge": _p(judge_model, judge_effort), "finish": dict(table["finish"])}
+    phase_models = {"build": _p(model, effort), "judge": _p(judge_model, judge_effort), "finish": dict(table["finish"])}
     return {"route": route, "route_why": route_why, "tier": tier, "tier_why": why, "model": model, "effort": effort,
-            "phases": phases, "cycle": cycle,
+            "phase_models": phase_models, "cycle": cycle,
             "criteria": criteria, "criteria_source": source, "labels": sorted(labels)}
 
 
-def phase_plan(required, phases):
+def phase_plan(required, phase_models):
     """The run's turns: each phase that owns a required step, in order, with its model and effort.
-    The build turn always comes first; when the cycle shows no build step (cycle none), it takes
-    the next phase's steps, since the implementing is done in it."""
-    plan = [dict(phases[name], name=name, steps=[s for s in required if s in hooks.PHASE_STEPS[name]]) for name in PHASES]
-    plan = [p for p in plan if p["steps"]]
-    if not plan or plan[0]["name"] != "build":
-        steps = plan.pop(0)["steps"] if plan else []
-        plan.insert(0, dict(phases["build"], name="build", steps=steps))
-    return plan
+    Without ce-work (cycle none) the implementing is no recorded step, so the run is one build
+    turn holding every step: a separate finish turn would do the implementing on its model."""
+    if "ce-work" not in required:
+        return [dict(phase_models["build"], name="build", steps=list(required))]
+    plan = [dict(phase_models[name], name=name, steps=[s for s in required if s in hooks.PHASE_STEPS[name]]) for name in PHASES]
+    return [p for p in plan if p["steps"]]
 
 
 def phase_table(plan):
@@ -362,9 +361,11 @@ def brief(ticket, res, run_info):
                   "and effort, chosen for the work it does:\n\n%s\n\nDo only the current phase's steps in each turn, then "
                   "stop. This turn is the %s phase: %s. The Stop hook blocks your stop until the current phase's steps are "
                   "shown, then lets the turn end; the next phase arrives as a new message naming its steps. Commit before "
-                  "you stop, so the next phase starts from a clean tree.\n" % (
+                  "you stop, so the next phase starts from a clean tree.%s\n" % (
                       "\n".join("- %s: %s, on %s / %s" % (p["name"], ", ".join(p["steps"]), p["model"], p["effort"]) for p in plan),
-                      plan[0]["name"], ", ".join(plan[0]["steps"])))
+                      plan[0]["name"], ", ".join(plan[0]["steps"]),
+                      " Leave ce-code-review to the judge phase: a review run in any other turn does not count."
+                      if "ce-code-review" in req else ""))
     with open(os.path.join(HERE, "templates", "brief.md"), encoding="utf-8") as f:
         tpl = string.Template(f.read())
     text = tpl.safe_substitute(repo=run_info["repo"], issue=issue, ticket_file=tf, branch=run_info["branch"], phases=phases,
@@ -378,6 +379,11 @@ def brief(ticket, res, run_info):
     if "ce-code-review" not in req:
         text = text.replace("listing what ce-code-review found, which findings you applied",
                             "listing what your self-review found, what you changed")
+    if phases:
+        text = text.replace("Then stop. Do not merge", "Each phase ends with a stop, as the Phases section below says. Do not merge")
+        text = text.replace("It will not let the run end until", "It lets each phase's turn end once that phase's steps "
+                            "are shown, and it will not let the run's last turn end until")
+        text = text.replace("You run as one headless turn,", "Each phase runs as one headless turn,")
     if "ce-work" not in req:
         text = text.replace(" through the Compound Engineering lifecycle, hands-off", ", hands-off")
         text = re.sub(r" Resolve each skill name against the available-skills list[^\n]*?ce-work\)\.", "", text)
@@ -744,7 +750,7 @@ def plan_launch(args):
 def do_route(args):
     ticket, res = plan_launch(args)
     req = required_steps(res["route"], getattr(args, "skip_step", None) or [], res["cycle"])
-    plan = phase_plan(req, res["phases"])
+    plan = phase_plan(req, res["phase_models"])
     if args.json:
         print(json.dumps(dict(res, required=req, phase_plan=plan), indent=2))
         return 0
@@ -771,7 +777,7 @@ def do_prompt(args):
     rid = run_id(args.repo, args.issue, "PREVIEW")
     req = required_steps(res["route"], args.skip_step or [], res["cycle"])
     info = {"repo": args.repo, "branch": branch_name(args.issue, ticket), "base": args.base or "<default branch>",
-            "ticket_file": os.path.join(runs_dir(), rid, "ticket.md"), "required": req, "phases": phase_plan(req, res["phases"])}
+            "ticket_file": os.path.join(runs_dir(), rid, "ticket.md"), "required": req, "phases": phase_plan(req, res["phase_models"])}
     print(brief(ticket, res, info))
     return 0
 
@@ -824,7 +830,7 @@ def do_launch(args):
             "test_regex": args.test_regex, "lint_regex": args.lint_regex, "launched_at": now_stamp(),
             "finishing_turns": 0, "extensions": [], "port_base": free_port_base(), "copied_in": copy_in}
     info.update({k: res[k] for k in ("route", "route_why", "tier", "tier_why", "model", "effort", "criteria", "criteria_source")})
-    info["phases"] = phase_plan(info["required"], res["phases"])
+    info["phases"] = phase_plan(info["required"], res["phase_models"])
     info["work_input"] = info["ticket_file"] if res["route"] == "work" else PLAN_PATH
 
     if args.dry_run:
@@ -919,6 +925,12 @@ def spawn(info, extra):
 def run_turn(d, info, turn, kind, prompt, phase=None):
     """One claude turn in the run's worktree; returns its exit code."""
     model, effort = (phase["model"], phase["effort"]) if phase else (info["model"], info["effort"])
+    if not MODEL_OK.match(str(model)) or effort not in EFFORTS:
+        # run.json is the agent's to write; the Opus cap holds at the spawn point too.
+        with open(os.path.join(d, "agent.log"), "a", encoding="utf-8") as log:
+            log.write("\n=== turn %d (%s) %s: refused %r / %r: launched agents run on Opus at most ===\n" % (
+                turn, kind, now_stamp(), model, effort))
+        return 2
     sup = {"pid": os.getpid(), "started_at": now_stamp(), "turn": turn, "kind": kind}
     start = {"kind": "turn", "turn": turn, "event": "start", "model": model, "effort": effort}
     if phase:
@@ -945,15 +957,17 @@ def run_turn(d, info, turn, kind, prompt, phase=None):
 
 def next_phase(d, phases, phase):
     """(the phase to run next, its missing steps) when the turn that just ended showed its own
-    phase, by the Stop hook's phase-done marker; (None, []) when it ended any other way. Only
-    forward: no phase runs twice in one supervisor."""
+    phase, by the Stop hook's phase-done marker naming the plan's next phase; (None, []) when it
+    ended any other way. Only one step forward, so no phase runs twice in one supervisor."""
     ms = hooks.read_markers(d)
     stops = [m for m in ms[hooks.last_index(ms, hooks.is_turn_start) + 1:] if m.get("kind") == "stop"]
     done = stops[-1] if stops and stops[-1].get("decision") == "phase-done" else {}
     names = [p["name"] for p in phases]
-    if done.get("next") not in names or names.index(done["next"]) <= names.index(phase["name"]):
+    i = names.index(phase["name"]) + 1
+    if i >= len(names) or done.get("next") != names[i]:
         return None, []
-    return phases[names.index(done["next"])], done.get("missing_detail") or []
+    detail = done.get("missing_detail")
+    return phases[i], [m for m in detail if isinstance(m, dict) and "step" in m] if isinstance(detail, list) else []
 
 
 def phase_text(rj, phase, missing):
@@ -964,8 +978,7 @@ def phase_text(rj, phase, missing):
     lines = ["This is the %s phase of ticket %s#%s, on %s / %s. Read `git status` and `git log` in the worktree first: "
              "the work so far is there. Do only these steps now, in order, then stop:" % (
                  phase["name"], rj["repo"], rj["issue"], phase["model"], phase["effort"])]
-    for i, m in enumerate(hooks.missing_through(rj, missing, idx)[0], 1):
-        lines.append("%d. %s: %s. Do: %s." % (i, m["step"], m["why"], m["do"]))
+    lines += hooks.step_lines(hooks.missing_through(rj, missing, idx)[0])
     later = names[idx + 1:]
     lines.append("Work inline and commit each step as it passes. " +
                  ("Later phases (%s) come in their own turns." % ", ".join(later) if later else "Stop when the PR is open."))
@@ -991,18 +1004,22 @@ def do_supervise(args):
         with open(os.path.join(d, "prompt.md"), encoding="utf-8") as f:
             prompt = f.read()
     phase = next((p for p in phases if p["name"] == args.phase), phases[0]) if phases else None
-    code = run_turn(d, info, turn, kind, prompt, phase)
-    end = {"kind": "turn", "turn": turn, "event": "end", "exit": code}
-    while phase and code == 0 and not os.path.exists(os.path.join(d, "complete.json")):
-        phase, missing = next_phase(d, phases, phase)
-        if not phase:
-            break
-        hooks.append_marker(d, end)
-        code = run_turn(d, info, turn, "phase", phase_text(info, phase, missing), phase)
-        end = {"kind": "turn", "turn": turn, "event": "end", "exit": code}
-    # exit.json before the last end marker: a watcher that sees the end sees the exit too.
-    hooks.write_json(os.path.join(d, "exit.json"), {"code": code, "turn": turn, "ended_at": now_stamp()})
-    hooks.append_marker(d, end)
+    code = 1
+    try:
+        code = run_turn(d, info, turn, kind, prompt, phase)
+        # Only the hook's phase-done marker moves the run on: a complete.json the agent could
+        # write itself does not skip a phase.
+        while phase and code == 0:
+            phase, missing = next_phase(d, phases, phase)
+            if not phase:
+                break
+            hooks.append_marker(d, {"kind": "turn", "turn": turn, "event": "end", "exit": code})
+            code = 1   # what exit.json says if this turn raises
+            code = run_turn(d, info, turn, "phase", phase_text(info, phase, missing), phase)
+    finally:
+        # exit.json before the last end marker: a watcher that sees the end sees the exit too.
+        hooks.write_json(os.path.join(d, "exit.json"), {"code": code, "turn": turn, "ended_at": now_stamp()})
+        hooks.append_marker(d, {"kind": "turn", "turn": turn, "event": "end", "exit": code})
     return 0
 
 
@@ -1010,8 +1027,7 @@ def do_supervise(args):
 def finishing_text(rj, st):
     lines = ["The previous turn of this ticket (%s#%s) ended before the run was complete (%s). Read `git status` and "
              "`git log` in the worktree first. Then finish, in order:" % (rj["repo"], rj["issue"], st["state"])]
-    for i, m in enumerate(st["missing_detail"], 1):
-        lines.append("%d. %s: %s. Do: %s." % (i, m["step"], m["why"], m["do"]))
+    lines += hooks.step_lines(st["missing_detail"])
     lines.append("Work inline, commit each step as it passes, and stop when the PR is open.")
     return "\n".join(lines)
 
@@ -1162,7 +1178,7 @@ def main(argv=None):
     q = sub.add_parser("_supervise")
     q.add_argument("--run", required=True)
     q.add_argument("--resume-file")
-    q.add_argument("--phase", help="the phase a finishing turn of a phased run is for")
+    q.add_argument("--phase", choices=PHASES, help="the phase a finishing turn of a phased run is for")
 
     args = p.parse_args(argv)
     if not args.verb:

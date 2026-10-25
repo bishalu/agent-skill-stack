@@ -418,9 +418,14 @@ def evaluate(run_dir, run=None, markers=None, check_pr=True):
     def is_skill(name):
         return lambda m: m.get("kind") == "skill" and m.get("skill") == name and m.get("ok", True)
 
+    outside = 0
+    if run.get("phases") and "ce-code-review" in required:
+        markers, outside = judged_reviews(markers)
+
     for step in [s for s in SKILL_STEPS if s in required]:
         if first_index(markers, is_skill(step)) < 0:
-            miss(step, "no %s skill call is recorded" % step)
+            miss(step, ("ce-code-review ran only outside the judge phase's turn; it counts only there, on the judge's "
+                        "model" if step == "ce-code-review" and outside else "no %s skill call is recorded" % step))
         else:
             done.append(step)
 
@@ -527,6 +532,25 @@ def is_turn_start(m):
     return m.get("kind") == "turn" and m.get("event") == "start"
 
 
+def judged_reviews(markers):
+    """(markers, how many reviews were set aside): a phased run's ce-code-review calls outside a
+    judge-phase turn are marked not ok, so they do not count. The judge phase is the turn on
+    the judge's model; a review on the build or finish model is not the one the tier routes."""
+    out, phase, outside = [], None, 0
+    for m in markers:
+        if is_turn_start(m):
+            phase = m.get("phase")
+        if m.get("kind") == "skill" and m.get("skill") == "ce-code-review" and m.get("ok", True) and phase != "judge":
+            m, outside = dict(m, ok=False), outside + 1
+        out.append(m)
+    return out, outside
+
+
+def step_lines(missing):
+    """The numbered missing-step lines a block, a phase turn and a finishing turn all show."""
+    return ["%d. %s: %s. Do: %s." % (i, m.get("step"), m.get("why", ""), m.get("do", "")) for i, m in enumerate(missing, 1)]
+
+
 def phase_index(run, step):
     phases = run.get("phases") or []
     for i, p in enumerate(phases):
@@ -549,12 +573,12 @@ def missing_through(run, missing, idx):
 
 
 def current_phase_index(run, markers, missing):
+    """The phase of the turn now ending, from its start marker; else that of the first missing
+    step (`missing` is not empty)."""
     names = [p.get("name") for p in run.get("phases") or []]
     start = last_index(markers, is_turn_start)
     name = markers[start].get("phase") if start >= 0 else None
-    if name in names:
-        return names.index(name)
-    return phase_index(run, missing[0]["step"]) if missing else len(names) - 1
+    return names.index(name) if name in names else phase_index(run, missing[0]["step"])
 
 
 # ---------------------------------------------------------------- the Stop hook
@@ -567,11 +591,15 @@ def stop_decision(run_dir, payload, run=None, markers=None, ev=None):
     missing = ev["missing"]
     active = bool(payload.get("stop_hook_active"))
     phases = run.get("phases") or []
-    phase, due = None, missing
+    phase, due, more = None, missing, False
     if phases and missing and run.get("required"):
         cur = current_phase_index(run, markers, missing)
-        phase = phases[cur].get("name")
+        phase, more = phases[cur].get("name"), cur < len(phases) - 1
         due, later = missing_through(run, missing, cur)
+        if phase != "judge" and any(m["step"] == "ce-code-review" for m in due):
+            # A review reopened after the judge's turn counts only in a judge turn, so this turn
+            # ends; the supervisor goes forward only, and `htr resume` routes to the judge.
+            due, later = [], missing
         if not due:
             nxt = first_missing_phase(run, missing).get("name")
             # The next phase's turn opens with these, so the supervisor need not evaluate again.
@@ -615,10 +643,9 @@ def stop_decision(run_dir, payload, run=None, markers=None, ev=None):
     what = "the %s phase of this run" % phase if phase else "this run"
     lines = ["host-ticket-runner: %s cannot end yet. The Stop hook reads what your tool calls recorded, "
              "not what you report. Still missing, in order:" % what]
-    for n, m in enumerate(due, 1):
-        lines.append("%d. %s: %s. Do: %s." % (n, m["step"], m["why"], m["do"]))
+    lines += step_lines(due)
     lines.append("Do them now, then stop.%s (Block %d of %d.)" % (
-        " The later phases come in their own turns." if phase else "", len(blocks) + 1, max_blocks))
+        " The later phases come in their own turns." if more else "", len(blocks) + 1, max_blocks))
     marker = {"kind": "stop", "decision": "block", "stop_hook_active": active, "missing": keys, "stalled": stalled}
     if phase:
         marker["phase"] = phase
