@@ -7,7 +7,7 @@ The ticket below is your whole brief. It is saved verbatim at $ticket_file; read
 $steps
 
 Then stop. Do not merge the PR: a person or the orchestrating session reviews and merges it.
-
+$phases
 ## The PR body
 
 ce-commit-push-pr writes it; make sure it holds:

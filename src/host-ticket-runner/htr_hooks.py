@@ -50,6 +50,17 @@ LEAD_RE = re.compile(r"^(\s*(\w+=\S*|cd +\S+ *&&|time|env|command|exec|sudo +-E)
 SKILL_STEPS = ["ce-plan", "ce-work", "ce-simplify-code", "ce-code-review", "ce-compound", "ce-commit-push-pr"]
 ORDER = SKILL_STEPS[:-1] + ["tests", "lint", "ce-commit-push-pr", "pr"]
 
+# The lifecycle phases, in order, and the steps each owns. A run.json with a "phases" list
+# (launched since phases existed) runs one turn per phase; one without it is one turn for the
+# whole cycle, as every run before them was. ce-debug is never a required step: when the agent
+# uses it, it is judge work.
+PHASES = ["build", "judge", "finish"]
+PHASE_STEPS = {
+    "build": ["ce-plan", "ce-work", "ce-simplify-code"],
+    "judge": ["ce-debug", "ce-code-review"],
+    "finish": ["ce-compound", "tests", "lint", "ce-commit-push-pr", "pr"],
+}
+
 # What the Stop hook tells the agent to do for each missing step. The ticket file and plan
 # path are filled in from run.json.
 STEP_HELP = {
@@ -407,9 +418,14 @@ def evaluate(run_dir, run=None, markers=None, check_pr=True):
     def is_skill(name):
         return lambda m: m.get("kind") == "skill" and m.get("skill") == name and m.get("ok", True)
 
+    outside = 0
+    if run.get("phases") and "ce-code-review" in required:
+        markers, outside = judged_reviews(markers)
+
     for step in [s for s in SKILL_STEPS if s in required]:
         if first_index(markers, is_skill(step)) < 0:
-            miss(step, "no %s skill call is recorded" % step)
+            miss(step, ("ce-code-review ran only outside the judge phase's turn; it counts only there, on the judge's "
+                        "model" if step == "ce-code-review" and outside else "no %s skill call is recorded" % step))
         else:
             done.append(step)
 
@@ -511,18 +527,89 @@ def _inside(path, root):
     return p == r or p.startswith(r.rstrip("/\\") + os.sep)
 
 
+# ---------------------------------------------------------------- phases
+def is_turn_start(m):
+    return m.get("kind") == "turn" and m.get("event") == "start"
+
+
+def judged_reviews(markers):
+    """(markers, how many reviews were set aside): a phased run's ce-code-review calls outside a
+    judge-phase turn are marked not ok, so they do not count. The judge phase is the turn on
+    the judge's model; a review on the build or finish model is not the one the tier routes."""
+    out, phase, outside = [], None, 0
+    for m in markers:
+        if is_turn_start(m):
+            phase = m.get("phase")
+        if m.get("kind") == "skill" and m.get("skill") == "ce-code-review" and m.get("ok", True) and phase != "judge":
+            m, outside = dict(m, ok=False), outside + 1
+        out.append(m)
+    return out, outside
+
+
+def step_lines(missing):
+    """The numbered missing-step lines a block, a phase turn and a finishing turn all show."""
+    return ["%d. %s: %s. Do: %s." % (i, m.get("step"), m.get("why", ""), m.get("do", "")) for i, m in enumerate(missing, 1)]
+
+
+def phase_index(run, step):
+    phases = run.get("phases") or []
+    for i, p in enumerate(phases):
+        if step in (p.get("steps") or []):
+            return i
+    return len(phases) - 1
+
+
+def first_missing_phase(run, missing):
+    phases = run.get("phases") or []
+    if not phases:
+        return None
+    return phases[phase_index(run, missing[0]["step"])] if missing else phases[-1]
+
+
+def missing_through(run, missing, idx):
+    """(due, later): the missing steps of phase `idx` or an earlier one, and the rest."""
+    due = [m for m in missing if phase_index(run, m["step"]) <= idx]
+    return due, [m for m in missing if phase_index(run, m["step"]) > idx]
+
+
+def current_phase_index(run, markers, missing):
+    """The phase of the turn now ending, from its start marker; else that of the first missing
+    step (`missing` is not empty)."""
+    names = [p.get("name") for p in run.get("phases") or []]
+    start = last_index(markers, is_turn_start)
+    name = markers[start].get("phase") if start >= 0 else None
+    return names.index(name) if name in names else phase_index(run, missing[0]["step"])
+
+
 # ---------------------------------------------------------------- the Stop hook
 def stop_decision(run_dir, payload, run=None, markers=None, ev=None):
-    """(output dict or None, marker dict). None output means: let the run end."""
+    """(output dict or None, marker dict). None output means: let the run (or, in a phased
+    run, this phase's turn) end."""
     run = run or read_json(os.path.join(run_dir, "run.json"), {})
     markers = read_markers(run_dir) if markers is None else markers
     ev = ev or evaluate(run_dir, run, markers)
     missing = ev["missing"]
     active = bool(payload.get("stop_hook_active"))
+    phases = run.get("phases") or []
+    phase, due, more = None, missing, False
+    if phases and missing and run.get("required"):
+        cur = current_phase_index(run, markers, missing)
+        phase, more = phases[cur].get("name"), cur < len(phases) - 1
+        due, later = missing_through(run, missing, cur)
+        if phase != "judge" and any(m["step"] == "ce-code-review" for m in due):
+            # A review reopened after the judge's turn counts only in a judge turn, so this turn
+            # ends; the supervisor goes forward only, and `htr resume` routes to the judge.
+            due, later = [], missing
+        if not due:
+            nxt = first_missing_phase(run, missing).get("name")
+            # The next phase's turn opens with these, so the supervisor need not evaluate again.
+            return None, {"kind": "stop", "decision": "phase-done", "stop_hook_active": active, "phase": phase,
+                          "next": nxt, "missing_detail": later,
+                          "reason": "every step of the %s phase is shown; %s comes next" % (phase, nxt)}
     budget = run.get("budgets") or {}
     max_blocks = int(budget.get("stop_blocks", DEFAULT_BUDGETS["stop_blocks"]))
     max_stall = int(budget.get("stalled_blocks", DEFAULT_BUDGETS["stalled_blocks"]))
-    keys = sorted("%s: %s" % (m["step"], m["why"]) for m in missing)
+    keys = sorted("%s: %s" % (m["step"], m["why"]) for m in due)
 
     if not run.get("required"):
         # An unreadable run.json leaves nothing to check; that is not a finished run.
@@ -536,7 +623,7 @@ def stop_decision(run_dir, payload, run=None, markers=None, ev=None):
         return None, {"kind": "stop", "decision": "allow", "stop_hook_active": active, "reason": "every required step is shown"}
 
     # The block budget is per turn: a finishing turn (resume) starts with a fresh one.
-    turn_start = last_index(markers, lambda m: m.get("kind") == "turn" and m.get("event") == "start")
+    turn_start = last_index(markers, is_turn_start)
     blocks = [m for m in markers[turn_start + 1:] if m.get("kind") == "stop" and m.get("decision") == "block"]
     # A stall: the hook already blocked, the agent stopped again (stop_hook_active) with the
     # same steps missing and no tool call recorded in between.
@@ -553,13 +640,16 @@ def stop_decision(run_dir, payload, run=None, markers=None, ev=None):
         return ({"systemMessage": "host-ticket-runner: escalated (%s); see %s" % (why, os.path.join(run_dir, "escalation.md"))},
                 {"kind": "stop", "decision": "escalate", "stop_hook_active": active, "missing": keys, "reason": why})
 
-    lines = ["host-ticket-runner: this run cannot end yet. The Stop hook reads what your tool calls recorded, "
-             "not what you report. Still missing, in order:"]
-    for n, m in enumerate(missing, 1):
-        lines.append("%d. %s: %s. Do: %s." % (n, m["step"], m["why"], m["do"]))
-    lines.append("Do them now, then stop. (Block %d of %d.)" % (len(blocks) + 1, max_blocks))
-    return ({"decision": "block", "reason": "\n".join(lines)},
-            {"kind": "stop", "decision": "block", "stop_hook_active": active, "missing": keys, "stalled": stalled})
+    what = "the %s phase of this run" % phase if phase else "this run"
+    lines = ["host-ticket-runner: %s cannot end yet. The Stop hook reads what your tool calls recorded, "
+             "not what you report. Still missing, in order:" % what]
+    lines += step_lines(due)
+    lines.append("Do them now, then stop.%s (Block %d of %d.)" % (
+        " The later phases come in their own turns." if more else "", len(blocks) + 1, max_blocks))
+    marker = {"kind": "stop", "decision": "block", "stop_hook_active": active, "missing": keys, "stalled": stalled}
+    if phase:
+        marker["phase"] = phase
+    return {"decision": "block", "reason": "\n".join(lines)}, marker
 
 
 def write_escalation(run_dir, run, missing, why, payload):

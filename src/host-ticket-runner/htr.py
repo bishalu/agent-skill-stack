@@ -8,7 +8,8 @@ Usage: htr.py <verb> [options]        htr.py <verb> --help for each verb's optio
 Verbs:
   preflight   check the host (claude, gh, git, the AWS profile); --agent also proves the
               AWS scrubbing inside a short launched agent
-  route       print the tier, model, effort, route and criteria a ticket resolves to
+  route       print the tier, cycle, per-phase model and effort, route and criteria a
+              ticket resolves to
   prompt      build a ticket's brief and print it, launching nothing
   launch      worktree, brief, hooks, detached agent; returns as soon as it is running
   status      every run (or one) with its state, missing steps and PR
@@ -53,11 +54,20 @@ IS_WIN = os.name == "nt"
 IS_MAC = sys.platform == "darwin"
 
 # ---------------------------------------------------------------- routing table
-# The table SKILL.md shows; htr_test.py fails when a tier's model or effort there differs.
+# A run's model and effort follow its lifecycle phase: build writes the change, judge reviews
+# it, finish ships it. Each phase is one turn of the same session. The table SKILL.md shows;
+# htr_test.py fails when a tier's model or effort there differs.
+PHASES = hooks.PHASES
+
+
+def _p(model, effort):
+    return {"model": model, "effort": effort}
+
+
 TIERS = {
-    "light":    {"model": "sonnet", "effort": "medium"},
-    "standard": {"model": "opus",   "effort": "medium"},
-    "heavy":    {"model": "opus",   "effort": "high"},
+    "light":    {"build": _p("sonnet", "medium"), "judge": _p("opus", "medium"), "finish": _p("sonnet", "low")},
+    "standard": {"build": _p("sonnet", "medium"), "judge": _p("opus", "high"),   "finish": _p("sonnet", "low")},
+    "heavy":    {"build": _p("opus", "high"),     "judge": _p("opus", "high"),   "finish": _p("sonnet", "medium")},
 }
 LIGHT_LABELS = {"docs", "documentation", "typo", "chore", "trivial", "size:xs", "size:s", "good first issue"}
 HEAVY_LABELS = {"size:l", "size:xl", "risk", "risky", "security", "infra", "infrastructure", "migration", "breaking", "cross-boundary"}
@@ -244,21 +254,43 @@ def resolve(ticket, args):
         tier, why = "light", "small ticket (%d chars, %d criteria, no risk words)" % (len(body), len(criteria))
     else:
         tier, why = "standard", "default (%d chars, %d criteria%s)" % (len(body), len(criteria), ", thin" if route == "plan-first" else "")
-    model = args.model or label_value(labels, "model") or TIERS[tier]["model"]
-    effort = args.effort or label_value(labels, "effort") or TIERS[tier]["effort"]
+    table = TIERS[tier]
+    model = args.model or label_value(labels, "model") or table["build"]["model"]
+    effort = args.effort or label_value(labels, "effort") or table["build"]["effort"]
+    judge_model = getattr(args, "judge_model", None) or label_value(labels, "judge-model") or table["judge"]["model"]
+    judge_effort = getattr(args, "judge_effort", None) or label_value(labels, "judge-effort")
     cycle = getattr(args, "cycle", None) or label_value(labels, "cycle") or TIER_CYCLE[tier]
     if cycle not in CYCLES:
         die("cycle %r is not one of %s" % (cycle, ", ".join(CYCLES)))
     if label_value(labels, "plan") == "first" and route == "work" and (getattr(args, "route", "auto") or "auto") == "auto":
         route, route_why = "plan-first", "label plan:first: ce-plan first, against the %d criteria" % len(criteria)
-    if not MODEL_OK.match(model):
-        die("model %r is refused: launched agents run on Opus at most (haiku, sonnet, opus or a claude-haiku/sonnet/opus id)" % model,
-            example="htr.py launch --repo %s --issue %s --model opus" % (args.repo, args.issue))
-    if effort not in EFFORTS:
-        die("effort %r is not one of %s" % (effort, ", ".join(EFFORTS)))
+    for flag, m in (("--model", model), ("--judge-model", judge_model)):
+        if not MODEL_OK.match(m):
+            die("%s %r is refused: launched agents run on Opus at most (haiku, sonnet, opus or a claude-haiku/sonnet/opus id)"
+                % (flag[2:], m), example="htr.py launch --repo %s --issue %s %s opus" % (args.repo, args.issue, flag))
+    for e in (effort, judge_effort):
+        if e is not None and e not in EFFORTS:
+            die("effort %r is not one of %s" % (e, ", ".join(EFFORTS)))
+    if judge_effort is None:
+        judge_effort = max(table["judge"]["effort"], effort, key=EFFORTS.index)
+    phase_models = {"build": _p(model, effort), "judge": _p(judge_model, judge_effort), "finish": dict(table["finish"])}
     return {"route": route, "route_why": route_why, "tier": tier, "tier_why": why, "model": model, "effort": effort,
-            "cycle": cycle,
+            "phase_models": phase_models, "cycle": cycle,
             "criteria": criteria, "criteria_source": source, "labels": sorted(labels)}
+
+
+def phase_plan(required, phase_models):
+    """The run's turns: each phase that owns a required step, in order, with its model and effort.
+    Without ce-work (cycle none) the implementing is no recorded step, so the run is one build
+    turn holding every step: a separate finish turn would do the implementing on its model."""
+    if "ce-work" not in required:
+        return [dict(phase_models["build"], name="build", steps=list(required))]
+    plan = [dict(phase_models[name], name=name, steps=[s for s in required if s in hooks.PHASE_STEPS[name]]) for name in PHASES]
+    return [p for p in plan if p["steps"]]
+
+
+def phase_table(plan):
+    return "\n".join("  %-7s %-18s %s" % (p["name"], "%s / %s" % (p["model"], p["effort"]), ", ".join(p["steps"])) for p in plan)
 
 
 def required_steps(route, skip, cycle="full"):
@@ -322,9 +354,21 @@ def brief(ticket, res, run_info):
                 + "  Cite the ids rather than restating the criteria; the runner's record (acceptance.json) is the one copy of them;\n")
     else:
         rule = "- the acceptance criteria your plan wrote, each with how you verified it;\n"
+    plan = run_info.get("phases") or []
+    phases = ""
+    if len(plan) > 1:
+        phases = ("\n## Phases\n\nThis run is phased: each phase is one turn of this same conversation, on its own model "
+                  "and effort, chosen for the work it does:\n\n%s\n\nDo only the current phase's steps in each turn, then "
+                  "stop. This turn is the %s phase: %s. The Stop hook blocks your stop until the current phase's steps are "
+                  "shown, then lets the turn end; the next phase arrives as a new message naming its steps. Commit before "
+                  "you stop, so the next phase starts from a clean tree.%s\n" % (
+                      "\n".join("- %s: %s, on %s / %s" % (p["name"], ", ".join(p["steps"]), p["model"], p["effort"]) for p in plan),
+                      plan[0]["name"], ", ".join(plan[0]["steps"]),
+                      " Leave ce-code-review to the judge phase: a review run in any other turn does not count."
+                      if "ce-code-review" in req else ""))
     with open(os.path.join(HERE, "templates", "brief.md"), encoding="utf-8") as f:
         tpl = string.Template(f.read())
-    text = tpl.safe_substitute(repo=run_info["repo"], issue=issue, ticket_file=tf, branch=run_info["branch"],
+    text = tpl.safe_substitute(repo=run_info["repo"], issue=issue, ticket_file=tf, branch=run_info["branch"], phases=phases,
                                base=run_info["base"], steps=steps_text, criteria_rule=rule, aws_profile=AWS_PROFILE,
                                port_base=run_info.get("port_base", ""), title=ticket.get("title") or "", body=(ticket.get("body") or "").strip())
     req = run_info["required"]
@@ -335,6 +379,11 @@ def brief(ticket, res, run_info):
     if "ce-code-review" not in req:
         text = text.replace("listing what ce-code-review found, which findings you applied",
                             "listing what your self-review found, what you changed")
+    if phases:
+        text = text.replace("Then stop. Do not merge", "Each phase ends with a stop, as the Phases section below says. Do not merge")
+        text = text.replace("It will not let the run end until", "It lets each phase's turn end once that phase's steps "
+                            "are shown, and it will not let the run's last turn end until")
+        text = text.replace("You run as one headless turn,", "Each phase runs as one headless turn,")
     if "ce-work" not in req:
         text = text.replace(" through the Compound Engineering lifecycle, hands-off", ", hands-off")
         text = re.sub(r" Resolve each skill name against the available-skills list[^\n]*?ce-work\)\.", "", text)
@@ -612,18 +661,23 @@ def do_status(args):
     out = []
     for rj in rows:
         s = state_of(rj, check_pr=args.pr)
-        out.append(dict(id=rj["id"], repo=rj["repo"], issue=rj["issue"], tier=rj["tier"], model=rj["model"],
-                        effort=rj["effort"], route=rj["route"], worktree=rj["worktree"], branch=rj["branch"], **s))
+        turns = [{k: m.get(k) for k in ("turn", "phase", "model", "effort", "at")} for m in hooks.read_markers(rj["run_dir"])
+                 if hooks.is_turn_start(m)]
+        now = turns[-1] if turns else {}
+        out.append(dict(id=rj["id"], repo=rj["repo"], issue=rj["issue"], tier=rj["tier"], model=now.get("model") or rj["model"],
+                        effort=now.get("effort") or rj["effort"], phase=now.get("phase"), phases=rj.get("phases"), turns=turns, route=rj["route"],
+                        worktree=rj["worktree"], branch=rj["branch"], **s))
     if args.json:
         print(json.dumps(out, indent=2))
         return 0
     if not out:
         print("no runs under %s" % runs_dir())
         return 0
-    print("%-44s %-17s %-16s %-26s %s" % ("RUN", "STATE", "MODEL/EFFORT", "MISSING", "PR / LAST OUTPUT"))
+    print("%-44s %-17s %-22s %-26s %s" % ("RUN", "STATE", "PHASE MODEL/EFFORT", "MISSING", "PR / LAST OUTPUT"))
     for r in out:
         miss = ",".join(r["missing"])[:26] or "-"
-        print("%-44s %-17s %-16s %-26s %s" % (r["id"], r["state"], "%s/%s" % (r["model"], r["effort"]), miss, r["pr"] or r["last"]))
+        now = "%s%s/%s" % ((r["phase"] + " ") if r["phase"] else "", r["model"], r["effort"])
+        print("%-44s %-17s %-22s %-26s %s" % (r["id"], r["state"], now, miss, r["pr"] or r["last"]))
     return 0
 
 
@@ -675,8 +729,10 @@ def common_args(p):
     p.add_argument("--repo", required=True, help="owner/name of the GitHub repository")
     p.add_argument("--issue", required=True, type=int, help="the issue number")
     p.add_argument("--tier", choices=sorted(TIERS), help="override the routing table's tier")
-    p.add_argument("--model", help="override the tier's model (Opus at most: haiku, sonnet, opus or a claude-* id)")
-    p.add_argument("--effort", help="override the tier's effort (%s)" % ", ".join(EFFORTS))
+    p.add_argument("--model", help="override the build phase's model (Opus at most: haiku, sonnet, opus or a claude-* id)")
+    p.add_argument("--effort", help="override the build phase's effort (%s)" % ", ".join(EFFORTS))
+    p.add_argument("--judge-model", help="override the judge phase's model (default opus; Opus at most)")
+    p.add_argument("--judge-effort", help="override the judge phase's effort (default: the table's or the build effort, whichever is higher)")
     p.add_argument("--cycle", choices=sorted(CYCLES), help="override how much of the CE cycle the run is held to (none, lean, full)")
     p.add_argument("--route", choices=["auto", "work", "plan-first"], default="auto",
                    help="auto: ce-work when the ticket has acceptance criteria, ce-plan first when it has none")
@@ -693,15 +749,16 @@ def plan_launch(args):
 
 def do_route(args):
     ticket, res = plan_launch(args)
+    req = required_steps(res["route"], getattr(args, "skip_step", None) or [], res["cycle"])
+    plan = phase_plan(req, res["phase_models"])
     if args.json:
-        print(json.dumps(res, indent=2))
+        print(json.dumps(dict(res, required=req, phase_plan=plan), indent=2))
         return 0
     print("ticket:   %s#%s %s" % (args.repo, ticket["number"], ticket.get("title")))
     print("route:    %s (%s)" % (res["route"], res["route_why"]))
     print("tier:     %s (%s)" % (res["tier"], res["tier_why"]))
-    print("model:    %s" % res["model"])
-    print("effort:   %s" % res["effort"])
-    print("steps:    %s" % ", ".join(required_steps(res["route"], getattr(args, "skip_step", None) or [], res["cycle"])))
+    print("cycle:    %s" % res["cycle"])
+    print("phases:   one turn each, in one session\n%s" % phase_table(plan))
     for c in res["criteria"]:
         print("  %s: %s" % (c["id"], c["text"]))
     return 0
@@ -718,8 +775,9 @@ def branch_name(issue, ticket):
 def do_prompt(args):
     ticket, res = plan_launch(args)
     rid = run_id(args.repo, args.issue, "PREVIEW")
+    req = required_steps(res["route"], args.skip_step or [], res["cycle"])
     info = {"repo": args.repo, "branch": branch_name(args.issue, ticket), "base": args.base or "<default branch>",
-            "ticket_file": os.path.join(runs_dir(), rid, "ticket.md"), "required": required_steps(res["route"], args.skip_step or [], res["cycle"])}
+            "ticket_file": os.path.join(runs_dir(), rid, "ticket.md"), "required": req, "phases": phase_plan(req, res["phase_models"])}
     print(brief(ticket, res, info))
     return 0
 
@@ -772,6 +830,7 @@ def do_launch(args):
             "test_regex": args.test_regex, "lint_regex": args.lint_regex, "launched_at": now_stamp(),
             "finishing_turns": 0, "extensions": [], "port_base": free_port_base(), "copied_in": copy_in}
     info.update({k: res[k] for k in ("route", "route_why", "tier", "tier_why", "model", "effort", "criteria", "criteria_source")})
+    info["phases"] = phase_plan(info["required"], res["phase_models"])
     info["work_input"] = info["ticket_file"] if res["route"] == "work" else PLAN_PATH
 
     if args.dry_run:
@@ -801,14 +860,14 @@ def do_launch(args):
     hooks.write_json(os.path.join(run_dir, "run.json"), info)
     pid = spawn(info, [])
     out = {"run": rid, "pid": pid, "worktree": worktree, "branch": branch, "base": base, "route": res["route"],
-           "tier": res["tier"], "model": res["model"], "effort": res["effort"], "criteria": len(res["criteria"]),
+           "tier": res["tier"], "model": res["model"], "effort": res["effort"], "phases": info["phases"], "criteria": len(res["criteria"]),
            "log": os.path.join(run_dir, "agent.log"), "markers": os.path.join(run_dir, "markers.jsonl")}
     if args.json:
         print(json.dumps(out, indent=2))
     else:
         print("launched %s#%s as %s (pid %s, %s)" % (args.repo, ticket["number"], rid, pid, args.detach))
         print("route: %s (%s)" % (res["route"], res["route_why"]))
-        print("tier:  %s -> %s / %s (%s)" % (res["tier"], res["model"], res["effort"], res["tier_why"]))
+        print("tier:  %s (%s); phases:\n%s" % (res["tier"], res["tier_why"], phase_table(info["phases"])))
         print("worktree: %s  branch: %s" % (worktree, branch))
         print("log: %s" % out["log"])
         print("watch: %s status --run %s" % (SELF, rid))
@@ -863,29 +922,29 @@ def spawn(info, extra):
     return p.pid
 
 
-def do_supervise(args):
-    """Internal: runs one claude turn in the run's worktree and records how it ended."""
-    d = args.run
-    info = hooks.read_json(os.path.join(d, "run.json"))
-    resume_text = None
-    if args.resume_file:
-        with open(args.resume_file, encoding="utf-8") as f:
-            resume_text = f.read()
-    turn = (info.get("finishing_turns") or 0) if resume_text else 0
-    hooks.write_json(os.path.join(d, "supervise.json"), {"pid": os.getpid(), "started_at": now_stamp(), "turn": turn,
-                                                         "kind": "finishing" if resume_text else "launch"})
-    base = ["claude", "-p", "--dangerously-skip-permissions", "--settings", os.path.join(d, "settings.json"),
-            "--model", info["model"], "--effort", info["effort"], "--output-format", "text"] + no_mcp(d)
-    if resume_text:
-        cmd = base + ["--resume", info["session_id"], resume_text]
-    else:
-        with open(os.path.join(d, "prompt.md"), encoding="utf-8") as f:
-            cmd = base + ["--session-id", info["session_id"], f.read()]
-    hooks.append_marker(d, {"kind": "turn", "turn": turn, "event": "start", "model": info["model"], "effort": info["effort"]})
+def run_turn(d, info, turn, kind, prompt, phase=None):
+    """One claude turn in the run's worktree; returns its exit code."""
+    model, effort = (phase["model"], phase["effort"]) if phase else (info["model"], info["effort"])
+    if not MODEL_OK.match(str(model)) or effort not in EFFORTS:
+        # run.json is the agent's to write; the Opus cap holds at the spawn point too.
+        with open(os.path.join(d, "agent.log"), "a", encoding="utf-8") as log:
+            log.write("\n=== turn %d (%s) %s: refused %r / %r: launched agents run on Opus at most ===\n" % (
+                turn, kind, now_stamp(), model, effort))
+        return 2
+    sup = {"pid": os.getpid(), "started_at": now_stamp(), "turn": turn, "kind": kind}
+    start = {"kind": "turn", "turn": turn, "event": "start", "model": model, "effort": effort}
+    if phase:
+        sup.update(phase=phase["name"], model=model, effort=effort)
+        start["phase"] = phase["name"]
+    hooks.write_json(os.path.join(d, "supervise.json"), sup)
+    cmd = ["claude", "-p", "--dangerously-skip-permissions", "--settings", os.path.join(d, "settings.json"),
+           "--model", model, "--effort", effort, "--output-format", "text"] + no_mcp(d)
+    cmd += ["--session-id" if kind == "launch" else "--resume", info["session_id"], prompt]
+    hooks.append_marker(d, start)
     code = 1
     with open(os.path.join(d, "agent.log"), "a", encoding="utf-8") as log:
-        log.write("\n=== turn %d (%s) %s: %s / %s ===\n" % (turn, "finishing" if resume_text else "launch", now_stamp(),
-                                                         info["model"], info["effort"]))
+        log.write("\n=== turn %d (%s) %s: %s%s / %s ===\n" % (turn, kind, now_stamp(), (phase["name"] + ": ") if phase else "",
+                                                           model, effort))
         log.flush()
         try:
             p = subprocess.Popen(cmd, cwd=info["worktree"], env=agent_env(info), stdin=subprocess.DEVNULL, stdout=log,
@@ -893,8 +952,74 @@ def do_supervise(args):
             code = p.wait()
         except OSError as e:
             log.write("could not start claude: %s\n" % e)
-    hooks.write_json(os.path.join(d, "exit.json"), {"code": code, "turn": turn, "ended_at": now_stamp()})
-    hooks.append_marker(d, {"kind": "turn", "turn": turn, "event": "end", "exit": code})
+    return code
+
+
+def next_phase(d, phases, phase):
+    """(the phase to run next, its missing steps) when the turn that just ended showed its own
+    phase, by the Stop hook's phase-done marker naming the plan's next phase; (None, []) when it
+    ended any other way. Only one step forward, so no phase runs twice in one supervisor."""
+    ms = hooks.read_markers(d)
+    stops = [m for m in ms[hooks.last_index(ms, hooks.is_turn_start) + 1:] if m.get("kind") == "stop"]
+    done = stops[-1] if stops and stops[-1].get("decision") == "phase-done" else {}
+    names = [p["name"] for p in phases]
+    i = names.index(phase["name"]) + 1
+    if i >= len(names) or done.get("next") != names[i]:
+        return None, []
+    detail = done.get("missing_detail")
+    return phases[i], [m for m in detail if isinstance(m, dict) and "step" in m] if isinstance(detail, list) else []
+
+
+def phase_text(rj, phase, missing):
+    """The message that opens a phase's turn, or a phased run's finishing turn: the steps of
+    that phase (and any earlier one) still missing."""
+    names = [p["name"] for p in rj["phases"]]
+    idx = names.index(phase["name"])
+    lines = ["This is the %s phase of ticket %s#%s, on %s / %s. Read `git status` and `git log` in the worktree first: "
+             "the work so far is there. Do only these steps now, in order, then stop:" % (
+                 phase["name"], rj["repo"], rj["issue"], phase["model"], phase["effort"])]
+    lines += hooks.step_lines(hooks.missing_through(rj, missing, idx)[0])
+    later = names[idx + 1:]
+    lines.append("Work inline and commit each step as it passes. " +
+                 ("Later phases (%s) come in their own turns." % ", ".join(later) if later else "Stop when the PR is open."))
+    return "\n".join(lines)
+
+
+def do_supervise(args):
+    """Internal: runs the run's turns in its worktree and records how they ended. A legacy run
+    (no phases in run.json) is one turn on its one model. A phased run goes on, phase by
+    phase, while each turn ends with its phase shown."""
+    d = args.run
+    info = hooks.read_json(os.path.join(d, "run.json"))
+    phases = info.get("phases") or []
+    resume_text = None
+    if args.resume_file:
+        with open(args.resume_file, encoding="utf-8") as f:
+            resume_text = f.read()
+    turn = (info.get("finishing_turns") or 0) if resume_text else 0
+    if resume_text:
+        kind, prompt = "finishing", resume_text
+    else:
+        kind = "launch"
+        with open(os.path.join(d, "prompt.md"), encoding="utf-8") as f:
+            prompt = f.read()
+    phase = next((p for p in phases if p["name"] == args.phase), phases[0]) if phases else None
+    code = 1
+    try:
+        code = run_turn(d, info, turn, kind, prompt, phase)
+        # Only the hook's phase-done marker moves the run on: a complete.json the agent could
+        # write itself does not skip a phase.
+        while phase and code == 0:
+            phase, missing = next_phase(d, phases, phase)
+            if not phase:
+                break
+            hooks.append_marker(d, {"kind": "turn", "turn": turn, "event": "end", "exit": code})
+            code = 1   # what exit.json says if this turn raises
+            code = run_turn(d, info, turn, "phase", phase_text(info, phase, missing), phase)
+    finally:
+        # exit.json before the last end marker: a watcher that sees the end sees the exit too.
+        hooks.write_json(os.path.join(d, "exit.json"), {"code": code, "turn": turn, "ended_at": now_stamp()})
+        hooks.append_marker(d, {"kind": "turn", "turn": turn, "event": "end", "exit": code})
     return 0
 
 
@@ -902,8 +1027,7 @@ def do_supervise(args):
 def finishing_text(rj, st):
     lines = ["The previous turn of this ticket (%s#%s) ended before the run was complete (%s). Read `git status` and "
              "`git log` in the worktree first. Then finish, in order:" % (rj["repo"], rj["issue"], st["state"])]
-    for i, m in enumerate(st["missing_detail"], 1):
-        lines.append("%d. %s: %s. Do: %s." % (i, m["step"], m["why"], m["do"]))
+    lines += hooks.step_lines(st["missing_detail"])
     lines.append("Work inline, commit each step as it passes, and stop when the PR is open.")
     return "\n".join(lines)
 
@@ -924,14 +1048,21 @@ def do_resume(args):
             continue
         any_row = True
         used, limit = rj.get("finishing_turns", 0), rj["budgets"]["finishing_turns"] + len(rj.get("extensions") or [])
-        text = finishing_text(rj, st)
+        # A phased run picks up on the phase of its first missing step, with that phase's model:
+        # a fix-up of review findings runs on the judge, a missing PR on the finish model.
+        phase = hooks.first_missing_phase(rj, st["missing_detail"])
+        if phase:
+            text = phase_text(rj, phase, st["missing_detail"])
+            on = ", %s phase: %s / %s" % (phase["name"], phase["model"], phase["effort"])
+        else:
+            text, on = finishing_text(rj, st), ""
         print("=== %s (%s): missing %s" % (rj["id"], st["state"], ", ".join(st["missing"]) or "-"))
         if st["state"] == "auth-expired":
             print("  owner: the agent's token was revoked (a host /login does that). Log in again, then issue this.")
         if st["state"] == "escalated" and not args.extend:
             print("  escalated (%s): resuming needs --extend, which the owner or orchestrator grants deliberately" %
                   os.path.join(rj["run_dir"], "escalation.md"))
-        print("  finishing turn %d of %d:\n    %s" % (used + 1, limit, text.replace("\n", "\n    ")))
+        print("  finishing turn %d of %d%s:\n    %s" % (used + 1, limit, on, text.replace("\n", "\n    ")))
         if not args.send:
             continue
         if args.extend:
@@ -956,7 +1087,7 @@ def do_resume(args):
         resume_file = os.path.join(rj["run_dir"], "resume-%d.txt" % (used + 1))
         with open(resume_file, "w", encoding="utf-8") as f:
             f.write(text)
-        pid = spawn(rj, ["--resume-file", resume_file])
+        pid = spawn(rj, ["--resume-file", resume_file] + (["--phase", phase["name"]] if phase else []))
         print("  issued: pid %s" % pid)
     if not any_row and not args.run:
         print("nothing to resume")
@@ -1047,6 +1178,7 @@ def main(argv=None):
     q = sub.add_parser("_supervise")
     q.add_argument("--run", required=True)
     q.add_argument("--resume-file")
+    q.add_argument("--phase", choices=PHASES, help="the phase a finishing turn of a phased run is for")
 
     args = p.parse_args(argv)
     if not args.verb:
