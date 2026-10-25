@@ -57,7 +57,6 @@ IS_MAC = sys.platform == "darwin"
 # it, finish ships it. Each phase is one turn of the same session. The table SKILL.md shows;
 # htr_test.py fails when a tier's model or effort there differs.
 PHASES = hooks.PHASES
-PHASE_STEPS = hooks.PHASE_STEPS
 
 
 def _p(model, effort):
@@ -254,8 +253,6 @@ def resolve(ticket, args):
         tier, why = "light", "small ticket (%d chars, %d criteria, no risk words)" % (len(body), len(criteria))
     else:
         tier, why = "standard", "default (%d chars, %d criteria%s)" % (len(body), len(criteria), ", thin" if route == "plan-first" else "")
-    # model:/effort: (and --model/--effort) set the build phase. The judge is Opus, at no less
-    # than the build effort, unless judge-model:/judge-effort: say otherwise. Finish follows the table.
     table = TIERS[tier]
     model = args.model or label_value(labels, "model") or table["build"]["model"]
     effort = args.effort or label_value(labels, "effort") or table["build"]["effort"]
@@ -285,7 +282,7 @@ def phase_plan(required, phases):
     """The run's turns: each phase that owns a required step, in order, with its model and effort.
     The build turn always comes first; when the cycle shows no build step (cycle none), it takes
     the next phase's steps, since the implementing is done in it."""
-    plan = [dict(phases[name], name=name, steps=[s for s in required if s in PHASE_STEPS[name]]) for name in PHASES]
+    plan = [dict(phases[name], name=name, steps=[s for s in required if s in hooks.PHASE_STEPS[name]]) for name in PHASES]
     plan = [p for p in plan if p["steps"]]
     if not plan or plan[0]["name"] != "build":
         steps = plan.pop(0)["steps"] if plan else []
@@ -658,9 +655,8 @@ def do_status(args):
     out = []
     for rj in rows:
         s = state_of(rj, check_pr=args.pr)
-        # Each turn as its start marker recorded it; the latest is the one under way or last run.
         turns = [{k: m.get(k) for k in ("turn", "phase", "model", "effort", "at")} for m in hooks.read_markers(rj["run_dir"])
-                 if m.get("kind") == "turn" and m.get("event") == "start"]
+                 if hooks.is_turn_start(m)]
         now = turns[-1] if turns else {}
         out.append(dict(id=rj["id"], repo=rj["repo"], issue=rj["issue"], tier=rj["tier"], model=now.get("model") or rj["model"],
                         effort=now.get("effort") or rj["effort"], phase=now.get("phase"), phases=rj.get("phases"), turns=turns, route=rj["route"],
@@ -921,9 +917,7 @@ def spawn(info, extra):
 
 
 def run_turn(d, info, turn, kind, prompt, phase=None):
-    """One claude turn in the run's worktree: the launch turn starts the session, every other
-    turn resumes it. A phased turn runs on its phase's model and effort; a legacy run (no
-    phases in run.json) on the run's one model. Returns the exit code."""
+    """One claude turn in the run's worktree; returns its exit code."""
     model, effort = (phase["model"], phase["effort"]) if phase else (info["model"], info["effort"])
     sup = {"pid": os.getpid(), "started_at": now_stamp(), "turn": turn, "kind": kind}
     start = {"kind": "turn", "turn": turn, "event": "start", "model": model, "effort": effort}
@@ -949,38 +943,39 @@ def run_turn(d, info, turn, kind, prompt, phase=None):
     return code
 
 
-def phase_done(d):
-    """The phase the turn just ended had shown, by the Stop hook's last word in that turn, or None."""
+def next_phase(d, phases, phase):
+    """(the phase to run next, its missing steps) when the turn that just ended showed its own
+    phase, by the Stop hook's phase-done marker; (None, []) when it ended any other way. Only
+    forward: no phase runs twice in one supervisor."""
     ms = hooks.read_markers(d)
-    start = hooks.last_index(ms, lambda m: m.get("kind") == "turn" and m.get("event") == "start")
-    stops = [m for m in ms[start + 1:] if m.get("kind") == "stop"]
-    return stops[-1] if stops and stops[-1].get("decision") == "phase-done" else None
+    stops = [m for m in ms[hooks.last_index(ms, hooks.is_turn_start) + 1:] if m.get("kind") == "stop"]
+    done = stops[-1] if stops and stops[-1].get("decision") == "phase-done" else {}
+    names = [p["name"] for p in phases]
+    if done.get("next") not in names or names.index(done["next"]) <= names.index(phase["name"]):
+        return None, []
+    return phases[names.index(done["next"])], done.get("missing_detail") or []
 
 
 def phase_text(rj, phase, missing):
-    """The message that opens a phase's turn, or a finishing turn of a phased run."""
+    """The message that opens a phase's turn, or a phased run's finishing turn: the steps of
+    that phase (and any earlier one) still missing."""
+    names = [p["name"] for p in rj["phases"]]
+    idx = names.index(phase["name"])
     lines = ["This is the %s phase of ticket %s#%s, on %s / %s. Read `git status` and `git log` in the worktree first: "
              "the work so far is there. Do only these steps now, in order, then stop:" % (
                  phase["name"], rj["repo"], rj["issue"], phase["model"], phase["effort"])]
-    for i, m in enumerate(missing, 1):
+    for i, m in enumerate(hooks.missing_through(rj, missing, idx)[0], 1):
         lines.append("%d. %s: %s. Do: %s." % (i, m["step"], m["why"], m["do"]))
-    later = [p["name"] for p in rj["phases"][rj["phases"].index(phase) + 1:]]
+    later = names[idx + 1:]
     lines.append("Work inline and commit each step as it passes. " +
                  ("Later phases (%s) come in their own turns." % ", ".join(later) if later else "Stop when the PR is open."))
     return "\n".join(lines)
 
 
-def phase_missing(rj, phase, missing):
-    """The missing steps a turn of `phase` is for: its own and any earlier phase's."""
-    idx = rj["phases"].index(phase)
-    return [m for m in missing if hooks.phase_index(rj, m["step"]) <= idx]
-
-
 def do_supervise(args):
     """Internal: runs the run's turns in its worktree and records how they ended. A legacy run
-    is one turn. A phased run's turn ends when its phase is shown; the next phase's turn then
-    resumes the same session on that phase's model, until the run completes or a turn ends
-    any other way."""
+    (no phases in run.json) is one turn on its one model. A phased run goes on, phase by
+    phase, while each turn ends with its phase shown."""
     d = args.run
     info = hooks.read_json(os.path.join(d, "run.json"))
     phases = info.get("phases") or []
@@ -995,22 +990,15 @@ def do_supervise(args):
         kind = "launch"
         with open(os.path.join(d, "prompt.md"), encoding="utf-8") as f:
             prompt = f.read()
-    phase = None
-    if phases:
-        names = [p["name"] for p in phases]
-        phase = phases[names.index(args.phase)] if args.phase in names else phases[0]
+    phase = next((p for p in phases if p["name"] == args.phase), phases[0]) if phases else None
     code = run_turn(d, info, turn, kind, prompt, phase)
     end = {"kind": "turn", "turn": turn, "event": "end", "exit": code}
-    # Each later phase at most once, and only forward: a turn that ends any other way leaves
-    # the run to `status` and `resume`.
     while phase and code == 0 and not os.path.exists(os.path.join(d, "complete.json")):
-        nxt = next((p for p in phases if p["name"] == (phase_done(d) or {}).get("next")), None)
-        if not nxt or phases.index(nxt) <= phases.index(phase):
+        phase, missing = next_phase(d, phases, phase)
+        if not phase:
             break
         hooks.append_marker(d, end)
-        phase = nxt
-        text = phase_text(info, phase, phase_missing(info, phase, hooks.evaluate(d, info)["missing"]))
-        code = run_turn(d, info, turn, "phase", text, phase)
+        code = run_turn(d, info, turn, "phase", phase_text(info, phase, missing), phase)
         end = {"kind": "turn", "turn": turn, "event": "end", "exit": code}
     # exit.json before the last end marker: a watcher that sees the end sees the exit too.
     hooks.write_json(os.path.join(d, "exit.json"), {"code": code, "turn": turn, "ended_at": now_stamp()})
@@ -1048,7 +1036,7 @@ def do_resume(args):
         # a fix-up of review findings runs on the judge, a missing PR on the finish model.
         phase = hooks.first_missing_phase(rj, st["missing_detail"])
         if phase:
-            text = phase_text(rj, phase, phase_missing(rj, phase, st["missing_detail"]))
+            text = phase_text(rj, phase, st["missing_detail"])
             on = ", %s phase: %s / %s" % (phase["name"], phase["model"], phase["effort"])
         else:
             text, on = finishing_text(rj, st), ""
